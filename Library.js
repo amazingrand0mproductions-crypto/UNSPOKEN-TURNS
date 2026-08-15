@@ -535,7 +535,7 @@ var Library = (() => {
     const out = [];
     for (let i = 0; i < storyCards.length; i++) {
       const title = storyCards[i] && storyCards[i].title;
-      if (title && !isOwnCard(title)) out.push(title);
+      if (title && !isOwnCard(title) && title.indexOf("UNSAID") !== 0) out.push(title);
     }
     return out;
   }
@@ -666,6 +666,7 @@ var Library = (() => {
       const card = storyCards[i];
       if (!card || !card.title) continue;
       if (isOwnCard(card.title)) continue;
+      if (card.title.indexOf("UNSAID") === 0) continue;
 
       const descriptionWithoutPrivateThoughts = typeof MIND_NOTES_MARKER !== "undefined"
         ? (card.description || "").split(MIND_NOTES_MARKER)[0]
@@ -1235,7 +1236,11 @@ function checkCacheEfficientWarning() {
     "switch to a model without cache efficiency enabled, or disable " +
     "cache efficiency for this model if your plan allows it.";
   if (!card) {
-    addStoryCard("unsaid warning", warningText, "Class", title, warningText);
+    const newCard = createOrFindCard("unsaid warning", warningText, "Class");
+    if (newCard) {
+      newCard.title = title;
+      newCard.description = warningText;
+    }
   } else if (card.entry !== warningText) {
     card.entry = warningText;
     card.description = warningText;
@@ -1456,6 +1461,8 @@ function readUnsaidConfig() {
     if (!c.title) return;
 
     if (isCardOfKind(c, "location") || isCardOfKind(c, "faction") || isCardOfKind(c, "item") || isCardOfKind(c, "class")) return;
+    if (typeof CP_TWIST_CARD_TYPE !== "undefined" && isCardOfKind(c, CP_TWIST_CARD_TYPE)) return;
+    if (c.title.indexOf("Twists and Turns") === 0 || c.title.indexOf("Twist — ") === 0) return;
     if (c.title === "UNSAID Config") return;
     if (cfg.playerName && isSameCardEntity(c.title, cfg.playerName)) return;
     if (cfg.cast.some(existing => isSameCardEntity(c.title, existing))) return;
@@ -1577,6 +1584,8 @@ function classifyCodexEntry(name, text) {
 function isSameCardEntity(cardTitle, candidateName) {
   const title = cardTitle.toLowerCase();
   const name = candidateName.toLowerCase();
+  const isReserved = t => t.indexOf("twists and turns") === 0 || t.indexOf("twist — ") === 0 || t.indexOf("unsaid") === 0;
+  if (isReserved(title) !== isReserved(name)) return false;
   if (title === name) return true;
   const titleWords = title.split(" ");
   const nameWords = name.split(" ");
