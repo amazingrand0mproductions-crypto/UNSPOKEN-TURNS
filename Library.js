@@ -390,7 +390,13 @@ var CP_STOPWORDS = new Set([
   "Rumored","Legend","Legends","According","Reportedly","Allegedly","Apparently",
   "Once","Eventually","Recently","Later","Before","After","During","Since",
   "Because","Although","Though","While","Despite","Unless","Until",
-  "Many","Some","Few","Most","All","Each","Every","Long"
+  "Many","Some","Few","Most","All","Each","Every","Long",
+  "Rain","Snow","Fog","Mist","Frost","Thunder","Lightning","Wind",
+  "Storm","Dawn","Dusk","Twilight","Midnight","Noon","Sunrise","Sunset",
+  "North","South","East","West","Northeast","Northwest","Southeast","Southwest",
+  "Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday",
+  "January","February","March","April","June","July","August",
+  "September","October","November","December"
 ]);
 
 var Library = (() => {
@@ -510,6 +516,9 @@ var Library = (() => {
         if (!CP_STOPWORDS.has(prev) && prev.length > 1 && /^\s?$/.test(gap)) {
           return prev + " " + w;
         }
+        if (typeof SENTENCE_ABBREVIATIONS !== "undefined" && SENTENCE_ABBREVIATIONS.has(prev) && /^\.\s?$/.test(gap)) {
+          return prev + ". " + w;
+        }
       }
       return w;
     };
@@ -552,7 +561,20 @@ var Library = (() => {
 
   function splitSentences(text) {
     if (!text) return [];
-    return text.split(/(?<=[.!?])\s+/).filter(s => s.trim().length > 0);
+    const rawSentences = text.split(/(?<=[.!?])\s+/).filter(s => s.trim().length > 0);
+    if (typeof SENTENCE_ABBREVIATIONS === "undefined") return rawSentences;
+    const sentences = [];
+    for (let i = 0; i < rawSentences.length; i++) {
+      const s = rawSentences[i];
+      const words = s.trim().split(/\s+/);
+      const lastWord = (words[words.length - 1] || "").replace(/\.$/, "");
+      if (SENTENCE_ABBREVIATIONS.has(lastWord) && i + 1 < rawSentences.length) {
+        rawSentences[i + 1] = s + " " + rawSentences[i + 1];
+        continue;
+      }
+      sentences.push(s);
+    }
+    return sentences;
   }
 
   function findThread(c, entity, category) {
