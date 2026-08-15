@@ -1278,16 +1278,24 @@ function nameAppears(name, text) {
 }
 
 function createOrFindCard(keys, initialEntry, type) {
-  addStoryCard(keys, initialEntry, type);
-  const idx = storyCards.length - 1;
-  if (storyCards[idx]) return storyCards[idx];
-  return storyCards.find(c => c.keys === keys) || storyCards[storyCards.length - 1];
+  try {
+    const beforeLen = storyCards.length;
+    addStoryCard(keys, initialEntry, type);
+    if (storyCards.length > beforeLen) {
+      const card = storyCards[storyCards.length - 1];
+      if (card) return card;
+    }
+    return storyCards.find(c => c.keys === keys) || null;
+  } catch (e) {
+    return storyCards.find(c => c.keys === keys) || null;
+  }
 }
 
 function ensureConfigCard() {
   let card = storyCards.find(c => c.title === "UNSAID Config" || c.keys === "unsaid config");
   if (!card) {
     card = createOrFindCard("unsaid config", " ", "Class");
+    if (!card) return null;
     card.title = "UNSAID Config";
     card.keys = "unsaid config";
     card.type = "Class";
@@ -1344,6 +1352,7 @@ function ensureConfigCard() {
 
 function readUnsaidConfig() {
   const card = ensureConfigCard();
+  if (!card) return { ...UNSAID_DEFAULTS, cast: [] };
   const preAuthoringNote = "Pre-authoring a character's inner life: write \"💭 Inner Life — private, not visible to other characters\" followed by \"Core truth:\" and their established truth into a character's own Notes before their first reveal, and UNSAID will start from that instead of inventing one. Matches the same format this script writes when it syncs a reveal, so copying an existing character's Notes as a template works too.";
   if (!card.description.includes("Commands (type as an action):")) {
     card.description =
@@ -1717,6 +1726,7 @@ function ensureCodexLogCard(type) {
   let card = storyCards.find(c => c.title === title || c.keys === keys);
   if (!card) {
     card = createOrFindCard(keys, " ", "Class");
+    if (!card) return null;
     card.title = title;
     card.keys = keys;
     card.type = "Class";
@@ -1728,11 +1738,13 @@ function ensureCodexLogCard(type) {
 
 function logCodexCard(name, type, mentionCount) {
   const card = ensureCodexLogCard(type);
+  if (!card) return;
   const entries = card.description.split("\n").map(l => l.trim()).filter(Boolean);
   const line = `${name} — mentioned ${mentionCount}x before card created`;
   const existingIdx = entries.findIndex(l => l.startsWith(`${name} —`));
   if (existingIdx >= 0) entries[existingIdx] = line;
   else entries.push(line);
+  if (entries.length > 500) entries.splice(0, entries.length - 500);
   card.description = entries.join("\n");
 }
 

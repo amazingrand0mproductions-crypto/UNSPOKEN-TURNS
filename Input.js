@@ -98,13 +98,17 @@ var unsaidModifier = (text) => {
       let card = storyCards.find(c => c.title === "UNSAID — Status");
       if (!card) {
         card = createOrFindCard("unsaid status", " ", "Class");
+      }
+      if (card) {
         card.title = "UNSAID — Status";
         card.keys = "unsaid status";
         card.type = "Class";
+        card.entry = report;
+        card.description = "Regenerated fresh each time you type \"/unsaid status\" as an action. Not sent to the AI.";
+        pushMessage("📋 Status written — check the \"UNSAID — Status\" card.");
+      } else {
+        pushMessage("📋 Couldn't write the status card this turn — try again in a moment.");
       }
-      card.entry = report;
-      card.description = "Regenerated fresh each time you type \"/unsaid status\" as an action. Not sent to the AI.";
-      pushMessage("📋 Status written — check the \"UNSAID — Status\" card.");
       return { text: "(A quiet moment passes.)" };
     }
 

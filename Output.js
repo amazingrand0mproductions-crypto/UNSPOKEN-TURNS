@@ -79,55 +79,60 @@ var unsaidModifier = (text) => {
     const cardWasNew = {};
 
     function tryBuildCard(blockContent, name, upfrontType) {
-      let type = upfrontType || "character";
-      const fields = {};
-      blockContent.split("\n").forEach(line => {
-        const fieldMatch = line.match(/^\s*([A-Za-z ]+):\s*(.+)$/);
-        if (fieldMatch) fields[fieldMatch[1].trim()] = fieldMatch[2].trim();
-      });
-      if (!fields["Name"]) return false;
+      try {
+        let type = upfrontType || "character";
+        const fields = {};
+        blockContent.split("\n").forEach(line => {
+          const fieldMatch = line.match(/^\s*([A-Za-z ]+):\s*(.+)$/);
+          if (fieldMatch) fields[fieldMatch[1].trim()] = fieldMatch[2].trim();
+        });
+        if (!fields["Name"]) return false;
 
-      if (fields["Location"] || fields["Key Locations"]) type = "location";
-      else if (fields["Properties"] || fields["Origin"]) type = "item";
-      else if (fields["Type"] && !fields["Race"] && !fields["Personality"] && !fields["Background"] && type === "character") {
-        type = "faction";
-      }
-
-      succeededNames.add(name);
-      let card = storyCards.find(c => c.title && isSameCardEntity(c.title, name));
-      const isNewCard = !card;
-      if (isNewCard) {
-        card = createOrFindCard(name.toLowerCase(), " ", type);
-        card.title = name;
-        card.keys = name.toLowerCase();
-      }
-      card.type = platformType(type);
-      cardWasNew[name] = isNewCard;
-
-      const order = CARD_TEMPLATES[type] || CHARACTER_CARD_FIELDS;
-      let builtEntry = order
-        .filter(f => fields[f])
-        .map(f => `${f}: ${fields[f]}`)
-        .join("\n");
-      if (builtEntry.length > MAX_CARD_ENTRY_LENGTH) {
-        builtEntry = builtEntry.slice(0, MAX_CARD_ENTRY_LENGTH - 3) + "...";
-      }
-
-      if (isNewCard || !card.entry || !card.entry.trim()) {
-        card.entry = builtEntry;
-      }
-
-      logCodexCard(name, type, state.unsaid.codex.mentionCounts[name] || 0);
-      forgetMentionTracking(name);
-
-      if (type === "character") {
-        const configCard = ensureConfigCard();
-        if (!configCard.description.includes(name)) {
-          configCard.description += `\n${name}`;
+        if (fields["Location"] || fields["Key Locations"]) type = "location";
+        else if (fields["Properties"] || fields["Origin"]) type = "item";
+        else if (fields["Type"] && !fields["Race"] && !fields["Personality"] && !fields["Background"] && type === "character") {
+          type = "faction";
         }
-        syncMindToCard(name, cfg.allowCoreShift, cfg.jsonNotes);
+
+        let card = storyCards.find(c => c.title && isSameCardEntity(c.title, name));
+        const isNewCard = !card;
+        if (isNewCard) {
+          card = createOrFindCard(name.toLowerCase(), " ", type);
+          if (!card) return false;
+          card.title = name;
+          card.keys = name.toLowerCase();
+        }
+        card.type = platformType(type);
+        cardWasNew[name] = isNewCard;
+        succeededNames.add(name);
+
+        const order = CARD_TEMPLATES[type] || CHARACTER_CARD_FIELDS;
+        let builtEntry = order
+          .filter(f => fields[f])
+          .map(f => `${f}: ${fields[f]}`)
+          .join("\n");
+        if (builtEntry.length > MAX_CARD_ENTRY_LENGTH) {
+          builtEntry = builtEntry.slice(0, MAX_CARD_ENTRY_LENGTH - 3) + "...";
+        }
+
+        if (isNewCard || !card.entry || !card.entry.trim()) {
+          card.entry = builtEntry;
+        }
+
+        logCodexCard(name, type, state.unsaid.codex.mentionCounts[name] || 0);
+        forgetMentionTracking(name);
+
+        if (type === "character") {
+          const configCard = ensureConfigCard();
+          if (configCard && !configCard.description.includes(name)) {
+            configCard.description += `\n${name}`;
+          }
+          syncMindToCard(name, cfg.allowCoreShift, cfg.jsonNotes);
+        }
+        return true;
+      } catch (e) {
+        return false;
       }
-      return true;
     }
 
     blockMatches.forEach((match, i) => {
