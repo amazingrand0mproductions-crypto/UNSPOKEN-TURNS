@@ -31,6 +31,15 @@ var twistsModifier = (text) => {
       return { text };
     }
 
+    let hint = null;
+    let hintEntities = [];
+
+    // Everything below is the "brewing" pipeline: scanning story text/cards for
+    // twist material and picking a hint. It's wrapped in its own try/catch,
+    // separate from the outer one, so a single bad turn in here (e.g. an
+    // unexpected data shape) can never hide the config/twist-log card refresh
+    // below it — those are guaranteed to run every turn regardless.
+    try {
     if (c.forcePlant) {
       const existing = Library.findThread(c, c.forcePlant.entity, c.forcePlant.category);
       if (!existing) Library.createThread(c, c.forcePlant.entity, c.forcePlant.category, c.turn, cfg);
@@ -49,9 +58,6 @@ var twistsModifier = (text) => {
       .replace(/【CARD】[\s\S]*?【\/CARD】?/g, " ");
 
     Library.scanForLooseThreads(scanText, c, cfg, cardTitles);
-
-    let hint = null;
-    let hintEntities = [];
 
     if (c.forceEntity) {
       let thread = null;
@@ -140,9 +146,9 @@ var twistsModifier = (text) => {
       state.memory.frontMemory = "";
       c.hintActive = false;
     }
+    } catch (e) {}
 
     Library.updateNudgeCard(cacheEfficient, hint, hintEntities);
-
     Library.updateConfigCard(cfg, c);
     Library.updateTwistLogCard(c, cfg);
   } catch (e) {}

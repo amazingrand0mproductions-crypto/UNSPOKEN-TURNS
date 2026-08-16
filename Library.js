@@ -420,7 +420,15 @@ var Library = (() => {
         multiplayerNames: []
       };
     }
-    if (!state.contingency.importedCardSignatures) state.contingency.importedCardSignatures = {};
+    if (typeof state.contingency.turn !== "number") state.contingency.turn = 0;
+    if (!Array.isArray(state.contingency.threads)) state.contingency.threads = [];
+    if (!Array.isArray(state.contingency.twistLog)) state.contingency.twistLog = [];
+    if (typeof state.contingency.lastPayoffTurn !== "number") state.contingency.lastPayoffTurn = -999;
+    if (typeof state.contingency.pendingPayoffId === "undefined") state.contingency.pendingPayoffId = null;
+    if (typeof state.contingency.pendingSeedId === "undefined") state.contingency.pendingSeedId = null;
+    if (typeof state.contingency.forceEntity === "undefined") state.contingency.forceEntity = null;
+    if (typeof state.contingency.forcePlant === "undefined") state.contingency.forcePlant = null;
+    if (!state.contingency.importedCardSignatures || typeof state.contingency.importedCardSignatures !== "object") state.contingency.importedCardSignatures = {};
     if (typeof state.contingency.lastContextSignature === "undefined") state.contingency.lastContextSignature = null;
     if (typeof state.contingency.lastAuthorsNoteSignature === "undefined") state.contingency.lastAuthorsNoteSignature = null;
     if (typeof state.contingency.pendingPayoffId2 === "undefined") state.contingency.pendingPayoffId2 = null;
