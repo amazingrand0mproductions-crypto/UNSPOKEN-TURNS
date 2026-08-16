@@ -501,10 +501,6 @@ var Library = (() => {
     } catch (e) {}
   }
 
-  function stripPossessive(w) {
-    return w.replace(/'(s|re|ve|ll|d|m)$/i, "").replace(/'$/, "");
-  }
-
   function findEntityInSentence(sentence) {
     const matches = Array.from(sentence.matchAll(/\b[A-Z][a-zA-Z'-]*\b/g));
     if (!matches.length) return null;
@@ -1224,8 +1220,14 @@ var SENTENCE_ABBREVIATIONS = new Set([
   "Col", "Lt", "Sgt", "Rev", "Hon", "Fr", "Rep", "Sen", "Gov", "Adm",
   "Cmdr", "Maj", "Mt", "vs", "etc"
 ]);
+// A name "word" is a capitalized token that may contain an internal
+// apostrophe (O'Brien, Ba'al, D'Angelo) — without this, an apostrophe was
+// treated as a hard break, fracturing a single name into two or three
+// separate tracked/carded fragments (e.g. "Captain O'Brien" splitting into
+// "Captain O" and "Brien" as two unrelated entities).
+var CODEX_NAME_TOKEN = "[A-Z][a-zA-Z]*(?:['\u2019][a-zA-Z]+)*";
 var CODEX_TITLE_ABBREV_REGEX = new RegExp(
-  `\\b(?:(?:${[...SENTENCE_ABBREVIATIONS].filter(w => w.length > 1).join("|")})\\.\\s+)?[A-Z][a-zA-Z]*(?:\\s+of\\s+[A-Z][a-zA-Z]*|\\s+[A-Z][a-zA-Z]*){0,2}\\b`,
+  `\\b(?:(?:${[...SENTENCE_ABBREVIATIONS].filter(w => w.length > 1).join("|")})\\.\\s+)?${CODEX_NAME_TOKEN}(?:\\s+of\\s+${CODEX_NAME_TOKEN}|\\s+${CODEX_NAME_TOKEN}){0,2}\\b`,
   "g"
 );
 
@@ -1304,6 +1306,14 @@ function initUnsaid() {
 
 function escapeForRegex(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Shared by both systems' entity/name detection: strips a trailing
+// possessive or contraction ("Ba'al's" -> "Ba'al", "O'Brien's" -> "O'Brien")
+// without touching a genuine internal apostrophe. Handles both the straight
+// (') and curly (\u2019) apostrophe, since models sometimes generate either.
+function stripPossessive(w) {
+  return w.replace(/['\u2019](s|re|ve|ll|d|m)$/i, "").replace(/['\u2019]$/, "");
 }
 
 function pushMessage(msg) {
@@ -1607,7 +1617,9 @@ function trackMentions(text) {
   if (!state.unsaid || !state.unsaid.codex) return;
   const matches = text.match(CODEX_TITLE_ABBREV_REGEX) || [];
   matches.forEach(raw => {
-    let name = raw.trim();
+    // strip a trailing possessive ("Ba'al's" -> "Ba'al") so a name mentioned
+    // both plainly and possessively is tracked/carded as one entity, not two
+    let name = stripPossessive(raw.trim());
     let words = name.split(" ");
     while (words.length > 1 && CODEX_STOPWORDS.has(words[0])) {
       words = words.slice(1);
