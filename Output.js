@@ -25,6 +25,7 @@ var twistsModifier = (text) => {
           compoundWith: partner ? partner.entity : null
         });
         Library.createTwistStoryCard(c, cfg, thread, partner ? partner.entity : null);
+        if (typeof linkTwistPayoffToReveal === "function") linkTwistPayoffToReveal(thread.entity, thread.tier);
       }
       if (partner) {
         partner.status = "resolved";

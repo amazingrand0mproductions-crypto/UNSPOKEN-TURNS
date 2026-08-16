@@ -527,7 +527,9 @@ var Library = (() => {
       for (let i = startIndex; i < matches.length; i++) {
         const w = stripPossessive(matches[i][0]);
         if (CP_STOPWORDS.has(w) || w.length <= 1) continue;
-        return bridge(i);
+        const result = bridge(i);
+        if (result.indexOf(" ") === -1 && typeof CODEX_TITLE_WORDS !== "undefined" && CODEX_TITLE_WORDS.has(result)) continue;
+        return result;
       }
       return null;
     };
@@ -999,13 +1001,14 @@ var Library = (() => {
     "Every option and what it does is explained in Notes below.";
 
   function applyEntryConfig(cfg) {
-    const card = findCardByTitle("Twists and Turns Config");
+    const card = findConfigCardTolerant("Twists and Turns Config");
     if (card) parseConfigFromEntry(cfg, card.entry);
   }
 
   function updateConfigCard(cfg, c) {
     const title = "Twists and Turns Config";
-    let card = findCardByTitle(title);
+    let card = findConfigCardTolerant(title);
+    if (card && card.title !== title) card.title = title;
 
     if (!card) {
       const beforeLen = storyCards.length;
@@ -1318,8 +1321,44 @@ function createOrFindCard(keys, initialEntry, type) {
   }
 }
 
+function levenshteinDistance(a, b) {
+  const m = a.length, n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  let prev = new Array(n + 1);
+  let curr = new Array(n + 1);
+  for (let j = 0; j <= n; j++) prev[j] = j;
+  for (let i = 1; i <= m; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
+    }
+    const tmp = prev; prev = curr; curr = tmp;
+  }
+  return prev[n];
+}
+
+function findConfigCardTolerant(title, maxDistance) {
+  if (typeof storyCards === "undefined" || !storyCards) return null;
+  for (let i = 0; i < storyCards.length; i++) {
+    if (storyCards[i] && storyCards[i].title === title) return storyCards[i];
+  }
+  const target = title.toLowerCase().replace(/[^a-z]/g, "");
+  const limit = typeof maxDistance === "number" ? maxDistance : 2;
+  for (let i = 0; i < storyCards.length; i++) {
+    const card = storyCards[i];
+    if (!card || typeof card.title !== "string") continue;
+    const candidate = card.title.toLowerCase().replace(/[^a-z]/g, "");
+    if (Math.abs(candidate.length - target.length) > limit) continue;
+    if (levenshteinDistance(candidate, target) <= limit) return card;
+  }
+  return null;
+}
+
 function ensureConfigCard() {
-  let card = storyCards.find(c => c.title === "UNSAID Config" || c.keys === "unsaid config");
+  let card = findConfigCardTolerant("UNSAID Config");
+  if (card && card.title !== "UNSAID Config") card.title = "UNSAID Config";
   if (!card) {
     card = createOrFindCard("unsaid config", " ", "Class");
     if (!card) return null;
@@ -2119,4 +2158,14 @@ function syncFrontMemoryHint(subtleHints) {
   }
   const hint = `${FRONT_MEMORY_MARKER} Let each character's private feelings subtly color their actions and tone right now, without ever stating them outright.`;
   state.memory.frontMemory = existing ? `${existing}\n\n${hint}` : hint;
+}
+
+function linkTwistPayoffToReveal(entity, tier) {
+  if (typeof state === "undefined" || !state.unsaid) return;
+  if (state.unsaid.forcedPeek) return;
+  let cfg;
+  try { cfg = readUnsaidConfig(); } catch (e) { return; }
+  if (!cfg.enabled) return;
+  state.unsaid.forcedPeek = entity;
+  state.unsaid.forcedPeekCore = (tier === "major" || tier === "cataclysmic") && !!cfg.allowCoreShift;
 }
