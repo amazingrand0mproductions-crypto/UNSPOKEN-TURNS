@@ -480,10 +480,6 @@ var Library = (() => {
     return "t" + c._seq;
   }
 
-  function isOwnCard(title) {
-    return !!title && (title.indexOf("Twists and Turns") === 0 || title.indexOf("Twist — ") === 0);
-  }
-
   function isPlayerEntity(c, entity) {
     if (!entity) return false;
     const lower = entity.toLowerCase();
@@ -550,7 +546,7 @@ var Library = (() => {
     const out = [];
     for (let i = 0; i < storyCards.length; i++) {
       const title = storyCards[i] && storyCards[i].title;
-      if (title && !isOwnCard(title) && title.indexOf("UNSAID") !== 0) out.push(title);
+      if (title && !isOwnCard(title)) out.push(title);
     }
     return out;
   }
@@ -585,6 +581,14 @@ var Library = (() => {
 
   function findThread(c, entity, category) {
     return c.threads.find(t => t.entity === entity && t.category === category);
+  }
+
+  // Fuzzy variant for player-typed input (the /plant command) — matches on
+  // name similarity across any category, same reasoning as /twist above,
+  // so "/plant Sera" recognizes an existing "Sera Walker" thread instead of
+  // planting a confusing duplicate just because the typed name is shorter.
+  function findThreadFuzzy(c, entity) {
+    return c.threads.find(t => isSameCardEntity(t.entity, entity));
   }
 
   function priorTwistCountFor(c, entity) {
@@ -625,6 +629,26 @@ var Library = (() => {
     if (seedTouches >= 6) return CP_TIER_MAJOR;
     if (seedTouches >= 3) return CP_TIER_MODERATE;
     return CP_TIER_MINOR;
+  }
+
+  function reinforceFromCoreShift(c, cfg, entity) {
+    // A core-shift (a character's fundamental self genuinely changing) is
+    // strong cross-system material — treat it the same as an ordinary scan
+    // hit reinforcing a thread, but from a stronger signal: bump whatever
+    // thread already exists on this character, or plant a fresh one biased
+    // toward Identity & Deception if none exists yet.
+    if (!c || !cfg || !entity) return;
+    const existing = c.threads.find(t => t.entity === entity && t.status !== "resolved");
+    if (existing) {
+      if (existing.status === "brewing") {
+        existing.seedTouches += 1;
+        existing.tier = tierFor(existing.seedTouches);
+        if (isEligible(existing, c, cfg)) existing.status = "ready";
+      }
+    } else {
+      const biasedCfg = Object.assign({}, cfg, { categoryBias: "Identity & Deception" });
+      createThread(c, entity, null, c.turn, biasedCfg);
+    }
   }
 
   function isEligible(thread, c, cfg) {
@@ -694,7 +718,6 @@ var Library = (() => {
       const card = storyCards[i];
       if (!card || !card.title) continue;
       if (isOwnCard(card.title)) continue;
-      if (card.title.indexOf("UNSAID") === 0) continue;
 
       const descriptionWithoutPrivateThoughts = typeof MIND_NOTES_MARKER !== "undefined"
         ? (card.description || "").split(MIND_NOTES_MARKER)[0]
@@ -935,134 +958,99 @@ var Library = (() => {
     } catch (e) {}
   }
 
-  var CP_CONFIG_BOOLEAN_KEYS = ["enabled", "strictLogic", "allowWildcard", "allowCompoundTwists", "involvePlayer", "showTwistLog"];
-
-  var CP_CONFIG_NUMBER_RANGES = {
-    minSeedsForPayoff: [1, 200],
-    minTurnsForPayoff: [1, 200],
-    payoffCooldown: [1, 200],
-    establishedFactsCap: [1, 30]
-  };
-
-  function applyConfigChange(cfg, key, rawValue) {
-    if (!key || !rawValue) return false;
-    const matchKey = Object.keys(CP_DEFAULTS).find(k => k.toLowerCase() === key.toLowerCase());
-    if (!matchKey) return false;
-
-    if (matchKey === "intensity") {
-      const v = rawValue.toLowerCase();
-      if (["low", "medium", "high"].indexOf(v) === -1) return false;
-      cfg.intensity = v;
-      return true;
-    }
-    if (matchKey === "categoryBias") {
-      const v = rawValue.trim().toLowerCase();
-      if (v === "off" || v === "none") { cfg.categoryBias = ""; return true; }
-      const requested = rawValue.split(",").map(s => s.trim()).filter(Boolean);
-      const matched = requested
-        .map(r => CP_CLUSTER_NAMES.find(c => c.toLowerCase() === r.toLowerCase()))
-        .filter(Boolean);
-      if (matched.length === 0) return false;
-      cfg.categoryBias = matched.join(", ");
-      return true;
-    }
-    if (CP_CONFIG_BOOLEAN_KEYS.indexOf(matchKey) !== -1) {
-      const v = rawValue.toLowerCase();
-      if (["true", "on", "yes"].indexOf(v) !== -1) { cfg[matchKey] = true; return true; }
-      if (["false", "off", "no"].indexOf(v) !== -1) { cfg[matchKey] = false; return true; }
-      return false;
-    }
-    if (CP_CONFIG_NUMBER_RANGES[matchKey]) {
-      const range = CP_CONFIG_NUMBER_RANGES[matchKey];
-      const n = parseInt(rawValue, 10);
-      if (isNaN(n) || n < range[0] || n > range[1]) return false;
-      cfg[matchKey] = n;
-      return true;
-    }
-    return false;
-  }
-
-  function findCardByTitle(title) {
-    for (let i = 0; i < storyCards.length; i++) {
-      if (storyCards[i] && storyCards[i].title === title) return storyCards[i];
-    }
-    return null;
-  }
-
-  function parseConfigFromEntry(cfg, entryText) {
-    if (!entryText) return;
-    const lines = entryText.split("\n");
-    for (const line of lines) {
-      const m = line.match(/^\s*([A-Za-z]+)\s*[:=]\s*(.+?)\s*$/);
-      if (!m) continue;
-      applyConfigChange(cfg, m[1], m[2]);
-    }
-  }
-
-  var CP_CONFIG_ENTRY_TEMPLATE =
-    "Edit this box to change settings — one per line.\n" +
-    "e.g. intensity: high\n\n" +
-    "Every option and what it does is explained in Notes below.";
-
   function applyEntryConfig(cfg) {
-    const card = findConfigCardTolerant("Twists and Turns Config");
-    if (card) parseConfigFromEntry(cfg, card.entry);
+    const card = ensureSharedConfigCard();
+    if (!card) return;
+    const section = extractConfigSection(card.entry, CONFIG_SECTION_TWIST);
+    if (!section) return;
+
+    const enabledMatch = section.match(/Enable Twists and Turns:\s*(true|false)/i);
+    if (enabledMatch) cfg.enabled = enabledMatch[1].toLowerCase() === "true";
+
+    const intensityMatch = section.match(/Intensity[^:]*:\s*(low|medium|high)/i);
+    if (intensityMatch) cfg.intensity = intensityMatch[1].toLowerCase();
+
+    const strictMatch = section.match(/Strict logic only[^:]*:\s*(true|false)/i);
+    if (strictMatch) cfg.strictLogic = strictMatch[1].toLowerCase() === "true";
+
+    const wildcardMatch = section.match(/Allow wildcard twists:\s*(true|false)/i);
+    if (wildcardMatch) cfg.allowWildcard = wildcardMatch[1].toLowerCase() === "true";
+
+    const compoundMatch = section.match(/Allow compound twists:\s*(true|false)/i);
+    if (compoundMatch) cfg.allowCompoundTwists = compoundMatch[1].toLowerCase() === "true";
+
+    const involveMatch = section.match(/Involve the player character in twists:\s*(true|false)/i);
+    if (involveMatch) cfg.involvePlayer = involveMatch[1].toLowerCase() === "true";
+
+    const logMatch = section.match(/Show resolved twists in the Twist Log:\s*(true|false)/i);
+    if (logMatch) cfg.showTwistLog = logMatch[1].toLowerCase() === "true";
+
+    const seedsMatch = section.match(/Minimum seed touches before a twist can pay off:\s*(\d+)/i);
+    if (seedsMatch) {
+      const n = parseInt(seedsMatch[1], 10);
+      if (!isNaN(n) && n >= 1 && n <= 200) cfg.minSeedsForPayoff = n;
+    }
+
+    const turnsMatch = section.match(/Minimum turns before a twist can pay off:\s*(\d+)/i);
+    if (turnsMatch) {
+      const n = parseInt(turnsMatch[1], 10);
+      if (!isNaN(n) && n >= 1 && n <= 200) cfg.minTurnsForPayoff = n;
+    }
+
+    const payoffCooldownMatch = section.match(/Turns to wait between twist payoffs:\s*(\d+)/i);
+    if (payoffCooldownMatch) {
+      const n = parseInt(payoffCooldownMatch[1], 10);
+      if (!isNaN(n) && n >= 1 && n <= 200) cfg.payoffCooldown = n;
+    }
+
+    const capMatch = section.match(/How many resolved twists Established Facts keeps:\s*(\d+)/i);
+    if (capMatch) {
+      const n = parseInt(capMatch[1], 10);
+      if (!isNaN(n) && n >= 1 && n <= 30) cfg.establishedFactsCap = n;
+    }
+
+    const biasMatch = section.match(/Theme bias[^:]*:[ \t]*(.*)/i);
+    if (biasMatch) {
+      const raw = biasMatch[1].trim();
+      if (!raw || /^(off|none)$/i.test(raw)) {
+        cfg.categoryBias = "";
+      } else {
+        const requested = raw.split(",").map(s => s.trim()).filter(Boolean);
+        const matched = requested
+          .map(r => CP_CLUSTER_NAMES.find(clusterName => clusterName.toLowerCase() === r.toLowerCase()))
+          .filter(Boolean);
+        if (matched.length > 0) cfg.categoryBias = matched.join(", ");
+      }
+    }
   }
 
   function updateConfigCard(cfg, c) {
-    const title = "Twists and Turns Config";
-    let card = findConfigCardTolerant(title);
-    if (card && card.title !== title) card.title = title;
+    const card = ensureSharedConfigCard();
+    if (!card) return;
 
-    if (!card) {
-      const cardKeys = title.toLowerCase();
-      try {
-        const idx = addStoryCard(cardKeys, CP_CONFIG_ENTRY_TEMPLATE, "class");
-        card = (typeof idx === "number" && storyCards[idx]) ? storyCards[idx] : null;
-      } catch (e) {}
-      if (!card) card = storyCards.find(c => c.keys === cardKeys) || findCardByTitle(title);
-    }
+    card.entry = spliceConfigSection(card.entry, CONFIG_SECTION_TWIST, renderTwistSection(cfg));
 
     const brewing = c ? c.threads.filter(t => t.status === "brewing").length : 0;
     const ready = c ? c.threads.filter(t => t.status === "ready").length : 0;
     const resolved = c ? c.twistLog.length : 0;
-    const onOff = (b) => b ? "on" : "off";
-    const notes =
+    const notes = CONFIG_SECTION_TWIST + "\n" +
       "TWISTS AND TURNS — v" + CP_VERSION + "\n" +
-      "Quietly builds and pays off plot twists based on your own story.\n\n" +
-      "STATUS\n" +
       brewing + " brewing · " + ready + " about to surface · " + resolved + " resolved\n\n" +
-      "TO CHANGE A SETTING\n" +
-      "Edit the box above (Entry) — one \"name: value\" per line. Takes effect on your next action.\n\n" +
-      "SETTINGS (current value — what it does)\n" +
-      "enabled: " + onOff(cfg.enabled) + " — turns the whole script on or off\n" +
-      "intensity: " + cfg.intensity + " — low / medium / high, how often twists build and land\n" +
-      "strictLogic: " + onOff(cfg.strictLogic) + " — twists only ever come from a tracked thread\n" +
-      "allowWildcard: " + onOff(cfg.allowWildcard) + " — occasional twist with no build-up\n" +
-      "allowCompoundTwists: " + onOff(cfg.allowCompoundTwists) + " — two threads can resolve together\n" +
-      "involvePlayer: " + onOff(cfg.involvePlayer) + " — twists may target you, not just NPCs\n" +
-      "showTwistLog: " + onOff(cfg.showTwistLog) + " — reveals resolved twists on the log card\n" +
-      "minSeedsForPayoff: " + cfg.minSeedsForPayoff + " — reinforcement touches a thread needs before it can pay off\n" +
-      "minTurnsForPayoff: " + cfg.minTurnsForPayoff + " — minimum turns a thread must exist before it can pay off\n" +
-      "payoffCooldown: " + cfg.payoffCooldown + " — minimum turns between any two twists\n" +
-      "establishedFactsCap: " + cfg.establishedFactsCap + " — how many recent twists stay visible to the AI at once\n" +
-      "categoryBias: " + (cfg.categoryBias || "off") + " — prefer certain twist themes (e.g. \"Power & Authority, Fate & Destiny\") when a shape isn't already determined by the story itself. Themes: " + CP_CLUSTER_NAMES.join(", ") + "\n\n" +
-      "COMMANDS\n" +
-      "/twist — pay off the most-built-up thread now\n" +
-      "/twist <name> — force a twist around someone specific\n" +
-      "/plant <name> [category] — seed a new thread manually\n" +
-      "/twistlog — toggle the resolved-twist log\n" +
-      "/threads — spoiler-safe overview of what's brewing, by theme only\n" +
-      "/intensity low | medium | high — same as editing intensity above\n" +
-      "/rescan — force a full re-check of your Story Cards, Plot Essentials, and Author's Note\n" +
-      "/twists help — show this card";
+      "- Enable Twists and Turns: turns the whole twist half on or off.\n" +
+      "- Intensity: low / medium / high — how often twists build and land.\n" +
+      "- Strict logic only: twists only ever come from a tracked thread, never a wildcard.\n" +
+      "- Allow wildcard twists: occasional twist with no build-up.\n" +
+      "- Allow compound twists: two threads can resolve together as one.\n" +
+      "- Involve the player: twists may target you directly, not just NPCs.\n" +
+      "- Show resolved twists in the Twist Log: reveals them on the Twist Log card.\n" +
+      "- Minimum seed touches before payoff: reinforcement a thread needs before it's eligible.\n" +
+      "- Minimum turns before payoff: minimum age a thread must reach before it's eligible.\n" +
+      "- Turns between payoffs: cooldown between any two twists landing.\n" +
+      "- Established Facts cap: how many recent twists stay visible to the AI at once.\n" +
+      "- Theme bias: lean toward certain themes without overriding what the story's already established. Themes: " + CP_CLUSTER_NAMES.join(", ") + "\n\n" +
+      "Commands: /twist, /twist <name>, /plant <name> [category], /twistlog, /threads, /intensity <low|medium|high>, /rescan, /twists";
 
-    if (card) {
-      card.title = title;
-      card.type = "class";
-      card.description = notes;
-
-    }
+    card.description = spliceConfigSection(card.description, CONFIG_SECTION_TWIST, notes);
   }
 
   function updateThreadsOverview(c) {
@@ -1112,10 +1100,10 @@ var Library = (() => {
     CP_VERSION, CP_DEFAULTS, CP_CATEGORIES, CP_CATEGORY_KEYS, CP_TIER_MINOR, CP_TIER_MODERATE, CP_TIER_MAJOR, CP_TIER_CATACLYSMIC,
     CP_COMPOUND_CHANCE, CP_WILDCARD_CHANCE, CP_CLUSTER_NAMES, CP_CATEGORY_CLUSTERS, CP_CATEGORY_TO_CLUSTER,
     initState, getConfig, pacingFor, effectivePacing, extractCommand, nextId, findEntityInSentence, findKnownEntityInSentence, eligibleCardTitles,
-    splitSentences, findThread, createThread, tierFor, isEligible, priorTwistCountFor, scanForLooseThreads, scanStoryCardsForScenarioThreads,
+    splitSentences, findThread, findThreadFuzzy, createThread, tierFor, isEligible, priorTwistCountFor, scanForLooseThreads, scanStoryCardsForScenarioThreads,
     scanPlotEssentialsForThreads, scanAuthorsNoteForThreads, pickForeshadowThread, pickMostBuiltUpBrewingThread, pickPayoffThread, pickCompoundPayoffThreads, pickWildcardEntity,
-    foreshadowHint, payoffHint, compoundPayoffHint, safeSetCard, createTwistStoryCard, safeLog, applyConfigChange, applyEntryConfig,
-    updateCacheEfficiencyWarning, updateNudgeCard, updateConfigCard, updateTwistLogCard, updateThreadsOverview
+    foreshadowHint, payoffHint, compoundPayoffHint, safeSetCard, createTwistStoryCard, safeLog, applyEntryConfig,
+    updateCacheEfficiencyWarning, updateNudgeCard, updateConfigCard, updateTwistLogCard, updateThreadsOverview, reinforceFromCoreShift
   };
 })();
 
@@ -1293,18 +1281,35 @@ function initUnsaid() {
       turn: 0,
       pending: null,
       forcedPeek: null,
-      codex: { mentionCounts: {}, attempts: {}, pendingNames: [], pendingTypes: {}, consecutiveFailedNames: [] }
+      forcedPeekCore: null,
+      forcedCodex: null,
+      consecutiveRevealMisses: 0,
+      lastActionCount: -1,
+      codex: { mentionCounts: {}, attempts: {}, pendingNames: [], pendingTypes: {}, consecutiveFailedNames: [], lastTriggerTurn: 0 }
     };
   }
-  if (!state.unsaid.codex) {
-    state.unsaid.codex = { mentionCounts: {}, attempts: {}, pendingNames: [], pendingTypes: {}, consecutiveFailedNames: [] };
+  // Backfill every field below individually, not just on first creation —
+  // if state.unsaid already exists (e.g. continuing an adventure across
+  // script versions) but is missing one of these, code that indexes
+  // straight into it (state.unsaid.codex.attempts[name] = ...) throws,
+  // which the caller's try/catch swallows silently, killing UNSAID for
+  // that whole turn. Same failure class as the contingency-state hardening.
+  if (!state.unsaid.minds || typeof state.unsaid.minds !== "object") state.unsaid.minds = {};
+  if (typeof state.unsaid.turn !== "number") state.unsaid.turn = 0;
+  if (typeof state.unsaid.forcedPeekCore === "undefined") state.unsaid.forcedPeekCore = null;
+  if (typeof state.unsaid.forcedCodex === "undefined") state.unsaid.forcedCodex = null;
+  if (typeof state.unsaid.consecutiveRevealMisses !== "number") state.unsaid.consecutiveRevealMisses = 0;
+  if (!state.unsaid.codex || typeof state.unsaid.codex !== "object") {
+    state.unsaid.codex = { mentionCounts: {}, attempts: {}, pendingNames: [], pendingTypes: {}, consecutiveFailedNames: [], lastTriggerTurn: 0 };
   }
-  if (!state.unsaid.codex.mentionCounts) state.unsaid.codex.mentionCounts = {};
-  if (!state.unsaid.codex.pendingNames) state.unsaid.codex.pendingNames = [];
-  if (!state.unsaid.codex.pendingTypes) state.unsaid.codex.pendingTypes = {};
-  if (!state.unsaid.codex.consecutiveFailedNames) state.unsaid.codex.consecutiveFailedNames = [];
+  if (!state.unsaid.codex.mentionCounts || typeof state.unsaid.codex.mentionCounts !== "object") state.unsaid.codex.mentionCounts = {};
+  if (!state.unsaid.codex.attempts || typeof state.unsaid.codex.attempts !== "object") state.unsaid.codex.attempts = {};
+  if (!Array.isArray(state.unsaid.codex.pendingNames)) state.unsaid.codex.pendingNames = [];
+  if (!state.unsaid.codex.pendingTypes || typeof state.unsaid.codex.pendingTypes !== "object") state.unsaid.codex.pendingTypes = {};
+  if (!Array.isArray(state.unsaid.codex.consecutiveFailedNames)) state.unsaid.codex.consecutiveFailedNames = [];
+  if (typeof state.unsaid.codex.lastTriggerTurn !== "number") state.unsaid.codex.lastTriggerTurn = 0;
   if (typeof state.unsaid.lastActionCount !== "number") state.unsaid.lastActionCount = -1;
-  ensureConfigCard();
+  ensureSharedConfigCard();
 }
 
 function escapeForRegex(s) {
@@ -1317,6 +1322,18 @@ function escapeForRegex(s) {
 // (') and curly (\u2019) apostrophe, since models sometimes generate either.
 function stripPossessive(w) {
   return w.replace(/['\u2019](s|re|ve|ll|d|m)$/i, "").replace(/['\u2019]$/, "");
+}
+
+// Shared by both systems: identifies any of our own admin/status cards
+// (from either half) so neither system mistakes the other's scaffolding
+// for a real story entity or auto-adopts it as a character.
+function isOwnCard(title) {
+  return !!title && (
+    title.indexOf("Twists and Turns") === 0 ||
+    title.indexOf("Twist — ") === 0 ||
+    title.indexOf("UNSAID") === 0 ||
+    title.indexOf("UNSPOKEN TURNS") === 0
+  );
 }
 
 function pushMessage(msg) {
@@ -1373,213 +1390,66 @@ function findConfigCardTolerant(title, maxDistance) {
   return null;
 }
 
-function ensureConfigCard() {
-  let card = findConfigCardTolerant("UNSAID Config");
-  if (card && card.title !== "UNSAID Config") card.title = "UNSAID Config";
-  if (!card) {
-    card = createOrFindCard("unsaid config", " ", "Class");
-    if (!card) return null;
-    card.title = "UNSAID Config";
-    card.keys = "unsaid config";
-    card.type = "Class";
-    card.entry =
-      "-- General --\n" +
-      "> Enable UNSAID: true\n" +
-      "> Enable Codex: true\n" +
-      "-- Private Thoughts --\n" +
-      "> Chance of a thought per turn (0 to 1): 0.3\n" +
-      "> Turns before the same character can think again: 3\n" +
-      "> Ease off during your own Do/Say actions: true\n" +
-      "> Recent turns counted as \"active\": 3\n" +
-      "> Show private thoughts in the story text: false\n" +
-      "> Let hidden feelings subtly color actions: true\n" +
-      "> Store card notes as JSON: false\n" +
-      "-- Core Truth --\n" +
-      "> Allow major events to rewrite a core truth: true\n" +
-      "-- Codex --\n" +
-      "> Mentions needed before Codex creates a card: 3\n" +
-      "> Minimum turns between Codex cards: 5\n" +
-      "> Codex retries before giving up on a name: 5\n" +
-      "> Reset Codex tracking now: false\n" +
-      "> Player character (skip when Codexing): \n";
-    card.description =
-      "Commands (type as an action):\n" +
-      "- /unsaid status — writes a live status report to a separate \"UNSAID — Status\" card. Not sent to the AI.\n" +
-      "- /peek <character name> — force a private thought from that character right now.\n" +
-      "- /peek <character name> core — force a check for whether this moment has changed that character's core truth.\n" +
-      "- /card <character name> — force Codex to write or refresh that character's Story Card right now, skipping the mention count and cooldown.\n\n" +
-      "Pre-authoring a character's inner life: write \"💭 Inner Life — private, not visible to other characters\" followed by \"Core truth:\" and their established truth into a character's own Notes before their first reveal, and UNSAID will start from that instead of inventing one. Matches the same format this script writes when it syncs a reveal, so copying an existing character's Notes as a template works too.\n\n" +
-      "UNSAID Config — what each setting above does:\n" +
-      "- Enable UNSAID: master switch for the whole script (private thoughts and Codex together). False turns everything off.\n" +
-      "- Enable Codex: turns automatic Story Card generation on or off by itself. Turn this off to keep private thoughts working normally on your existing, hand-made cards without any new ones being generated.\n" +
-      "- Chance of a thought per turn: how likely (0 to 1) it is that an eligible, active character reveals a private thought on any given turn. Higher means more frequent reveals. (Reveals are already a little less likely during your own Do/Say actions, and a character's own core truth naturally takes a bit longer to shift than an ordinary mood, on a fixed pace behind the scenes.)\n" +
-      "- Turns before the same character can think again: a cooldown, in turns, before that same character is eligible for another thought — keeps one character from dominating.\n" +
-      "- Ease off during your own Do/Say actions: when true (default), a reveal is less likely to fire specifically on turns where you took a deliberate Do or Say action, so it doesn't compete for attention right when you've acted. Turns you didn't directly drive (Continue, Story) are unaffected either way.\n" +
-      "- Recent turns counted as \"active\": roughly how many recent turns get scanned for who's currently active and eligible for a reveal, sized generously since a single detailed turn can run to several thousand characters — raise it if characters feel like they drop out of relevance too fast in a slow-paced story, lower it to keep the cast tightly focused on only the very latest turn.\n" +
-      "- Show private thoughts in the story text: when false (default), a reveal never appears in your story — it's written straight to that character's own Story Card instead, so you look them up rather than having their private thoughts narrated at you. Set to true for the old behavior: an italicized line shown right in the story.\n" +
-      "- Let hidden feelings subtly color actions: when true (default), a character's hidden feeling is allowed to quietly show through in their body language and tone in the actual story — a tight smile, a held breath — without ever stating the feeling outright or giving away their private thought. Turn off for characters who should read as unreadable.\n" +
-      "- Store card notes as JSON: off by default — notes are written as plain, skimmable prose. Turn on to instead write the exact same data as structured JSON, if you specifically want it machine-parseable rather than easy to read at a glance.\n" +
-      "- Allow major events to rewrite a core truth: on by default. A genuinely major story event can replace a character's core truth, earned naturally through ordinary play (no commands needed) — their old core truth is kept on file rather than erased, and how long the current one has held is shown right on their card. Turn off if you want core truths to stay permanent instead.\n" +
-      "- Mentions needed before Codex creates a card: how many times a new name must appear before Codex writes a card for it, so background one-off names don't get cards of their own.\n" +
-      "- Minimum turns between Codex cards: how many turns must pass between one Codex card and the next, regardless of how many names qualify — keeps Codex from taking over several turns in a row.\n" +
-      "- Codex retries before giving up on a name: how many times Codex will try to get a properly formatted card out of the AI before giving up on that name for good. Raise this if cards are failing to complete.\n" +
-      "- Reset Codex tracking now: set to true and Codex will forget every failed attempt and cooldown timer, then flip this back to false on its own. Use this if cards seem stuck and not being made.\n" +
-      "- Player character (skip when Codexing): put your own character's name here if you don't want Codex writing an AI-authored profile for them. Leave blank to let Codex treat them like anyone else. In Multiplayer, everyone's character name is already skipped automatically.\n\n" +
-      "Add the names of characters who can have private thoughts below, one per line. Codex adds newly discovered characters here automatically.\n" +
-      CAST_LIST_MARKER + "\n" +
-      "Marcus\n" +
-      "Aria";
-  }
-  return card;
+// ---- Combined config card: shared by both systems ----
+// One Story Card holds both systems' settings, each in its own clearly
+// marked section. Every read/write is scoped to just one section via
+// extractConfigSection/spliceConfigSection, so neither system's settings
+// can ever be clobbered by the other's — even though they share one card.
+var CONFIG_CARD_TITLE = "UNSPOKEN TURNS — Config";
+var CONFIG_SECTION_TWIST = "== TWISTS AND TURNS ==";
+var CONFIG_SECTION_UNSAID = "== UNSAID ==";
+
+function extractConfigSection(fullText, marker) {
+  const clean = fullText || "";
+  const otherMarker = marker === CONFIG_SECTION_TWIST ? CONFIG_SECTION_UNSAID : CONFIG_SECTION_TWIST;
+  const idx = clean.indexOf(marker);
+  if (idx === -1) return "";
+  const otherIdx = clean.indexOf(otherMarker, idx + marker.length);
+  return otherIdx === -1 ? clean.slice(idx) : clean.slice(idx, otherIdx);
 }
 
-function readUnsaidConfig() {
-  const card = ensureConfigCard();
-  if (!card) return { ...UNSAID_DEFAULTS, cast: [] };
-  const preAuthoringNote = "Pre-authoring a character's inner life: write \"💭 Inner Life — private, not visible to other characters\" followed by \"Core truth:\" and their established truth into a character's own Notes before their first reveal, and UNSAID will start from that instead of inventing one. Matches the same format this script writes when it syncs a reveal, so copying an existing character's Notes as a template works too.";
-  if (!card.description.includes("Commands (type as an action):")) {
-    card.description =
-      "Commands (type as an action):\n" +
-      "- /unsaid status — writes a live status report to a separate \"UNSAID — Status\" card. Not sent to the AI.\n" +
-      "- /peek <character name> — force a private thought from that character right now.\n" +
-      "- /peek <character name> core — force a check for whether this moment has changed that character's core truth.\n" +
-      "- /card <character name> — force Codex to write or refresh that character's Story Card right now, skipping the mention count and cooldown.\n\n" +
-      preAuthoringNote + "\n\n" +
-      card.description;
-  } else if (!card.description.includes("Pre-authoring a character's inner life:")) {
-    const cardLine = "- /card <character name> — force Codex to write or refresh that character's Story Card right now, skipping the mention count and cooldown.";
-    card.description = card.description.includes(cardLine)
-      ? card.description.replace(cardLine, cardLine + "\n\n" + preAuthoringNote)
-      : preAuthoringNote + "\n\n" + card.description;
+function spliceConfigSection(fullText, marker, newSectionText) {
+  const otherMarker = marker === CONFIG_SECTION_TWIST ? CONFIG_SECTION_UNSAID : CONFIG_SECTION_TWIST;
+  const trimmedSection = newSectionText.replace(/\s+$/, "") + "\n";
+  const clean = (fullText || "").trim() ? fullText : "";
+  const idx = clean ? clean.indexOf(marker) : -1;
+  if (idx === -1) {
+    const base = clean ? clean.replace(/\s+$/, "") + "\n\n" : "";
+    return base + trimmedSection;
   }
-  const cfg = { ...UNSAID_DEFAULTS };
+  const otherIdx = clean.indexOf(otherMarker, idx + marker.length);
+  const before = clean.slice(0, idx);
+  const after = otherIdx === -1 ? "" : clean.slice(otherIdx);
+  return before + trimmedSection + (after ? "\n" + after : "");
+}
 
-  const enabledMatch = card.entry.match(/Enable UNSAID:\s*(true|false)/i);
-  if (enabledMatch) cfg.enabled = enabledMatch[1].toLowerCase() === "true";
-
-  const codexMatch = card.entry.match(/Enable Codex:\s*(true|false)/i);
-  if (codexMatch) cfg.codexEnabled = codexMatch[1].toLowerCase() === "true";
-
-  const showInStoryMatch = card.entry.match(/Show private thoughts in the story text:\s*(true|false)/i);
-  if (showInStoryMatch) cfg.showThoughtsInStory = showInStoryMatch[1].toLowerCase() === "true";
-
-  const subtleHintsMatch = card.entry.match(/subtly color actions:\s*(true|false)/i);
-  if (subtleHintsMatch) cfg.subtleHints = subtleHintsMatch[1].toLowerCase() === "true";
-
-  const jsonNotesMatch = card.entry.match(/Store card notes as JSON:\s*(true|false)/i);
-  if (jsonNotesMatch) cfg.jsonNotes = jsonNotesMatch[1].toLowerCase() === "true";
-
-  const coreShiftMatch = card.entry.match(/rewrite a core truth:\s*(true|false)/i);
-  if (coreShiftMatch) cfg.allowCoreShift = coreShiftMatch[1].toLowerCase() === "true";
-
-  const chanceMatch = card.entry.match(/thought per turn[^:]*:\s*([\d.]+)/i);
-  if (chanceMatch) {
-    const parsedChance = parseFloat(chanceMatch[1]);
-    if (!isNaN(parsedChance)) cfg.chance = Math.min(1, Math.max(0, parsedChance));
-  }
-
-  const cooldownMatch = card.entry.match(/think again:\s*(\d+)/i);
-  if (cooldownMatch) {
-    const parsedCooldown = parseInt(cooldownMatch[1], 10);
-    if (!isNaN(parsedCooldown)) cfg.cooldown = Math.max(0, parsedCooldown);
-  }
-
-  const reduceMatch = card.entry.match(/Ease off during your own Do\/Say actions:\s*(true|false)/i);
-  if (reduceMatch) cfg.reduceDuringActions = reduceMatch[1].toLowerCase() === "true";
-
-  const recentTurnsMatch = card.entry.match(/Recent turns counted as "active":\s*(\d+)/i);
-  if (recentTurnsMatch) {
-    const parsedRecentTurns = parseInt(recentTurnsMatch[1], 10);
-    if (!isNaN(parsedRecentTurns)) cfg.recentTurnsWindow = Math.max(1, parsedRecentTurns);
-  }
-
-  const mentionMatch = card.entry.match(/Mentions needed before Codex creates a card:\s*(\d+)/i);
-  if (mentionMatch) {
-    const parsedMentions = parseInt(mentionMatch[1], 10);
-    if (!isNaN(parsedMentions)) cfg.mentionThreshold = Math.max(0, parsedMentions);
-  }
-
-  const codexCooldownMatch = card.entry.match(/Minimum turns between Codex cards:\s*(\d+)/i);
-  if (codexCooldownMatch) {
-    const parsedCodexCooldown = parseInt(codexCooldownMatch[1], 10);
-    if (!isNaN(parsedCodexCooldown)) cfg.codexCooldown = Math.max(0, parsedCodexCooldown);
-  }
-
-  const codexAttemptsMatch = card.entry.match(/Codex retries before giving up on a name:\s*(\d+)/i);
-  if (codexAttemptsMatch) {
-    const parsedAttempts = parseInt(codexAttemptsMatch[1], 10);
-    if (!isNaN(parsedAttempts)) cfg.codexMaxAttempts = Math.max(1, parsedAttempts);
-  }
-
-  const resetMatch = card.entry.match(/Reset Codex tracking now:\s*(true|false)/i);
-  if (resetMatch && resetMatch[1].toLowerCase() === "true") {
-    state.unsaid.codex.attempts = {};
-    state.unsaid.codex.mentionCounts = {};
-    state.unsaid.codex.lastTriggerTurn = 0;
-  }
-
-  const playerMatch = card.entry.match(/Player character \(skip when Codexing\):[ \t]*(.*)/i);
-  if (playerMatch) cfg.playerName = playerMatch[1].trim();
-
-  // If nothing was typed into the config card, fall back to a name-like
-  // scenario placeholder answer (e.g. a Character Creator's "What is your
-  // character's name?" prompt) — saves a manual setup step, and a value
-  // typed into the config card always overrides this.
-  if (!cfg.playerName && typeof state !== "undefined" && Array.isArray(state.placeholders)) {
-    const nameAnswer = state.placeholders.find(p =>
-      p && typeof p.question === "string" && /\bname\b/i.test(p.question) &&
-      typeof p.answer === "string" && p.answer.trim()
-    );
-    if (nameAnswer) cfg.playerName = nameAnswer.answer.trim();
-  }
-
-  const markerIdx = card.description.indexOf(CAST_LIST_MARKER);
-  const castSection = markerIdx >= 0
-    ? card.description.slice(markerIdx + CAST_LIST_MARKER.length)
-    : card.description.split("\n").slice(1).join("\n");
-
-  cfg.cast = castSection
-    .split("\n")
-    .map(line => line.trim().replace(/^[-•*]\s*/, ""))
-    .filter(Boolean);
-
-  const knownLower = cfg.cast.map(n => n.toLowerCase());
-  let adopted = false;
-  let adoptedThisPass = 0;
-  storyCards.forEach(c => {
-    if (adoptedThisPass >= 20) return;
-    if (!c.title) return;
-
-    if (isCardOfKind(c, "location") || isCardOfKind(c, "faction") || isCardOfKind(c, "item") || isCardOfKind(c, "class")) return;
-    if (typeof CP_TWIST_CARD_TYPE !== "undefined" && isCardOfKind(c, CP_TWIST_CARD_TYPE)) return;
-    if (c.title.indexOf("Twists and Turns") === 0 || c.title.indexOf("Twist — ") === 0) return;
-    if (c.title === "UNSAID Config") return;
-    if (cfg.playerName && isSameCardEntity(c.title, cfg.playerName)) return;
-    if (cfg.cast.some(existing => isSameCardEntity(c.title, existing))) return;
-    cfg.cast.push(c.title);
-    knownLower.push(c.title.toLowerCase());
-    adopted = true;
-    adoptedThisPass++;
-  });
-  if (adopted) {
-    const alreadyListed = castSection.split("\n").map(l => l.trim());
-    const newlyAdopted = cfg.cast.filter(n => !alreadyListed.includes(n));
-    card.description += "\n" + newlyAdopted.join("\n");
-  }
-
-  if (cfg.playerName) {
-    const beforeCount = cfg.cast.length;
-    cfg.cast = cfg.cast.filter(n => !isSameCardEntity(n, cfg.playerName));
-    if (cfg.cast.length !== beforeCount) {
-      const markerIdx2 = card.description.indexOf(CAST_LIST_MARKER);
-      if (markerIdx2 !== -1) {
-        const head = card.description.slice(0, markerIdx2 + CAST_LIST_MARKER.length);
-        card.description = `${head}\n${cfg.cast.join("\n")}`;
-      }
+function removeStoryCardByTitle(title) {
+  try {
+    for (let i = 0; i < storyCards.length; i++) {
+      if (storyCards[i] && storyCards[i].title === title) { removeStoryCard(i); return true; }
     }
-  }
+  } catch (e) {}
+  return false;
+}
 
-  card.entry =
+function renderTwistSection(cfg) {
+  return CONFIG_SECTION_TWIST + "\n" +
+    `> Enable Twists and Turns: ${cfg.enabled}\n` +
+    `> Intensity (low/medium/high): ${cfg.intensity}\n` +
+    `> Strict logic only, no wildcard twists: ${cfg.strictLogic}\n` +
+    `> Allow wildcard twists: ${cfg.allowWildcard}\n` +
+    `> Allow compound twists: ${cfg.allowCompoundTwists}\n` +
+    `> Involve the player character in twists: ${cfg.involvePlayer}\n` +
+    `> Show resolved twists in the Twist Log: ${cfg.showTwistLog}\n` +
+    `> Minimum seed touches before a twist can pay off: ${cfg.minSeedsForPayoff}\n` +
+    `> Minimum turns before a twist can pay off: ${cfg.minTurnsForPayoff}\n` +
+    `> Turns to wait between twist payoffs: ${cfg.payoffCooldown}\n` +
+    `> How many resolved twists Established Facts keeps: ${cfg.establishedFactsCap}\n` +
+    `> Theme bias, comma-separated, blank for none: ${cfg.categoryBias || ""}\n`;
+}
+
+function renderUnsaidSection(cfg) {
+  return CONFIG_SECTION_UNSAID + "\n" +
     "-- General --\n" +
     `> Enable UNSAID: ${cfg.enabled}\n` +
     `> Enable Codex: ${cfg.codexEnabled}\n` +
@@ -1599,6 +1469,254 @@ function readUnsaidConfig() {
     `> Codex retries before giving up on a name: ${cfg.codexMaxAttempts}\n` +
     `> Reset Codex tracking now: false\n` +
     `> Player character (skip when Codexing): ${cfg.playerName}\n`;
+}
+
+var CONFIG_DEFAULT_UNSAID_NOTES_SECTION =
+  CONFIG_SECTION_UNSAID + "\n" +
+  "Commands (type as an action):\n" +
+  "- /unsaid status — writes a live status report to a separate \"UNSAID — Status\" card. Not sent to the AI.\n" +
+  "- /peek <character name> — force a private thought from that character right now.\n" +
+  "- /peek <character name> core — force a check for whether this moment has changed that character's core truth.\n" +
+  "- /card <character name> — force Codex to write or refresh that character's Story Card right now, skipping the mention count and cooldown.\n\n" +
+  "Pre-authoring a character's inner life: write \"💭 Inner Life — private, not visible to other characters\" followed by \"Core truth:\" and their established truth into a character's own Notes before their first reveal, and UNSAID will start from that instead of inventing one. Matches the same format this script writes when it syncs a reveal, so copying an existing character's Notes as a template works too.\n\n" +
+  "- Enable UNSAID: master switch for private thoughts + Codex together. False turns both off.\n" +
+  "- Enable Codex: auto-Story-Card generation on its own — turn off to keep private thoughts working on your existing hand-made cards without new ones appearing.\n" +
+  "- Chance of a thought per turn: how likely (0–1) an eligible, active character reveals a thought on a given turn.\n" +
+  "- Turns before the same character can think again: cooldown before that character is eligible again.\n" +
+  "- Ease off during your own Do/Say actions: reveals are a little less likely specifically on turns you directly acted.\n" +
+  "- Recent turns counted as \"active\": how many recent turns get scanned for who's currently eligible.\n" +
+  "- Show private thoughts in the story text: off by default — reveals go to the character's own card, not your story.\n" +
+  "- Let hidden feelings subtly color actions: lets a feeling show through tone/body language without stating it outright.\n" +
+  "- Store card notes as JSON: off = plain prose, on = the same data as structured JSON.\n" +
+  "- Allow major events to rewrite a core truth: on by default — old truths are kept on file, never erased.\n" +
+  "- Mentions needed before Codex creates a card: how many mentions before a new name gets carded.\n" +
+  "- Minimum turns between Codex cards: cooldown between one Codex card and the next.\n" +
+  "- Codex retries before giving up on a name: attempts before Codex gives up on that name for good.\n" +
+  "- Reset Codex tracking now: set true to clear failed attempts/cooldowns; flips back to false on its own.\n" +
+  "- Player character (skip when Codexing): your own name, so Codex skips writing a profile for you.\n\n" +
+  "Characters who can have private thoughts, one per line — Codex adds newly discovered ones automatically:\n" +
+  CAST_LIST_MARKER + "\n" +
+  "Marcus\n" +
+  "Aria";
+
+function ensureSharedConfigCard() {
+  let card = findConfigCardTolerant(CONFIG_CARD_TITLE);
+  if (card && card.title !== CONFIG_CARD_TITLE) card.title = CONFIG_CARD_TITLE;
+
+  if (!card) {
+    const oldTwistCard = findConfigCardTolerant("Twists and Turns Config");
+    const oldUnsaidCard = findConfigCardTolerant("UNSAID Config");
+    const migrating = !!(oldTwistCard || oldUnsaidCard);
+
+    // Twists and Turns' settings already persist independently in state, so
+    // they carry over automatically regardless of what any card ever said.
+    // UNSAID's settings live only on its own card, so if this adventure
+    // still has the old separate "UNSAID Config" card from before the
+    // merge, carry its current entry/notes over rather than resetting to
+    // defaults on upgrade.
+    const twistCfg = Object.assign({}, (typeof CP_DEFAULTS !== "undefined" ? CP_DEFAULTS : {}), (typeof state !== "undefined" && state.contingencyConfig) || {});
+    const twistSection = renderTwistSection(twistCfg);
+
+    const unsaidEntrySection = (oldUnsaidCard && oldUnsaidCard.entry && oldUnsaidCard.entry.trim())
+      ? CONFIG_SECTION_UNSAID + "\n" + oldUnsaidCard.entry.trim() + "\n"
+      : renderUnsaidSection(UNSAID_DEFAULTS);
+    const unsaidNotesSection = (oldUnsaidCard && oldUnsaidCard.description && oldUnsaidCard.description.trim())
+      ? CONFIG_SECTION_UNSAID + "\n" + oldUnsaidCard.description.trim()
+      : CONFIG_DEFAULT_UNSAID_NOTES_SECTION;
+
+    const initialEntry = twistSection.replace(/\s+$/, "") + "\n\n" + unsaidEntrySection;
+    const cardKeys = CONFIG_CARD_TITLE.toLowerCase();
+    try {
+      const idx = addStoryCard(cardKeys, initialEntry, "Class");
+      card = (typeof idx === "number" && storyCards[idx]) ? storyCards[idx] : null;
+    } catch (e) {}
+    if (!card) card = storyCards.find(sc => sc.keys === cardKeys) || null;
+    if (!card) {
+      for (let i = 0; i < storyCards.length; i++) {
+        if (storyCards[i] && storyCards[i].title === CONFIG_CARD_TITLE) { card = storyCards[i]; break; }
+      }
+    }
+    if (card) {
+      card.title = CONFIG_CARD_TITLE;
+      card.type = "Class";
+      if (!card.entry || !card.entry.trim()) card.entry = initialEntry;
+      if (!card.description || !card.description.trim()) card.description = unsaidNotesSection;
+      // fold in complete — the two old separate cards are now redundant
+      removeStoryCardByTitle("Twists and Turns Config");
+      removeStoryCardByTitle("UNSAID Config");
+      if (migrating && typeof pushMessage === "function") {
+        pushMessage(`⚙️ Your Twists and Turns and UNSAID config cards have been combined into one — check "${CONFIG_CARD_TITLE}". All your existing settings carried over.`);
+      }
+    }
+  }
+
+  if (card) {
+    if (card.entry.indexOf(CONFIG_SECTION_TWIST) === -1) {
+      card.entry = spliceConfigSection(card.entry, CONFIG_SECTION_TWIST, renderTwistSection(Object.assign({}, CP_DEFAULTS, (state.contingencyConfig || {}))));
+    }
+    if (card.entry.indexOf(CONFIG_SECTION_UNSAID) === -1) {
+      card.entry = spliceConfigSection(card.entry, CONFIG_SECTION_UNSAID, renderUnsaidSection(UNSAID_DEFAULTS));
+    }
+    if (card.description.indexOf(CONFIG_SECTION_UNSAID) === -1) {
+      card.description = spliceConfigSection(card.description, CONFIG_SECTION_UNSAID, CONFIG_DEFAULT_UNSAID_NOTES_SECTION);
+    }
+  }
+  return card;
+}
+
+function readUnsaidConfig() {
+  const card = ensureSharedConfigCard();
+  if (!card) return { ...UNSAID_DEFAULTS, cast: [] };
+
+  const preAuthoringNote = "Pre-authoring a character's inner life: write \"💭 Inner Life — private, not visible to other characters\" followed by \"Core truth:\" and their established truth into a character's own Notes before their first reveal, and UNSAID will start from that instead of inventing one. Matches the same format this script writes when it syncs a reveal, so copying an existing character's Notes as a template works too.";
+  let unsaidNotes = extractConfigSection(card.description, CONFIG_SECTION_UNSAID) || CONFIG_DEFAULT_UNSAID_NOTES_SECTION;
+  if (!unsaidNotes.includes("Commands (type as an action):")) {
+    unsaidNotes = CONFIG_SECTION_UNSAID + "\n" +
+      "Commands (type as an action):\n" +
+      "- /unsaid status — writes a live status report to a separate \"UNSAID — Status\" card. Not sent to the AI.\n" +
+      "- /peek <character name> — force a private thought from that character right now.\n" +
+      "- /peek <character name> core — force a check for whether this moment has changed that character's core truth.\n" +
+      "- /card <character name> — force Codex to write or refresh that character's Story Card right now, skipping the mention count and cooldown.\n\n" +
+      preAuthoringNote + "\n\n" +
+      unsaidNotes.replace(CONFIG_SECTION_UNSAID + "\n", "");
+  } else if (!unsaidNotes.includes("Pre-authoring a character's inner life:")) {
+    const cardLine = "- /card <character name> — force Codex to write or refresh that character's Story Card right now, skipping the mention count and cooldown.";
+    unsaidNotes = unsaidNotes.includes(cardLine)
+      ? unsaidNotes.replace(cardLine, cardLine + "\n\n" + preAuthoringNote)
+      : unsaidNotes.replace(CONFIG_SECTION_UNSAID + "\n", CONFIG_SECTION_UNSAID + "\n" + preAuthoringNote + "\n\n");
+  }
+  card.description = spliceConfigSection(card.description, CONFIG_SECTION_UNSAID, unsaidNotes);
+
+  const cfg = { ...UNSAID_DEFAULTS };
+  const entrySection = extractConfigSection(card.entry, CONFIG_SECTION_UNSAID);
+
+  const enabledMatch = entrySection.match(/Enable UNSAID:\s*(true|false)/i);
+  if (enabledMatch) cfg.enabled = enabledMatch[1].toLowerCase() === "true";
+
+  const codexMatch = entrySection.match(/Enable Codex:\s*(true|false)/i);
+  if (codexMatch) cfg.codexEnabled = codexMatch[1].toLowerCase() === "true";
+
+  const showInStoryMatch = entrySection.match(/Show private thoughts in the story text:\s*(true|false)/i);
+  if (showInStoryMatch) cfg.showThoughtsInStory = showInStoryMatch[1].toLowerCase() === "true";
+
+  const subtleHintsMatch = entrySection.match(/subtly color actions:\s*(true|false)/i);
+  if (subtleHintsMatch) cfg.subtleHints = subtleHintsMatch[1].toLowerCase() === "true";
+
+  const jsonNotesMatch = entrySection.match(/Store card notes as JSON:\s*(true|false)/i);
+  if (jsonNotesMatch) cfg.jsonNotes = jsonNotesMatch[1].toLowerCase() === "true";
+
+  const coreShiftMatch = entrySection.match(/rewrite a core truth:\s*(true|false)/i);
+  if (coreShiftMatch) cfg.allowCoreShift = coreShiftMatch[1].toLowerCase() === "true";
+
+  const chanceMatch = entrySection.match(/thought per turn[^:]*:\s*([\d.]+)/i);
+  if (chanceMatch) {
+    const parsedChance = parseFloat(chanceMatch[1]);
+    if (!isNaN(parsedChance)) cfg.chance = Math.min(1, Math.max(0, parsedChance));
+  }
+
+  const cooldownMatch = entrySection.match(/think again:\s*(\d+)/i);
+  if (cooldownMatch) {
+    const parsedCooldown = parseInt(cooldownMatch[1], 10);
+    if (!isNaN(parsedCooldown)) cfg.cooldown = Math.max(0, parsedCooldown);
+  }
+
+  const reduceMatch = entrySection.match(/Ease off during your own Do\/Say actions:\s*(true|false)/i);
+  if (reduceMatch) cfg.reduceDuringActions = reduceMatch[1].toLowerCase() === "true";
+
+  const recentTurnsMatch = entrySection.match(/Recent turns counted as "active":\s*(\d+)/i);
+  if (recentTurnsMatch) {
+    const parsedRecentTurns = parseInt(recentTurnsMatch[1], 10);
+    if (!isNaN(parsedRecentTurns)) cfg.recentTurnsWindow = Math.max(1, parsedRecentTurns);
+  }
+
+  const mentionMatch = entrySection.match(/Mentions needed before Codex creates a card:\s*(\d+)/i);
+  if (mentionMatch) {
+    const parsedMentions = parseInt(mentionMatch[1], 10);
+    if (!isNaN(parsedMentions)) cfg.mentionThreshold = Math.max(0, parsedMentions);
+  }
+
+  const codexCooldownMatch = entrySection.match(/Minimum turns between Codex cards:\s*(\d+)/i);
+  if (codexCooldownMatch) {
+    const parsedCodexCooldown = parseInt(codexCooldownMatch[1], 10);
+    if (!isNaN(parsedCodexCooldown)) cfg.codexCooldown = Math.max(0, parsedCodexCooldown);
+  }
+
+  const codexAttemptsMatch = entrySection.match(/Codex retries before giving up on a name:\s*(\d+)/i);
+  if (codexAttemptsMatch) {
+    const parsedAttempts = parseInt(codexAttemptsMatch[1], 10);
+    if (!isNaN(parsedAttempts)) cfg.codexMaxAttempts = Math.max(1, parsedAttempts);
+  }
+
+  const resetMatch = entrySection.match(/Reset Codex tracking now:\s*(true|false)/i);
+  if (resetMatch && resetMatch[1].toLowerCase() === "true") {
+    state.unsaid.codex.attempts = {};
+    state.unsaid.codex.mentionCounts = {};
+    state.unsaid.codex.lastTriggerTurn = 0;
+  }
+
+  const playerMatch = entrySection.match(/Player character \(skip when Codexing\):[ \t]*(.*)/i);
+  if (playerMatch) cfg.playerName = playerMatch[1].trim();
+
+  // If nothing was typed into the config card, fall back to a name-like
+  // scenario placeholder answer (e.g. a Character Creator's "What is your
+  // character's name?" prompt) — saves a manual setup step, and a value
+  // typed into the config card always overrides this.
+  if (!cfg.playerName && typeof state !== "undefined" && Array.isArray(state.placeholders)) {
+    const nameAnswer = state.placeholders.find(p =>
+      p && typeof p.question === "string" && /\bname\b/i.test(p.question) &&
+      typeof p.answer === "string" && p.answer.trim()
+    );
+    if (nameAnswer) cfg.playerName = nameAnswer.answer.trim();
+  }
+
+  const markerIdx = unsaidNotes.indexOf(CAST_LIST_MARKER);
+  const castSection = markerIdx >= 0 ? unsaidNotes.slice(markerIdx + CAST_LIST_MARKER.length) : "";
+
+  cfg.cast = castSection
+    .split("\n")
+    .map(line => line.trim().replace(/^[-•*]\s*/, ""))
+    .filter(Boolean);
+
+  const knownLower = cfg.cast.map(n => n.toLowerCase());
+  let adopted = false;
+  let adoptedThisPass = 0;
+  storyCards.forEach(c => {
+    if (adoptedThisPass >= 20) return;
+    if (!c.title) return;
+
+    if (isCardOfKind(c, "location") || isCardOfKind(c, "faction") || isCardOfKind(c, "item") || isCardOfKind(c, "class")) return;
+    if (typeof CP_TWIST_CARD_TYPE !== "undefined" && isCardOfKind(c, CP_TWIST_CARD_TYPE)) return;
+    if (isOwnCard(c.title)) return;
+    if (cfg.playerName && isSameCardEntity(c.title, cfg.playerName)) return;
+    if (cfg.cast.some(existing => isSameCardEntity(c.title, existing))) return;
+    cfg.cast.push(c.title);
+    knownLower.push(c.title.toLowerCase());
+    adopted = true;
+    adoptedThisPass++;
+  });
+  if (adopted) {
+    const alreadyListed = castSection.split("\n").map(l => l.trim());
+    const newlyAdopted = cfg.cast.filter(n => !alreadyListed.includes(n));
+    // trim first: the extracted section may already carry a trailing
+    // newline left by the previous splice, and blindly appending another
+    // would compound one extra blank line per adoption event over time
+    unsaidNotes = unsaidNotes.replace(/\s+$/, "") + "\n" + newlyAdopted.join("\n");
+  }
+
+  if (cfg.playerName) {
+    const beforeCount = cfg.cast.length;
+    cfg.cast = cfg.cast.filter(n => !isSameCardEntity(n, cfg.playerName));
+    if (cfg.cast.length !== beforeCount) {
+      const markerIdx2 = unsaidNotes.indexOf(CAST_LIST_MARKER);
+      if (markerIdx2 !== -1) {
+        const head = unsaidNotes.slice(0, markerIdx2 + CAST_LIST_MARKER.length);
+        unsaidNotes = `${head}\n${cfg.cast.join("\n")}`;
+      }
+    }
+  }
+
+  card.description = spliceConfigSection(card.description, CONFIG_SECTION_UNSAID, unsaidNotes);
+  card.entry = spliceConfigSection(card.entry, CONFIG_SECTION_UNSAID, renderUnsaidSection(cfg));
 
   return cfg;
 }
@@ -1606,10 +1724,15 @@ function readUnsaidConfig() {
 function stripConfigNoise(text) {
   let cleaned = text;
   storyCards
-    .filter(c => isCardOfKind(c, "class") && c.title && c.title.indexOf("UNSAID") === 0)
+    .filter(c => isCardOfKind(c, "class") && isOwnCard(c.title))
     .forEach(card => {
-      if (card.entry) cleaned = cleaned.split(card.entry).join("");
-      if (card.description) cleaned = cleaned.split(card.description).join("");
+      // Guard against stripping on trivially short content — several of our
+      // own cards deliberately use a single-space entry (e.g. the Twist Log,
+      // kept out of AI context on purpose). Splitting on " " itself would
+      // strip every space out of the whole text, which is exactly what was
+      // happening here. Only strip substantial, genuinely-our-own content.
+      if (card.entry && card.entry.trim().length > 10) cleaned = cleaned.split(card.entry).join("");
+      if (card.description && card.description.trim().length > 10) cleaned = cleaned.split(card.description).join("");
     });
   return cleaned;
 }

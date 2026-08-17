@@ -25,7 +25,6 @@ var twistsModifier = (text) => {
           compoundWith: partner ? partner.entity : null
         });
         Library.createTwistStoryCard(c, cfg, thread, partner ? partner.entity : null);
-        if (typeof linkTwistPayoffToReveal === "function") linkTwistPayoffToReveal(thread.entity, thread.tier);
       }
       if (partner) {
         partner.status = "resolved";
@@ -40,6 +39,19 @@ var twistsModifier = (text) => {
           compoundWith: thread ? thread.entity : null
         });
         Library.createTwistStoryCard(c, cfg, partner, thread ? thread.entity : null);
+      }
+
+      // Prime a private-thought check for whichever character just had a
+      // twist land on them. For a compound twist (both resolve together),
+      // pick one at random rather than always favoring `thread` — forcedPeek
+      // only has room for one character next turn, so a fixed preference
+      // would mean the partner entity never benefits from this.
+      if (typeof linkTwistPayoffToReveal === "function") {
+        const linkCandidates = [thread, partner].filter(Boolean);
+        if (linkCandidates.length > 0) {
+          const chosen = linkCandidates[Math.floor(Math.random() * linkCandidates.length)];
+          linkTwistPayoffToReveal(chosen.entity, chosen.tier);
+        }
       }
 
       c.threads = c.threads.filter(t => t.status !== "resolved");
@@ -124,9 +136,16 @@ var unsaidModifier = (text) => {
         forgetMentionTracking(name);
 
         if (type === "character") {
-          const configCard = ensureConfigCard();
-          if (configCard && !configCard.description.includes(name)) {
-            configCard.description += `\n${name}`;
+          const configCard = ensureSharedConfigCard();
+          if (configCard) {
+            const unsaidNotes = extractConfigSection(configCard.description, CONFIG_SECTION_UNSAID);
+            if (unsaidNotes && !unsaidNotes.includes(name)) {
+              const markerIdx = unsaidNotes.indexOf(CAST_LIST_MARKER);
+              const updatedNotes = markerIdx !== -1
+                ? unsaidNotes.replace(/\s+$/, "") + `\n${name}`
+                : unsaidNotes;
+              configCard.description = spliceConfigSection(configCard.description, CONFIG_SECTION_UNSAID, updatedNotes);
+            }
           }
           syncMindToCard(name, cfg.allowCoreShift, cfg.jsonNotes);
         }
@@ -295,6 +314,14 @@ var unsaidModifier = (text) => {
           mind.coreSetTurn = state.unsaid.turn;
           mind.tensionLevel = 0;
           justShifted = true;
+          // Feed this back into the twist half: a character's fundamental
+          // self just genuinely changed, which is exactly the kind of thing
+          // a twist thread should build on — never the private content
+          // itself, just the fact that it happened and to whom.
+          try {
+            const { c: tc, cfg: tcfg } = Library.initState();
+            Library.reinforceFromCoreShift(tc, tcfg, name);
+          } catch (e) {}
         } else if (!mind.core && !about) {
           mind.core = thought;
           mind.coreSetTurn = state.unsaid.turn;

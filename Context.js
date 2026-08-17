@@ -41,7 +41,7 @@ var twistsModifier = (text) => {
     // below it — those are guaranteed to run every turn regardless.
     try {
     if (c.forcePlant) {
-      const existing = Library.findThread(c, c.forcePlant.entity, c.forcePlant.category);
+      const existing = Library.findThreadFuzzy(c, c.forcePlant.entity);
       if (!existing) Library.createThread(c, c.forcePlant.entity, c.forcePlant.category, c.turn, cfg);
       c.forcePlant = null;
     }

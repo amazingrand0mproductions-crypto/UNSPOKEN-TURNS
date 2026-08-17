@@ -16,7 +16,11 @@ var twistsModifier = (text) => {
       if (head === "twist") {
         const name = parts.slice(1).join(" ").trim();
         if (name) {
-          let thread = c.threads.find(t => t.entity.toLowerCase() === name.toLowerCase());
+          // fuzzy match, same as every other name lookup in the project —
+          // otherwise "/twist Sera" wouldn't find an existing thread already
+          // tracked under the fuller "Sera Walker" and would spawn a
+          // confusing duplicate instead of paying off the real one
+          let thread = c.threads.find(t => isSameCardEntity(t.entity, name));
           if (!thread) {
             thread = Library.createThread(c, name, null, c.turn - cfg.minTurnsForPayoff, cfg);
           }
@@ -78,7 +82,7 @@ var twistsModifier = (text) => {
         text = "(A quiet moment passes.)";
       } else if (head === "twists" || head === "twisthelp") {
         Library.updateConfigCard(cfg, c);
-        pushMessage("📖 Config card refreshed — check \"Twists and Turns Config\" for settings and commands.");
+        pushMessage("📖 Config card refreshed — check \"UNSPOKEN TURNS — Config\" for settings and commands.");
         text = "(A quiet moment passes.)";
       } else {}
     }
@@ -103,8 +107,8 @@ var unsaidModifier = (text) => {
         card.title = "UNSAID — Status";
         card.keys = "unsaid status";
         card.type = "Class";
-        card.entry = report;
-        card.description = "Regenerated fresh each time you type \"/unsaid status\" as an action. Not sent to the AI.";
+        card.entry = " ";
+        card.description = "Regenerated fresh each time you type \"/unsaid status\" as an action. Not sent to the AI.\n\n" + report;
         pushMessage("📋 Status written — check the \"UNSAID — Status\" card.");
       } else {
         pushMessage("📋 Couldn't write the status card this turn — try again in a moment.");
