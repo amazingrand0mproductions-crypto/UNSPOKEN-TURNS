@@ -858,15 +858,15 @@ var Library = (() => {
         if (storyCards[i].title === title) { card = storyCards[i]; break; }
       }
       if (!card) {
-        const beforeLen = storyCards.length;
-        addStoryCard(title.toLowerCase(), entry, type, title, notes);
-        if (storyCards.length > beforeLen) {
-          card = storyCards[storyCards.length - 1];
-        } else {
-          for (let i = 0; i < storyCards.length; i++) {
-            if (storyCards[i] && storyCards[i].title === title) { card = storyCards[i]; break; }
-          }
-        }
+        // addStoryCard returns the new card's index, or false if a card
+        // with these exact keys already exists — use that directly instead
+        // of guessing from array length, which silently found nothing when
+        // a same-keys card existed under a different title.
+        const cardKeys = title.toLowerCase();
+        const idx = addStoryCard(cardKeys, entry, type);
+        card = (typeof idx === "number" && storyCards[idx])
+          ? storyCards[idx]
+          : storyCards.find(c => c.keys === cardKeys) || null;
       }
       if (card) {
         card.title = title;
@@ -1015,9 +1015,12 @@ var Library = (() => {
     if (card && card.title !== title) card.title = title;
 
     if (!card) {
-      const beforeLen = storyCards.length;
-      try { addStoryCard(title.toLowerCase(), CP_CONFIG_ENTRY_TEMPLATE, "class", title, ""); } catch (e) {}
-      card = storyCards.length > beforeLen ? storyCards[storyCards.length - 1] : findCardByTitle(title);
+      const cardKeys = title.toLowerCase();
+      try {
+        const idx = addStoryCard(cardKeys, CP_CONFIG_ENTRY_TEMPLATE, "class");
+        card = (typeof idx === "number" && storyCards[idx]) ? storyCards[idx] : null;
+      } catch (e) {}
+      if (!card) card = storyCards.find(c => c.keys === cardKeys) || findCardByTitle(title);
     }
 
     const brewing = c ? c.threads.filter(t => t.status === "brewing").length : 0;
@@ -1327,12 +1330,8 @@ function nameAppears(name, text) {
 
 function createOrFindCard(keys, initialEntry, type) {
   try {
-    const beforeLen = storyCards.length;
-    addStoryCard(keys, initialEntry, type);
-    if (storyCards.length > beforeLen) {
-      const card = storyCards[storyCards.length - 1];
-      if (card) return card;
-    }
+    const idx = addStoryCard(keys, initialEntry, type);
+    if (typeof idx === "number" && storyCards[idx]) return storyCards[idx];
     return storyCards.find(c => c.keys === keys) || null;
   } catch (e) {
     return storyCards.find(c => c.keys === keys) || null;
@@ -1521,6 +1520,18 @@ function readUnsaidConfig() {
 
   const playerMatch = card.entry.match(/Player character \(skip when Codexing\):[ \t]*(.*)/i);
   if (playerMatch) cfg.playerName = playerMatch[1].trim();
+
+  // If nothing was typed into the config card, fall back to a name-like
+  // scenario placeholder answer (e.g. a Character Creator's "What is your
+  // character's name?" prompt) — saves a manual setup step, and a value
+  // typed into the config card always overrides this.
+  if (!cfg.playerName && typeof state !== "undefined" && Array.isArray(state.placeholders)) {
+    const nameAnswer = state.placeholders.find(p =>
+      p && typeof p.question === "string" && /\bname\b/i.test(p.question) &&
+      typeof p.answer === "string" && p.answer.trim()
+    );
+    if (nameAnswer) cfg.playerName = nameAnswer.answer.trim();
+  }
 
   const markerIdx = card.description.indexOf(CAST_LIST_MARKER);
   const castSection = markerIdx >= 0
