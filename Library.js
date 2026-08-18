@@ -397,7 +397,7 @@ var CP_STOPWORDS = new Set([
   "Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday",
   "January","February","March","April","June","July","August",
   "September","October","November","December"
-]);
+].map(w => w.toLowerCase()));
 
 var Library = (() => {
   function initState() {
@@ -506,14 +506,14 @@ var Library = (() => {
       if (i + 1 < matches.length) {
         const next = stripPossessive(matches[i + 1][0]);
         const gap = sentence.slice(matches[i].index + matches[i][0].length, matches[i + 1].index);
-        if (!CP_STOPWORDS.has(next) && next.length > 1 && /^\s?$/.test(gap)) {
+        if (!CP_STOPWORDS.has(next.toLowerCase()) && next.length > 1 && /^\s?$/.test(gap)) {
           return w + " " + next;
         }
       }
       if (i - 1 >= 0) {
         const prev = stripPossessive(matches[i - 1][0]);
         const gap = sentence.slice(matches[i - 1].index + matches[i - 1][0].length, matches[i].index);
-        if (!CP_STOPWORDS.has(prev) && prev.length > 1 && /^\s?$/.test(gap)) {
+        if (!CP_STOPWORDS.has(prev.toLowerCase()) && prev.length > 1 && /^\s?$/.test(gap)) {
           return prev + " " + w;
         }
         if (typeof SENTENCE_ABBREVIATIONS !== "undefined" && SENTENCE_ABBREVIATIONS.has(prev) && /^\.\s?$/.test(gap)) {
@@ -526,9 +526,9 @@ var Library = (() => {
     const tryFrom = (startIndex) => {
       for (let i = startIndex; i < matches.length; i++) {
         const w = stripPossessive(matches[i][0]);
-        if (CP_STOPWORDS.has(w) || w.length <= 1) continue;
+        if (CP_STOPWORDS.has(w.toLowerCase()) || w.length <= 1) continue;
         const result = bridge(i);
-        if (result.indexOf(" ") === -1 && typeof CODEX_TITLE_WORDS !== "undefined" && CODEX_TITLE_WORDS.has(result)) continue;
+        if (result.indexOf(" ") === -1 && typeof CODEX_TITLE_WORDS !== "undefined" && CODEX_TITLE_WORDS.has(result.toLowerCase())) continue;
         return result;
       }
       return null;
@@ -1150,19 +1150,19 @@ var CODEX_STOPWORDS = new Set([
   "Before", "After", "Once", "Just", "Even", "Also", "Instead",
   "Indeed", "Certainly", "Clearly", "Obviously", "Surely",
   "Sometimes", "Always", "Never", "Really", "Actually", "Honestly",
-  "Wait", "Look", "Listen", "Right", "Alright", "Hey", "Huh", "Hmm", "Ah",
+  "Wait", "Look", "Listen", "Right", "Alright", "Hey", "Hi", "Huh", "Hmm", "Ah", "Heh",
   "Easy", "Careful", "Steady", "Quiet", "Patience", "Hush", "Stop",
   "Freeze", "Move", "Run", "Go", "Come", "Stay", "Help", "Please",
-  "Sorry", "Thanks", "Fine", "Sure", "Great", "Good", "Bad", "Nice",
+  "Sorry", "Thanks", "Fine", "Sure", "Great", "Good", "Bad", "Nice", "Bold",
   "Your", "My", "His", "Her", "Its", "Our", "Their", "These", "Those",
   "Some", "Any", "All", "Each", "Every", "Nothing", "Something", "Anything",
-  "Turn", "Chapter", "Part", "Scene", "Day", "Night", "Morning",
+  "One", "Turn", "Chapter", "Part", "Scene", "Day", "Night", "Morning",
   "Evening", "Afternoon", "Time", "Silence", "Darkness", "Light",
-  "Fate", "Death", "Life", "Space", "Everything",
+  "Fate", "Death", "Life", "Space", "Everything", "Damn", "Greetings",
 
   "Rain", "Snow", "Fog", "Mist", "Frost", "Thunder", "Lightning", "Wind",
   "Storm", "Dawn", "Dusk", "Twilight", "Midnight", "Noon", "Sunrise", "Sunset",
-  "Not", "Nor", "Only", "Too", "Off", "Out", "Up", "Down", "Away",
+  "Not", "Nor", "Only", "Too", "Off", "Out", "Up", "Down", "Away", "Of", "From",
   "Above", "Below", "Under", "Over", "Between", "Among", "Within",
   "Without", "Behind", "Beside", "Beyond", "Around", "About", "Against",
   "Toward", "Towards", "Upon", "Onto", "Into", "Along", "Across",
@@ -1184,8 +1184,19 @@ var CODEX_STOPWORDS = new Set([
   "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
   "Saturday",
   "January", "February", "March", "April", "June", "July", "August",
-  "September", "October", "November", "December"
-]);
+  "September", "October", "November", "December",
+
+  // Contractions now get captured as one token by the apostrophe-aware name
+  // regex (needed for real names like O'Brien) — without these, common
+  // dialogue contractions get tracked as if they were name candidates.
+  "Don't", "Won't", "Can't", "Isn't", "Wasn't", "Wouldn't", "Couldn't",
+  "Shouldn't", "Didn't", "Doesn't", "Aren't", "Weren't", "Hasn't",
+  "Haven't", "Hadn't", "I'm", "I'll", "I've", "I'd", "You're", "You'll",
+  "You've", "You'd", "He's", "He'll", "He'd", "She's", "She'll", "She'd",
+  "It's", "It'll", "That's", "That'll", "There's", "There'll", "Here's",
+  "What's", "What'll", "Let's", "We're", "We'll", "We've", "We'd",
+  "They're", "They'll", "They've", "They'd", "Who's", "Who'll"
+].map(w => w.toLowerCase()));
 
 var CODEX_LOCATION_HINTS = /\b(city|state|street|avenue|canyon|terminal|park|building|tower|island|country|nation|kingdom|realm|district|region|planet|world|base|facility|academy|university|bridge|river|mountain|forest|desert|battleground|warzone|hall|tavern|inn|castle|fortress|temple|level|sector|wing|chamber|vault|bay|deck|outpost|colony|settlement|village|town|hamlet|station|harbor|wharf)\b/i;
 var CODEX_LOCATION_SUFFIX_HINTS = /(tower|keep|hold|spire|haven|hollow|reach|scraper)/i;
@@ -1204,7 +1215,7 @@ var CODEX_TITLE_WORDS = new Set([
   "Justice", "Mayor", "Chancellor", "Agent", "Officer", "Detective",
   "Sheriff", "Marshal", "Warden", "Overlord", "Warlord", "Elder",
   "Guardian", "Knight", "Priest", "Priestess"
-]);
+].map(w => w.toLowerCase()));
 
 var SENTENCE_ABBREVIATIONS = new Set([
   "Dr", "Mr", "Mrs", "Ms", "Prof", "St", "Jr", "Sr", "Capt", "Gen",
@@ -1684,8 +1695,19 @@ function readUnsaidConfig() {
     if (adoptedThisPass >= 20) return;
     if (!c.title) return;
 
-    if (isCardOfKind(c, "location") || isCardOfKind(c, "faction") || isCardOfKind(c, "item") || isCardOfKind(c, "class")) return;
-    if (typeof CP_TWIST_CARD_TYPE !== "undefined" && isCardOfKind(c, CP_TWIST_CARD_TYPE)) return;
+    // Opt-IN on type, not opt-out: only adopt a card whose type is blank
+    // (common for casually-made character cards) or literally "character"
+    // in any casing. Enumerating known non-character types (location,
+    // faction, item, class, and whatever else) can never keep up with
+    // scenarios that use their own rich custom typing — a real game
+    // observed via user report had "Business", "Restaurant", "Vehicle",
+    // "Clothing", "Animal Spirit" card types, none of which matched the
+    // old exclusion list, so a fried chicken restaurant and a 1965 Mustang
+    // ended up in the cast getting private thoughts generated for them.
+    // A card explicitly typed as anything other than blank/"character" is
+    // a clear, deliberate signal from the player that it isn't a person.
+    const rawType = (c.type || "").trim().toLowerCase();
+    if (rawType && rawType !== "character") return;
     if (isOwnCard(c.title)) return;
     if (cfg.playerName && isSameCardEntity(c.title, cfg.playerName)) return;
     if (cfg.cast.some(existing => isSameCardEntity(c.title, existing))) return;
@@ -1755,12 +1777,21 @@ function trackMentions(text) {
     // both plainly and possessively is tracked/carded as one entity, not two
     let name = stripPossessive(raw.trim());
     let words = name.split(" ");
-    while (words.length > 1 && CODEX_STOPWORDS.has(words[0])) {
+    // normalize curly apostrophes to straight before stopword lookups —
+    // otherwise "Won't" (curly ’) wouldn't match the stopword list's "won't"
+    // (straight ') even though they're the same contraction
+    const stopKey = (w) => w.toLowerCase().replace(/\u2019/g, "'");
+    while (words.length > 1 && CODEX_STOPWORDS.has(stopKey(words[0]))) {
       words = words.slice(1);
       name = words.join(" ");
     }
-    if (words.length === 1 && CODEX_STOPWORDS.has(words[0])) return;
-    if (words.length === 1 && CODEX_TITLE_WORDS.has(name)) return;
+    if (words.length === 1 && CODEX_STOPWORDS.has(stopKey(words[0]))) return;
+    if (words.length === 1 && CODEX_TITLE_WORDS.has(stopKey(name))) return;
+    // A short, fully-uppercase single word (SUV, USB, VIP) reads as an
+    // acronym or abbreviation almost every time — essentially never a
+    // proper name actually written that way — so skip tracking it rather
+    // than let it compete with real names for Codex's attention.
+    if (words.length === 1 && name.length <= 5 && name === name.toUpperCase() && /[A-Z]{2,}/.test(name)) return;
     state.unsaid.codex.mentionCounts[name] = (state.unsaid.codex.mentionCounts[name] || 0) + 1;
   });
   pruneMentionCounts();
@@ -1906,10 +1937,18 @@ function buildStatusReport(cfg) {
   const attempts = state.unsaid.codex.attempts;
   const tracked = Object.keys(counts);
   const exhausted = tracked.filter(n => (attempts[n] || 0) >= cfg.codexMaxAttempts);
-  const eligible = tracked.filter(n => counts[n] > cfg.mentionThreshold && !exhausted.includes(n));
-  lines.push(`\nCodex mention-tracking: ${tracked.length} name(s) tracked, ${eligible.length} genuinely eligible now (above the mention threshold of ${cfg.mentionThreshold}, not yet exhausted)`);
+  // Matches findCodexCandidates' real exclusions exactly (mention threshold,
+  // not exhausted, AND not already carded) — otherwise this list misleads:
+  // a name with an existing Story Card would show as "eligible" here even
+  // though the actual candidate-picker already correctly skips it.
+  const alreadyCarded = tracked.filter(n => storyCards.some(c => isSameCardEntity(c.title, n)));
+  const eligible = tracked.filter(n => counts[n] > cfg.mentionThreshold && !exhausted.includes(n) && !alreadyCarded.includes(n));
+  lines.push(`\nCodex mention-tracking: ${tracked.length} name(s) tracked, ${eligible.length} genuinely eligible now (above the mention threshold of ${cfg.mentionThreshold}, not yet exhausted, not already carded)`);
   if (eligible.length > 0) {
     lines.push(`  eligible now: ${eligible.slice(0, 10).map(n => `${n} (${counts[n]}x)`).join(", ")}${eligible.length > 10 ? ", ..." : ""}`);
+  }
+  if (alreadyCarded.length > 0) {
+    lines.push(`  already have a Story Card, correctly skipped: ${alreadyCarded.slice(0, 10).join(", ")}${alreadyCarded.length > 10 ? ", ..." : ""}`);
   }
   if (exhausted.length > 0) {
     lines.push(`  gave up after ${cfg.codexMaxAttempts} attempts: ${exhausted.join(", ")} — "Reset Codex tracking now" to retry`);
