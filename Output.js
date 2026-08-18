@@ -101,9 +101,29 @@ var unsaidModifier = (text) => {
         });
         if (!fields["Name"]) return false;
 
-        if (fields["Location"] || fields["Key Locations"]) type = "location";
-        else if (fields["Properties"] || fields["Origin"]) type = "item";
-        else if (fields["Type"] && !fields["Race"] && !fields["Personality"] && !fields["Background"] && type === "character") {
+        // Weigh the actual evidence rather than flipping the whole
+        // classification on one field's mere presence. A real transcript
+        // showed exactly the failure mode this guards against: "Ella" (a
+        // sixteen-year-old girl with a dagger and journal) got reclassified
+        // as a location purely because the model's response happened to
+        // include a "Location: Saltmarsh Quay" field — noting where she
+        // was introduced, not what she is — while the actual content was
+        // unmistakably about a person and no other location-shaped field
+        // was present.
+        const characterFieldCount = ["Race", "Strength Level", "Personality", "Background", "Appearance", "Abilities", "Weaknesses", "Relationships"].filter(f => fields[f]).length;
+        const locationFieldCount = ["Location", "Key Locations", "Historical Events"].filter(f => fields[f]).length;
+        const itemFieldCount = ["Properties", "Origin"].filter(f => fields[f]).length;
+        const personSignal = /\b(girl|boy|woman|man|lady|gentleman|teenager|teen|child|kid|elderly|toddler|infant|maiden|youth)\b|\byears?[\s-]old\b/i;
+        const readsLikeAPerson = [fields["Description"], fields["Background"], fields["Personality"], fields["Appearance"]]
+          .some(text => text && personSignal.test(text));
+
+        if (readsLikeAPerson) {
+          type = "character";
+        } else if (locationFieldCount > characterFieldCount) {
+          type = "location";
+        } else if (itemFieldCount > characterFieldCount) {
+          type = "item";
+        } else if (fields["Type"] && !fields["Race"] && !fields["Personality"] && !fields["Background"] && type === "character") {
           type = "faction";
         }
 
