@@ -1201,9 +1201,16 @@ var CODEX_STOPWORDS = new Set([
 var CODEX_LOCATION_HINTS = /\b(city|state|street|avenue|canyon|terminal|park|building|tower|island|country|nation|kingdom|realm|district|region|planet|world|base|facility|academy|university|bridge|river|mountain|forest|desert|battleground|warzone|hall|tavern|inn|castle|fortress|temple|level|sector|wing|chamber|vault|bay|deck|outpost|colony|settlement|village|town|hamlet|station|harbor|wharf)\b/i;
 var CODEX_LOCATION_SUFFIX_HINTS = /(tower|keep|hold|spire|haven|hollow|reach|scraper)/i;
 
-var CODEX_FACTION_HINTS = /\b(order|guild|alliance|empire|faction|clan|brotherhood|council|syndicate|coalition|army|legion|cult|society|corporation|company|initiative|division|agency|federation|dynasty|tribe|vanguard|battalion|regiment|squad|cabal|circle|sect|resistance|movement|militia|garrison)\b/i;
+// "Faction" doubles as the best fit for any organization — guild-and-empire
+// fantasy terms, but also modern businesses, restaurants, and services,
+// none of which fit "location" or "item" well. A real game's Story Cards
+// (custom-typed "Business", "Restaurant", "Social Media") showed this gap
+// directly: none of the fantasy-only terms below matched "Thorne
+// Industries" or "Dragon's Breath Fried Chicken", so both silently fell
+// back to being guessed as a character.
+var CODEX_FACTION_HINTS = /\b(order|guild|alliance|empire|faction|clan|brotherhood|council|syndicate|coalition|army|legion|cult|society|corporation|company|companies|initiative|division|agency|federation|dynasty|tribe|vanguard|battalion|regiment|squad|cabal|circle|sect|resistance|movement|militia|garrison|industries|industry|enterprises|incorporated|holdings|conglomerate|group|partners|associates|firm|labs?|laboratory|laboratories|studio|studios|productions|pharmaceuticals|restaurant|diner|bistro|caf[eé]|eatery|grill|kitchen|bakery|brewery|pizzeria|steakhouse|deli|hospital|clinic|salon|boutique|store|shop|franchise|chain|brand|app|platform|network|streaming)\b/i;
 
-var CODEX_ITEM_HINTS = /\b(sword|blade|gun|rifle|pistol|staff|wand|amulet|ring|armou?r|shield|artifact|device|weapon|tool|key|book|tome|potion|elixir|gem|crystal|relic|suit|mask|cloak|helmet|gauntlet|hammer|axe|bow|orb|blaster|scroll|spear|dagger|lance|trident|chalice|sigil|banner)\b/i;
+var CODEX_ITEM_HINTS = /\b(sword|blade|gun|rifle|pistol|staff|wand|amulet|ring|armou?r|shield|artifact|device|weapon|tool|key|book|tome|potion|elixir|gem|crystal|relic|suit|mask|cloak|helmet|gauntlet|hammer|axe|bow|orb|blaster|scroll|spear|dagger|lance|trident|chalice|sigil|banner|car|truck|motorcycle|motorbike|van|jeep|convertible|sedan|coupe|vehicle|automobile|jacket|dress|gown|coat|shirt|blouse|jeans|skirt|boots|shoes|sneakers|scarf|gloves|necklace|bracelet|earrings|sunglasses|phone|smartphone|laptop|tablet|computer|console|headset|drone|camera|backpack|purse|wallet|suitcase)\b/i;
 
 var CODEX_TITLE_WORDS = new Set([
   "Emperor", "Empress", "King", "Queen", "Prince", "Princess", "Duke",
@@ -1821,8 +1828,25 @@ function classifyCodexEntry(name, text) {
   const nearLocation = new RegExp(`(in|inside|outside|through)\\s+${escapeForRegex(name)}\\b`, "i");
   if (nearLocation.test(text)) return "location";
 
-  const nearItem = new RegExp(`(wields?|holds?|wearing|wears|using|uses|draws?|grips?|picks?\\s+up|holsters?)\\s+(the\\s+|a\\s+|an\\s+|his\\s+|her\\s+|their\\s+)?${escapeForRegex(name)}\\b`, "i");
+  const nearItem = new RegExp(`(wields?|holds?|wearing|wears|wore|donned|dressed\\s+in|put\\s+on|slipped\\s+into|using|uses|draws?|grips?|picks?\\s+up|holsters?|drove|drives|driving|parked|rode|riding|climbed\\s+into|hopped\\s+into)\\s+(the\\s+|a\\s+|an\\s+|his\\s+|her\\s+|their\\s+)?${escapeForRegex(name)}\\b`, "i");
   if (nearItem.test(text)) return "item";
+
+  // A name with no recognizable keyword in itself ("Dragon's Breath Fried
+  // Chicken" contains no obvious business word) can still be caught from
+  // how the story actually refers to it — ordering food from it, working
+  // at it, being a customer of it all point at an organization/venue.
+  // Deliberately specific phrases only — a bare "at"/"from" would also
+  // match ordinary location references ("stood at the harbor") and
+  // misclassify those instead.
+  const nearBusiness = new RegExp(`(ordered\\s+from|ate\\s+at|dined\\s+at|grabbed\\s+(food\\s+)?from|work(?:s|ed)?\\s+(at|for)|employed\\s+(at|by)|shops?\\s+at|shopping\\s+at)\\s+${escapeForRegex(name)}\\b`, "i");
+  if (nearBusiness.test(text)) return "faction";
+
+  // A generic name ("Silver Hand", "VyrMusic") is often immediately
+  // followed by the word that actually classifies it ("Silver Hand
+  // guild", "VyrMusic app") — the hint checks above only look inside the
+  // name itself, so this catches the same signal sitting just outside it.
+  const followedByFactionWord = new RegExp(`${escapeForRegex(name)}\\s+(order|guild|alliance|empire|faction|clan|brotherhood|council|syndicate|coalition|army|legion|cult|society|corporation|compan(?:y|ies)|division|agency|federation|dynasty|tribe|app|platform|website|network|restaurant|diner|caf[eé]|bakery|store|shop)\\b`, "i");
+  if (followedByFactionWord.test(text)) return "faction";
 
   return "character";
 }
