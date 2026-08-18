@@ -1158,7 +1158,7 @@ var CODEX_STOPWORDS = new Set([
   "Some", "Any", "All", "Each", "Every", "Nothing", "Something", "Anything",
   "One", "Turn", "Chapter", "Part", "Scene", "Day", "Night", "Morning",
   "Evening", "Afternoon", "Time", "Silence", "Darkness", "Light",
-  "Fate", "Death", "Life", "Space", "Everything", "Damn", "Greetings",
+  "Fate", "Death", "Life", "Space", "Everything", "Damn", "Greetings", "Traffic",
 
   "Rain", "Snow", "Fog", "Mist", "Frost", "Thunder", "Lightning", "Wind",
   "Storm", "Dawn", "Dusk", "Twilight", "Midnight", "Noon", "Sunrise", "Sunset",
@@ -1230,11 +1230,15 @@ var SENTENCE_ABBREVIATIONS = new Set([
   "Cmdr", "Maj", "Mt", "vs", "etc"
 ]);
 // A name "word" is a capitalized token that may contain an internal
-// apostrophe (O'Brien, Ba'al, D'Angelo) — without this, an apostrophe was
-// treated as a hard break, fracturing a single name into two or three
-// separate tracked/carded fragments (e.g. "Captain O'Brien" splitting into
-// "Captain O" and "Brien" as two unrelated entities).
-var CODEX_NAME_TOKEN = "[A-Z][a-zA-Z]*(?:['\u2019][a-zA-Z]+)*";
+// apostrophe or hyphen (O'Brien, Ba'al, D'Angelo, Draconic-Ballgown) —
+// without this, the punctuation was treated as a hard break, fracturing a
+// single name into separate tracked/carded fragments (e.g. "Captain
+// O'Brien" splitting into "Captain O" and "Brien" as two unrelated
+// entities; "Draconic-Ballgown" splitting into "Draconic" and "Ballgown").
+// Matches the character class TWISTS AND TURNS' own entity regex
+// (findEntityInSentence, `[A-Z][a-zA-Z'-]*`) already used — this was the
+// one place UNSAID's separately-maintained equivalent hadn't caught up.
+var CODEX_NAME_TOKEN = "[A-Z][a-zA-Z]*(?:['\u2019-][a-zA-Z]+)*";
 var CODEX_TITLE_ABBREV_REGEX = new RegExp(
   `\\b(?:(?:${[...SENTENCE_ABBREVIATIONS].filter(w => w.length > 1).join("|")})\\.\\s+)?${CODEX_NAME_TOKEN}(?:\\s+of\\s+${CODEX_NAME_TOKEN}|\\s+${CODEX_NAME_TOKEN}){0,2}\\b`,
   "g"
@@ -2377,9 +2381,24 @@ function syncFrontMemoryHint(subtleHints) {
   state.memory.frontMemory = existing ? `${existing}\n\n${hint}` : hint;
 }
 
+// Shared by both the automatic twist->reveal link and the manual /peek
+// command: true if a name has no Story Card yet (can't rule it out, so
+// allow by default) or an existing card typed blank/"character" — false
+// for anything explicitly typed otherwise (Location, Business, Vehicle...),
+// so a resolved twist about a business or a stray "/peek <location>" can't
+// force a private thought onto something that was never a person.
+function isCharacterLikeCard(name) {
+  if (typeof storyCards === "undefined" || !storyCards) return true;
+  const existingCard = storyCards.find(c => c.title && isSameCardEntity(c.title, name));
+  if (!existingCard) return true;
+  const cardType = (existingCard.type || "").trim().toLowerCase();
+  return !cardType || cardType === "character";
+}
+
 function linkTwistPayoffToReveal(entity, tier) {
   if (typeof state === "undefined" || !state.unsaid) return;
   if (state.unsaid.forcedPeek) return;
+  if (!isCharacterLikeCard(entity)) return;
   let cfg;
   try { cfg = readUnsaidConfig(); } catch (e) { return; }
   if (!cfg.enabled) return;
