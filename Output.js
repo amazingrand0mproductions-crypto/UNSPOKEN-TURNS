@@ -300,12 +300,27 @@ var unsaidModifier = (text) => {
         }
         const { wantSentence } = splitThoughtSentences(thought);
 
-        if (cfg.showThoughtsInStory) {
-          text = text.replace(matchedPattern, (full) =>
-            full.trim().startsWith("*") ? full : `*${full.trim()}*`
-          );
-        } else {
-          text = text.replace(matchedPattern, "").replace(/\n{3,}/g, "\n\n").trimEnd();
+        // Replace by exact match position rather than a plain regex
+        // .replace() — the instruction only tells the model to write
+        // "italicized" sentences without ever showing it how, so some
+        // models wrap their own reveal in "**" trying to comply. Since
+        // that "**" sits just outside whatever the bracket pattern
+        // actually captured, a plain replace on the pattern alone left it
+        // behind as dangling, content-less asterisks in the visible story.
+        // Finding the real match bounds and trimming any asterisks
+        // immediately touching them (from either side) avoids that
+        // regardless of which pattern matched or what the model added.
+        const revealMatch = matchedPattern.exec(text);
+        if (revealMatch) {
+          const start = revealMatch.index;
+          const end = start + revealMatch[0].length;
+          const before = text.slice(0, start).replace(/\*+\s*$/, "");
+          const after = text.slice(end).replace(/^\s*\*+/, "");
+          // Shown in-story as the clean extracted thought itself, not the
+          // raw internal 《Name, feeling: ...》 markup — a reader shouldn't
+          // ever see the formatting brackets the AI was instructed to use.
+          const replacement = cfg.showThoughtsInStory ? `*${thought}*` : "";
+          text = (before + replacement + after).replace(/\n{3,}/g, "\n\n").trimEnd();
         }
 
         seedMindIfKnown(name);
