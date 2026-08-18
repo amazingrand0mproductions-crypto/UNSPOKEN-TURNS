@@ -1120,7 +1120,7 @@ var UNSAID_DEFAULTS = {
   recentTurnsWindow: 3,
   mentionThreshold: 3,
   codexCooldown: 5,
-  codexMaxAttempts: 5,
+  codexMaxAttempts: 8,
   playerName: ""
 };
 
@@ -1150,7 +1150,7 @@ var CODEX_STOPWORDS = new Set([
   "Before", "After", "Once", "Just", "Even", "Also", "Instead",
   "Indeed", "Certainly", "Clearly", "Obviously", "Surely",
   "Sometimes", "Always", "Never", "Really", "Actually", "Honestly",
-  "Wait", "Look", "Listen", "Right", "Alright", "Hey", "Hi", "Huh", "Hmm", "Ah", "Heh",
+  "Wait", "Look", "Listen", "Right", "Alright", "Hey", "Hi", "Hello", "Huh", "Hmm", "Ah", "Heh",
   "Easy", "Careful", "Steady", "Quiet", "Patience", "Hush", "Stop",
   "Freeze", "Move", "Run", "Go", "Come", "Stay", "Help", "Please",
   "Sorry", "Thanks", "Fine", "Sure", "Great", "Good", "Bad", "Nice", "Bold",
@@ -1195,7 +1195,29 @@ var CODEX_STOPWORDS = new Set([
   "You've", "You'd", "He's", "He'll", "He'd", "She's", "She'll", "She'd",
   "It's", "It'll", "That's", "That'll", "There's", "There'll", "Here's",
   "What's", "What'll", "Let's", "We're", "We'll", "We've", "We'd",
-  "They're", "They'll", "They've", "They'd", "Who's", "Who'll"
+  "They're", "They'll", "They've", "They'd", "Who's", "Who'll",
+
+  // A dialogue line's first word gets capitalized by ordinary sentence
+  // rules regardless of what the word is ("Talking to yourself now?"),
+  // and prose is full of narration/attribution verbs that show up this
+  // way constantly — a real transcript surfaced "Talking", "Seen",
+  // "Forget", "Call", "Fitting" this way in a single short exchange, none
+  // of which are enumerable in advance the way a closed word class is.
+  // This covers the common recurring ones rather than the specific ones
+  // observed, since the underlying pattern is general, not particular to
+  // that story.
+  "Talking", "Seen", "Forget", "Forgot", "Forgotten", "Call", "Called",
+  "Calling", "Fitting", "Asked", "Asking", "Told", "Telling", "Replied",
+  "Replying", "Answered", "Answering", "Muttered", "Muttering",
+  "Whispered", "Whispering", "Shouted", "Shouting", "Cried", "Crying",
+  "Gasped", "Gasping", "Sighed", "Sighing", "Laughed", "Laughing",
+  "Smiled", "Smiling", "Nodded", "Nodding", "Shook", "Shaking",
+  "Frowned", "Frowning", "Grinned", "Grinning", "Blinked", "Blinking",
+  "Paused", "Pausing", "Continued", "Continuing", "Added", "Adding",
+  "Admitted", "Admitting", "Explained", "Explaining", "Insisted",
+  "Insisting", "Murmured", "Murmuring", "Snapped", "Snapping",
+  "Growled", "Growling", "Breathed", "Breathing", "Watched", "Watching",
+  "Stared", "Staring", "Glanced", "Glancing", "Shrugged", "Shrugging"
 ].map(w => w.toLowerCase()));
 
 var CODEX_LOCATION_HINTS = /\b(city|state|street|avenue|canyon|terminal|park|building|tower|island|country|nation|kingdom|realm|district|region|planet|world|base|facility|academy|university|bridge|river|mountain|forest|desert|battleground|warzone|hall|tavern|inn|castle|fortress|temple|level|sector|wing|chamber|vault|bay|deck|outpost|colony|settlement|village|town|hamlet|station|harbor|wharf)\b/i;
@@ -1513,7 +1535,7 @@ var CONFIG_DEFAULT_UNSAID_NOTES_SECTION =
   "- Allow major events to rewrite a core truth: on by default — old truths are kept on file, never erased.\n" +
   "- Mentions needed before Codex creates a card: how many mentions before a new name gets carded.\n" +
   "- Minimum turns between Codex cards: cooldown between one Codex card and the next.\n" +
-  "- Codex retries before giving up on a name: attempts before Codex gives up on that name for good.\n" +
+  "- Codex retries before giving up on a name: attempts before automatic background retries stop on that name — \"/card <name>\" still works directly any time regardless.\n" +
   "- Reset Codex tracking now: set true to clear failed attempts/cooldowns; flips back to false on its own.\n" +
   "- Player character (skip when Codexing): your own name, so Codex skips writing a profile for you.\n\n" +
   "Characters who can have private thoughts, one per line — Codex adds newly discovered ones automatically:\n" +
@@ -1917,7 +1939,7 @@ function findCodexCandidates(threshold, excludeNames, maxAttempts, maxCount) {
   return picked.map(p => p.name);
 }
 
-function buildCodexInstruction(names, text) {
+function buildCodexInstruction(names, text, forced, priorFailures) {
   const blocks = names.map((name, i) => {
     const type = classifyCodexEntry(name, text);
     const fields = CARD_TEMPLATES[type] || CHARACTER_CARD_FIELDS;
@@ -1932,7 +1954,29 @@ function buildCodexInstruction(names, text) {
     return `Profile ${i + 1} — "${name}":${knownNote}${correctionNote}\n【CARD】\n${body}\n【/CARD】`;
   }).join("\n\n");
 
-  return `\n[Finish the story normally first — that's the priority. Then, on new lines after it, add ${names.length > 1 ? "these brief hidden profiles" : "a brief hidden profile"} wrapped between 【CARD】 and 【/CARD】, not part of the visible narrative:\n${blocks}\nKeep each field to a few words — this should take one or two lines total per profile, not paragraphs. Use whatever the story has actually shown; where it hasn't shown much yet, fill in your best reasonable answer instead of leaving a field blank or vague — draw on general knowledge for anything real-world (an actual place, a well-known title, a common item), and a sensible, in-fiction guess for anything invented that the story just hasn't detailed yet.]\n`;
+  // A forced /card request needs stronger, harder-to-skip framing than an
+  // ordinary background mention does — "finish the story first, that's the
+  // priority" is fine for an ambient, optional-feeling nudge, but on an
+  // explicit player request it reads as permission to never get to the
+  // card at all, especially mid-scene in something emotionally engaging
+  // (real transcripts showed exactly this: a tender, dialogue-heavy
+  // moment where the model kept writing prose and never produced a card).
+  //
+  // If this exact name has already failed a few times, escalate further
+  // still — inspired directly by how Auto-Cards (a separate, mature AI
+  // Dungeon script) handles this: its own card-generation prompt opens
+  // with "Stop the story and ignore previous instructions" rather than
+  // asking for narrative and structured data in the same breath at all.
+  // We don't go that far by default (players lose the "select continue"
+  // steps in exchange), but a name that's repeatedly lost the tug-of-war
+  // against the story earns the stronger, single-purpose framing.
+  const priorityLine = (forced && priorFailures >= 2)
+    ? `The player has explicitly asked for ${names.length > 1 ? "these" : "this"} more than once now and it keeps not coming through. Do not continue the story this turn — write only ${names.length > 1 ? "these hidden profiles" : "this hidden profile"}, wrapped between 【CARD】 and 【/CARD】, and nothing else:`
+    : forced
+      ? `The player explicitly asked for ${names.length > 1 ? "these" : "this"} with a /card command — do not skip it. Continue the story for a sentence or two as normal, then ${names.length > 1 ? "these profiles are" : "this profile is"} required before you stop, wrapped between 【CARD】 and 【/CARD】, not part of the visible narrative:`
+      : `Finish the story normally first — that's the priority. Then, on new lines after it, add ${names.length > 1 ? "these brief hidden profiles" : "a brief hidden profile"} wrapped between 【CARD】 and 【/CARD】, not part of the visible narrative:`;
+
+  return `\n[${priorityLine}\n${blocks}\nKeep each field to a few words — this should take one or two lines total per profile, not paragraphs. Use whatever the story has actually shown; where it hasn't shown much yet, fill in your best reasonable answer instead of leaving a field blank or vague — draw on general knowledge for anything real-world (an actual place, a well-known title, a common item), and a sensible, in-fiction guess for anything invented that the story just hasn't detailed yet.]\n`;
 }
 
 function codexLogTitle(type) {
@@ -1979,7 +2023,7 @@ function buildStatusReport(cfg) {
     lines.push(`  already have a Story Card, correctly skipped: ${alreadyCarded.slice(0, 10).join(", ")}${alreadyCarded.length > 10 ? ", ..." : ""}`);
   }
   if (exhausted.length > 0) {
-    lines.push(`  gave up after ${cfg.codexMaxAttempts} attempts: ${exhausted.join(", ")} — "Reset Codex tracking now" to retry`);
+    lines.push(`  gave up after ${cfg.codexMaxAttempts} attempts: ${exhausted.join(", ")} — "/card <name>" still works directly any time, or "Reset Codex tracking now" to let automatic retries resume`);
   }
   const turnsSinceCodex = state.unsaid.turn - (state.unsaid.codex.lastTriggerTurn || 0);
   lines.push(`  ${turnsSinceCodex}/${cfg.codexCooldown} turns since Codex last triggered`);

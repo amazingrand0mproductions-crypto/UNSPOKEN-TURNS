@@ -219,7 +219,8 @@ var unsaidModifier = (text) => {
 
     if (forcedCodex) {
       const type = classifyCodexEntry(forcedCodex, text);
-      const instruction = buildCodexInstruction([forcedCodex], text);
+      const priorFailures = state.unsaid.codex.attempts[forcedCodex] || 0;
+      const instruction = buildCodexInstruction([forcedCodex], text, true, priorFailures);
       const fitted = fitInstructionToBudget(text, instruction);
       if (fitted) {
         state.unsaid.codex.attempts[forcedCodex] = (state.unsaid.codex.attempts[forcedCodex] || 0) + 1;

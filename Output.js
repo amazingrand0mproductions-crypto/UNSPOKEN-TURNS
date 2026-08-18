@@ -225,8 +225,8 @@ var unsaidModifier = (text) => {
     }
     if (exhausted.length > 0) {
       messageParts.push(exhausted.length === 1
-        ? `📇 Codex gave up on "${exhausted[0]}" after ${state.unsaid.codex.attempts[exhausted[0]]} attempts without a usable response. Use "Reset Codex tracking now" in the config card to let it try again.`
-        : `📇 Codex gave up on ${exhausted.length} names (${exhausted.join(", ")}) after repeated attempts without a usable response. Use "Reset Codex tracking now" in the config card to let them try again.`);
+        ? `📇 Codex has tried "${exhausted[0]}" ${state.unsaid.codex.attempts[exhausted[0]]} times without a usable response — automatic retries stop here, but "/card ${exhausted[0]}" still works any time you ask for it directly, or "Reset Codex tracking now" in the config card clears this and starts fresh.`
+        : `📇 Codex has tried ${exhausted.length} names (${exhausted.join(", ")}) repeatedly without a usable response — automatic retries stop here, but "/card <name>" still works any time you ask for one of them directly, or "Reset Codex tracking now" in the config card clears this and starts fresh.`);
     }
     if (messageParts.length > 0) pushMessage(messageParts.join(" "));
 
