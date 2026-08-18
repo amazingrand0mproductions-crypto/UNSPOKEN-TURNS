@@ -115,7 +115,15 @@ var unsaidModifier = (text) => {
           card.title = name;
           card.keys = name.toLowerCase();
         }
-        card.type = platformType(type);
+        // Only set the type for a genuinely new card, or one that never had
+        // a real type — an existing card's type (whether the platform's
+        // standard four or a player's own custom one like "Business" or
+        // "Restaurant") is a deliberate choice. A later /card refresh or
+        // organic Codex re-visit shouldn't silently overwrite it with the
+        // script's closest built-in guess just because that guess differs.
+        if (isNewCard || !card.type || !card.type.trim()) {
+          card.type = platformType(type);
+        }
         cardWasNew[name] = isNewCard;
         succeededNames.add(name);
 

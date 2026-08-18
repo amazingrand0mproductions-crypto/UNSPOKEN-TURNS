@@ -120,11 +120,16 @@ var unsaidModifier = (text) => {
     const peekMatch = peekCoreMatch || text.match(/\/pe(?:e|a)k\s+([A-Za-z][\w\s]*?)[\s"'.!?]*$/i);
     if (peekMatch) {
       const name = peekMatch[1].trim().slice(0, 60);
-      state.unsaid.forcedPeek = name;
-      state.unsaid.forcedPeekCore = !!peekCoreMatch;
-      pushMessage(peekCoreMatch
-        ? `🌗 Checking whether this moment has changed ${name}...`
-        : `👁️ Peeking into ${name}'s thoughts...`);
+      const matchedCard = storyCards.find(c => c.title && isSameCardEntity(c.title, name));
+      if (matchedCard && !isCharacterLikeCard(name)) {
+        pushMessage(`👁️ "${matchedCard.title}" is typed "${matchedCard.type}" on its Story Card, not a character — skipping the peek.`);
+      } else {
+        state.unsaid.forcedPeek = name;
+        state.unsaid.forcedPeekCore = !!peekCoreMatch;
+        pushMessage(peekCoreMatch
+          ? `🌗 Checking whether this moment has changed ${name}...`
+          : `👁️ Peeking into ${name}'s thoughts...`);
+      }
       return { text: "(A quiet moment passes.)" };
     }
 
