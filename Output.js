@@ -101,8 +101,8 @@ var unsaidModifier = (text) => {
         });
         if (!fields["Name"]) return false;
 
-        // Weigh the actual evidence rather than flipping the whole
-        // classification on one field's mere presence. A real transcript
+        // Weigh the actual evidence with a proper scoring comparison rather
+        // than a chain of single-condition overrides — a real transcript
         // showed exactly the failure mode this guards against: "Ella" (a
         // sixteen-year-old girl with a dagger and journal) got reclassified
         // as a location purely because the model's response happened to
@@ -110,22 +110,48 @@ var unsaidModifier = (text) => {
         // was introduced, not what she is — while the actual content was
         // unmistakably about a person and no other location-shaped field
         // was present.
+        //
+        // A person-signal in the description contributes weight rather
+        // than deciding things outright — a genuine location can quite
+        // normally mention a person in passing ("guarded by an old man"),
+        // and that shouldn't out-vote two or three real location fields.
+        // Faction has no distinguishing field of its own (Type/Description/
+        // Significance overlaps with every other type's generic fields),
+        // so a name that clearly reads as an organization ("the Ashen
+        // Order") needs its own signal too, independent of whichever type
+        // was guessed upfront (which can itself be wrong) — otherwise a
+        // founder mentioned by gender in the description ties evenly
+        // against a bare "Type:" field and incorrectly favors "character"
+        // by coincidence of ordering, not evidence.
         const characterFieldCount = ["Race", "Strength Level", "Personality", "Background", "Appearance", "Abilities", "Weaknesses", "Relationships"].filter(f => fields[f]).length;
         const locationFieldCount = ["Location", "Key Locations", "Historical Events"].filter(f => fields[f]).length;
         const itemFieldCount = ["Properties", "Origin"].filter(f => fields[f]).length;
-        const personSignal = /\b(girl|boy|woman|man|lady|gentleman|teenager|teen|child|kid|elderly|toddler|infant|maiden|youth)\b|\byears?[\s-]old\b/i;
+        const factionShapeScore = (fields["Type"] && !fields["Race"] && !fields["Personality"] && !fields["Background"]) ? 1 : 0;
+        const personSignal = /\b(girl|boy|woman|man|lady|gentlemen|gentleman|teenager|teens?|child|kids?|elderly|toddler|infant|maiden|youth)\b|\byears?[\s-]old\b/i;
+        // A person mentioned via "led by a scarred man" or "founded by a
+        // young woman" is describing someone associated with the entity,
+        // not the entity itself — strip that kind of attribution before
+        // checking, so a gang or order isn't misread as a person just
+        // because its leader or founder gets a passing mention.
+        const attributionPattern = /\b(?:led|founded|formed|created|ruled|run|owned|operated|guarded|watched over|managed|built|established)\s+by\s+[^.!?]*/gi;
         const readsLikeAPerson = [fields["Description"], fields["Background"], fields["Personality"], fields["Appearance"]]
-          .some(text => text && personSignal.test(text));
+          .some(text => text && personSignal.test(text.replace(attributionPattern, "")));
+        // Independent, direct re-check of the name itself against the same
+        // hint patterns classifyCodexEntry uses upfront — deliberately not
+        // trusting upfrontType alone here, since that guess is exactly what
+        // can be wrong in the first place.
+        const nameLocationHint = (CODEX_LOCATION_HINTS.test(name) || CODEX_LOCATION_SUFFIX_HINTS.test(name)) ? 1 : 0;
+        const nameItemHint = CODEX_ITEM_HINTS.test(name) ? 1 : 0;
+        const nameFactionHint = CODEX_FACTION_HINTS.test(name) ? 1 : 0;
 
-        if (readsLikeAPerson) {
-          type = "character";
-        } else if (locationFieldCount > characterFieldCount) {
-          type = "location";
-        } else if (itemFieldCount > characterFieldCount) {
-          type = "item";
-        } else if (fields["Type"] && !fields["Race"] && !fields["Personality"] && !fields["Background"] && type === "character") {
-          type = "faction";
-        }
+        const scores = {
+          character: characterFieldCount + (readsLikeAPerson ? 1 : 0),
+          location: locationFieldCount + nameLocationHint,
+          item: itemFieldCount + nameItemHint,
+          faction: factionShapeScore + nameFactionHint
+        };
+        const best = Object.keys(scores).reduce((a, b) => (scores[b] > scores[a] ? b : a));
+        if (scores[best] > 0) type = best;
 
         let card = storyCards.find(c => c.title && isSameCardEntity(c.title, name));
         const isNewCard = !card;
