@@ -91,12 +91,31 @@ var unsaidModifier = (text) => {
     const succeededNames = new Set();
     const cardWasNew = {};
 
+    // Tolerant of the markdown a real model very commonly wraps structured
+    // "field: value" output in — bullets, numbering, headers, bold/italic
+    // around the label and/or value — none of which the original strict
+    // `^\s*([A-Za-z ]+):\s*(.+)$` accepted at all. Confirmed directly: the
+    // exact instruction text this project sends (verified against a real
+    // captured prompt) is correct and does reach the model, but a model
+    // that answers "**Name:** Silas" instead of "Name: Silas" — an
+    // extremely ordinary thing for a model to do when asked to fill out a
+    // labeled template — hit the old regex's total blind spot: fields["Name"]
+    // never got set, tryBuildCard returned false immediately, and every
+    // single field failed the same way regardless of which field or which
+    // name, which is exactly the "systemic, not bad luck on a few names"
+    // failure pattern real captured evidence showed (a status report
+    // listing clean, legitimate names — Silas, Rielle, Kyle, Thornhaven —
+    // still exhausting every retry with zero cards created).
+    function matchFieldLine(line) {
+      return line.match(/^\s*(?:#{1,6}\s*|[-*•+]\s*|\d+[.)]\s*)?[*_]{0,3}\s*([A-Za-z ]+?)\s*[*_]{0,3}\s*:\s*[*_]{0,3}\s*(.+?)\s*[*_]{0,3}\s*$/);
+    }
+
     function tryBuildCard(blockContent, name, upfrontType) {
       try {
         let type = upfrontType || "character";
         const fields = {};
         blockContent.split("\n").forEach(line => {
-          const fieldMatch = line.match(/^\s*([A-Za-z ]+):\s*(.+)$/);
+          const fieldMatch = matchFieldLine(line);
           if (fieldMatch) fields[fieldMatch[1].trim()] = fieldMatch[2].trim();
         });
         if (!fields["Name"]) return false;
