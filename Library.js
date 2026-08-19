@@ -160,7 +160,18 @@ var CP_CATEGORIES = {
   theBargain: "a deal struck long ago has terms that are only now coming due",
   destinyDeferred: "someone deliberately avoided their fate once, and it's catching up now",
   theSign: "an overlooked omen actually pointed to exactly what's happening now",
-  circleComplete: "current events mirror or complete something from generations back"
+  circleComplete: "current events mirror or complete something from generations back",
+
+  hiddenAffair: "a romantic betrayal has been going on right under everyone's nose",
+  theBlackmail: "someone is quietly being controlled by a secret someone else is holding over them",
+  secretDependency: "a character has been hiding a dependency or vice that's starting to cost them control",
+  theExploiter: "someone has been quietly taking advantage of another's trust or vulnerability for personal gain",
+  corruptedOath: "someone sworn to protect or serve has been compromised for personal gain",
+  theObsession: "someone's fixation on another character runs far deeper, and darker, than it's let on",
+  criminalTies: "a character has an ongoing, hidden tie to something illicit",
+  theCoverUp: "someone with power has been actively covering up real wrongdoing to protect themselves",
+  soldOut: "a character quietly betrayed something or someone they claimed to believe in, for personal gain",
+  forbiddenBond: "two characters share a connection the people around them would never accept"
 };
 var CP_CATEGORY_KEYS = Object.keys(CP_CATEGORIES);
 
@@ -174,7 +185,8 @@ var CP_CATEGORY_CLUSTERS = {
   "Time & Sequence": ["longConGame","theFlashback","alreadyHappened","theCountdown","loopedFate","prematureVictory","theOmen","delayedConsequence","theSetup","secondChance","theRecurrence"],
   "Group & Society": ["allianceOfConvenience","hiddenFaction","infiltratedOrder","theCult","dividedLoyalties","theOutcast","collectiveAmnesia","theGatekeepers","falseConsensus","theInsurance","splinterGroup"],
   "Perception & Reality": ["misdirection","theIllusion","wrongTimeline","theDouble","theSimulation","sharedDelusion","theGaslight","wrongVillain","theRecording","dreamWithinReality","theStandin"],
-  "Fate & Destiny": ["secretDebt","sharedFate","theWarningWasReal","theCostWasHidden","thePropheciesTwist","bornForThis","theSacrificePlanned","inheritedEnemy","theChosenWrong","fatesLoophole","theBargain","destinyDeferred","theSign","circleComplete"]
+  "Fate & Destiny": ["secretDebt","sharedFate","theWarningWasReal","theCostWasHidden","thePropheciesTwist","bornForThis","theSacrificePlanned","inheritedEnemy","theChosenWrong","fatesLoophole","theBargain","destinyDeferred","theSign","circleComplete"],
+  "Vice & Corruption": ["hiddenAffair","theBlackmail","secretDependency","theExploiter","corruptedOath","theObsession","criminalTies","theCoverUp","soldOut","forbiddenBond"]
 };
 var CP_CLUSTER_NAMES = Object.keys(CP_CATEGORY_CLUSTERS);
 var CP_CATEGORY_TO_CLUSTER = {};
@@ -312,7 +324,18 @@ var CP_CATEGORY_LABELS = {
   theBargain: "The Old Bargain",
   destinyDeferred: "Destiny Deferred",
   theSign: "The Overlooked Sign",
-  circleComplete: "Circle Complete"
+  circleComplete: "Circle Complete",
+
+  hiddenAffair: "Hidden Affair",
+  theBlackmail: "The Blackmail",
+  secretDependency: "Secret Dependency",
+  theExploiter: "The Exploiter",
+  corruptedOath: "Corrupted Oath",
+  theObsession: "The Obsession",
+  criminalTies: "Criminal Ties",
+  theCoverUp: "The Cover-Up",
+  soldOut: "Sold Out",
+  forbiddenBond: "Forbidden Bond"
 };
 
 var CP_TWIST_CARD_TYPE = "Twist / Turn";
@@ -351,7 +374,17 @@ var CP_LOOSE_THREAD_PATTERNS = [
   { rx: /\b(trying to make up for|trying to atone for|seeking redemption for)\b/i, cat: "theRedemption" },
   { rx: /\b(waiting for (this|the) (moment|signal)|the signal (finally )?came)\b/i, cat: "sleeperAgent" },
   { rx: /\b(wasn't a coincidence that (they|he|she) (met|found|arrived)|too neatly arranged)\b/i, cat: "theSetup" },
-  { rx: /\b(had happened before, to someone else|had played out before)\b/i, cat: "loopedFate" }
+  { rx: /\b(had happened before, to someone else|had played out before)\b/i, cat: "loopedFate" },
+
+  { rx: /\b(stolen glances|more than (just )?friends|shouldn't have (happened|been there)|a moment (they|he|she) shouldn't have shared)\b/i, cat: "hiddenAffair" },
+  { rx: /\b(had leverage over|held something over|threatened to expose|knew too much to be ignored|compliance bought with silence)\b/i, cat: "theBlackmail" },
+  { rx: /\b(couldn't stop even (though|when)|needed it just to (function|get through)|a hidden habit|hands shook without it)\b/i, cat: "secretDependency" },
+  { rx: /\b(took advantage of (his|her|their) trust|used (his|her|their) (vulnerability|dependence)|preyed on)\b/i, cat: "theExploiter" },
+  { rx: /\b(looked the other way for|took the bribe|sworn to protect.{0,20}but|compromised (his|her|their) position for)\b/i, cat: "corruptedOath" },
+  { rx: /\b(couldn't stop thinking about|watched (him|her|them) from afar|fixated on|obsessed over)\b/i, cat: "theObsession" },
+  { rx: /\b(still owed (the|his|her|their) (old )?crew|hadn't really left that life behind|one foot still in that world)\b/i, cat: "criminalTies" },
+  { rx: /\b(buried the report|made the (evidence|problem) disappear|quietly made it go away|scrubbed from the record)\b/i, cat: "theCoverUp" },
+  { rx: /\b(sold (?:\w+\s+){0,2}out|betrayed (?:his|her|their|\w+'s) own (?:side|crew|people|team|family))\b/i, cat: "soldOut" }
 ];
 
 var CP_SCENARIO_HINT_PATTERNS = [
@@ -373,7 +406,13 @@ var CP_SCENARIO_HINT_PATTERNS = [
   { rx: /\b(illegitimate (heir|child)|unacknowledged (heir|child))\b/i, cat: "secretParentage" },
   { rx: /\b(arranged (marriage|betrothal)|betrothed since (birth|childhood))\b/i, cat: "arrangedFate" },
   { rx: /\b(usurped the throne|seized power (illegitimately|by force))\b/i, cat: "coupInMotion" },
-  { rx: /\b(ancient relic|artifact of great power|relic of (great )?power)\b/i, cat: "theRelic" }
+  { rx: /\b(ancient relic|artifact of great power|relic of (great )?power)\b/i, cat: "theRelic" },
+
+  { rx: /\b(secret affair|forbidden romance|scandalous relationship)\b/i, cat: "hiddenAffair" },
+  { rx: /\b(being blackmailed|held (something|a secret) over|extorted by)\b/i, cat: "theBlackmail" },
+  { rx: /\b(secret addiction|hidden vice|struggles? with (a |an )?(addiction|dependency))\b/i, cat: "secretDependency" },
+  { rx: /\b(criminal underworld|ties to organized crime|debt to a crime (boss|lord|syndicate))\b/i, cat: "criminalTies" },
+  { rx: /\b(cover[- ]?up|corrupt official|bribed into silence)\b/i, cat: "theCoverUp" }
 ];
 
 var CP_TIER_MINOR = "minor";
@@ -744,6 +783,13 @@ var Library = (() => {
     // thread already exists on this character, or plant a fresh one biased
     // toward Identity & Deception if none exists yet.
     if (!c || !cfg || !entity) return;
+    // Same involvePlayer guard every other thread-creation path already
+    // has — in true multiplayer, isPlayerEntity checks against ALL
+    // characterNames, not just "you," so this is reachable whenever
+    // another player's character ends up in UNSAID's cast list (Codex
+    // auto-adds anyone mentioned enough, hand-authored cards get adopted
+    // too) and later has a core-shift reveal.
+    if (isPlayerEntity(c, entity) && !cfg.involvePlayer) return;
     const existing = c.threads.find(t => t.entity === entity && t.status !== "resolved");
     if (existing) {
       if (existing.status === "brewing") {
@@ -892,8 +938,20 @@ var Library = (() => {
     return null;
   }
 
-  function pickForeshadowThread(c) {
-    const brewing = c.threads.filter(t => t.status === "brewing");
+  // Missing the same !cfg.involvePlayer filter its three sibling pickers
+  // (pickMostBuiltUpBrewingThread, pickPayoffThread, pickCompoundPayoffThreads)
+  // all already have — reachable in practice: every thread-creation site
+  // already guards against planting a NEW player-entity thread while
+  // involvePlayer is off, but that guard is only checked at creation time.
+  // If a player-entity thread was created earlier while involvePlayer was
+  // on, then the player later turns it off mid-story, this function (used
+  // every pacing turn to pick what gets the next foreshadow nudge) would
+  // still happily keep seeding that same pre-existing thread — confirmed
+  // directly via sandbox. Filtering here too closes that gap the same way
+  // the other three pickers already do.
+  function pickForeshadowThread(c, cfg) {
+    let brewing = c.threads.filter(t => t.status === "brewing");
+    if (cfg && !cfg.involvePlayer) brewing = brewing.filter(t => !isPlayerEntity(c, t.entity));
     if (brewing.length === 0) return null;
     brewing.sort((a, b) => a.seedTouches - b.seedTouches || a.originTurn - b.originTurn);
     return brewing[0];

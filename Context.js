@@ -34,11 +34,6 @@ var twistsModifier = (text) => {
     let hint = null;
     let hintEntities = [];
 
-    // Everything below is the "brewing" pipeline: scanning story text/cards for
-    // twist material and picking a hint. It's wrapped in its own try/catch,
-    // separate from the outer one, so a single bad turn in here (e.g. an
-    // unexpected data shape) can never hide the config/twist-log card refresh
-    // below it — those are guaranteed to run every turn regardless.
     try {
     if (c.forcePlant) {
       const existing = Library.findThreadFuzzy(c, c.forcePlant.entity);
@@ -112,7 +107,7 @@ var twistsModifier = (text) => {
       const pacing = Library.effectivePacing(cfg, c);
       pacingTurn = (c.turn % pacing === 0);
       if (pacingTurn) {
-        const seedThread = Library.pickForeshadowThread(c);
+        const seedThread = Library.pickForeshadowThread(c, cfg);
         if (seedThread) {
           hint = Library.foreshadowHint(seedThread);
           hintEntities = [seedThread.entity];
