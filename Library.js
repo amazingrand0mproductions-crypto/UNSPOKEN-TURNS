@@ -393,21 +393,116 @@ var CP_COMPOUND_CHANCE = 0.4;
 
 var CP_WILDCARD_CHANCE = 0.35;
 
+// Shared by both systems' capitalized-word filtering (this file's own
+// CP_STOPWORDS just below, and UNSAID's CODEX_STOPWORDS further down) —
+// general-purpose closed-class words, contractions, and narration/
+// dialogue-attribution verbs that show up capitalized in ordinary prose
+// constantly (sentence starts, inverted dialogue tags) and were never real
+// name candidates. This list was built out extensively on the Codex side
+// over many rounds after real transcripts kept surfacing gaps ("Talking",
+// "Muttered", "Your", "Turn," etc. each getting mistaken for a name) — but
+// TWISTS AND TURNS' own entity detection (findEntityInSentence) still used
+// a small, much older list and never received the same hardening, meaning
+// a plain word like "Muttered" or "Turn" could become a tracked twist
+// entity and later get written directly into the AI-visible "Established
+// Facts" card, keys and all, as if it were a real character or place name
+// — confirmed directly via sandbox: "Muttered something under his breath,
+// wouldn't meet their eyes..." created a thread on "Muttered" that
+// resolved into an Established Facts card entry reading "Muttered: Someone
+// in the story isn't who they appear to be... Treat all of this as settled
+// fact going forward," with "Muttered" as a match key — meaning that card
+// would then spuriously fire on any future ordinary use of the word. One
+// shared base list means a future gap only needs finding and fixing once,
+// the same reasoning already applied to NAME_ALPHANUM above.
+var COMMON_CAPITALIZED_STOPWORDS = [
+  "I", "The", "A", "An", "You", "He", "She", "They", "It", "We", "But",
+  "And", "So", "Then", "If", "When", "As", "At", "In", "On", "With",
+  "This", "That", "There", "Here", "What", "Who", "Why", "How", "Yes",
+  "No", "Okay", "Oh", "Well", "Suddenly", "Meanwhile", "Finally",
+  "Perhaps", "Maybe", "However", "Still", "Yet", "Now", "Later",
+  "Before", "After", "Once", "Just", "Even", "Also", "Instead",
+  "Indeed", "Certainly", "Clearly", "Obviously", "Surely",
+  "Sometimes", "Always", "Never", "Really", "Actually", "Honestly",
+  "Wait", "Look", "Listen", "Right", "Alright", "Hey", "Hi", "Hello", "Huh", "Hmm", "Ah", "Heh",
+  "Easy", "Careful", "Steady", "Quiet", "Patience", "Hush", "Stop",
+  "Freeze", "Move", "Run", "Go", "Come", "Stay", "Help", "Please",
+  "Sorry", "Thanks", "Fine", "Sure", "Great", "Good", "Bad", "Nice", "Bold",
+  "Your", "My", "His", "Her", "Its", "Our", "Their", "These", "Those",
+  "Some", "Any", "All", "Each", "Every", "Nothing", "Something", "Anything",
+  "One", "Turn", "Chapter", "Part", "Scene", "Day", "Night", "Morning",
+  "Evening", "Afternoon", "Time", "Silence", "Darkness", "Light",
+  "Fate", "Death", "Life", "Space", "Everything", "Damn", "Greetings", "Traffic",
+
+  "Rain", "Snow", "Fog", "Mist", "Frost", "Thunder", "Lightning", "Wind",
+  "Storm", "Dawn", "Dusk", "Twilight", "Midnight", "Noon", "Sunrise", "Sunset",
+  "Not", "Nor", "Only", "Too", "Off", "Out", "Up", "Down", "Away", "Of", "From",
+  "Above", "Below", "Under", "Over", "Between", "Among", "Within",
+  "Without", "Behind", "Beside", "Beyond", "Around", "About", "Against",
+  "Toward", "Towards", "Upon", "Onto", "Into", "Along", "Across",
+  "Through", "Throughout", "During", "Both", "Either", "Neither",
+  "Most", "More", "Less", "Much", "Many", "Few", "Little", "Own",
+  "Such", "Same", "Other", "Another", "Next", "Last", "First",
+  "Second", "Third", "Twice", "Whether", "Although", "Though",
+  "Because", "Unless", "Until", "Since", "While", "Where", "Whatever",
+  "Whoever", "Whenever", "Wherever", "Whichever", "Almost", "Enough",
+  "Rather", "Quite", "Somehow", "Somewhat", "Anyway", "Anywhere",
+  "Nowhere", "Somewhere", "Nobody", "Somebody", "Anybody", "Everybody",
+  "Nevertheless", "Nonetheless", "Otherwise", "Therefore", "Thus",
+  "For", "Or", "Can", "Could", "Should", "Would", "Must", "Shall", "Might",
+  "Do", "Does", "Did", "Is", "Was", "Are", "Were", "Am", "Be", "Been", "Being",
+  "Have", "Has", "Had", "Let", "Given", "Despite", "Regarding", "Considering",
+  "Except", "Besides", "Unlike",
+  "North", "South", "East", "West", "Northeast", "Northwest",
+  "Southeast", "Southwest",
+  "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
+  "Saturday",
+  "January", "February", "March", "April", "June", "July", "August",
+  "September", "October", "November", "December",
+
+  // Contractions now get captured as one token by the apostrophe-aware name
+  // regex (needed for real names like O'Brien) — without these, common
+  // dialogue contractions get tracked as if they were name candidates.
+  "Don't", "Won't", "Can't", "Isn't", "Wasn't", "Wouldn't", "Couldn't",
+  "Shouldn't", "Didn't", "Doesn't", "Aren't", "Weren't", "Hasn't",
+  "Haven't", "Hadn't", "I'm", "I'll", "I've", "I'd", "You're", "You'll",
+  "You've", "You'd", "He's", "He'll", "He'd", "She's", "She'll", "She'd",
+  "It's", "It'll", "That's", "That'll", "There's", "There'll", "Here's",
+  "What's", "What'll", "Let's", "We're", "We'll", "We've", "We'd",
+  "They're", "They'll", "They've", "They'd", "Who's", "Who'll",
+
+  // A dialogue line's first word (or an inverted dialogue tag's opening
+  // verb) gets capitalized by ordinary sentence rules regardless of what
+  // the word is, and prose is full of narration/attribution verbs that
+  // show up this way constantly — a real transcript surfaced "Talking",
+  // "Seen", "Forget", "Call", "Fitting" this way in a single short
+  // exchange, and this project's own sandbox testing surfaced "Muttered,"
+  // "Whispered," "Sighed," and "Frowning" doing the exact same thing to
+  // the twist engine. None of these are enumerable in advance the way a
+  // closed word class is — this covers the common recurring ones rather
+  // than only the specific ones observed, since the underlying pattern is
+  // general, not particular to any one story.
+  "Talking", "Seen", "Forget", "Forgot", "Forgotten", "Call", "Called",
+  "Calling", "Fitting", "Asked", "Asking", "Told", "Telling", "Replied",
+  "Replying", "Answered", "Answering", "Muttered", "Muttering",
+  "Whispered", "Whispering", "Shouted", "Shouting", "Cried", "Crying",
+  "Gasped", "Gasping", "Sighed", "Sighing", "Laughed", "Laughing",
+  "Smiled", "Smiling", "Nodded", "Nodding", "Shook", "Shaking",
+  "Frowned", "Frowning", "Grinned", "Grinning", "Blinked", "Blinking",
+  "Paused", "Pausing", "Continued", "Continuing", "Added", "Adding",
+  "Admitted", "Admitting", "Explained", "Explaining", "Insisted",
+  "Insisting", "Murmured", "Murmuring", "Snapped", "Snapping",
+  "Growled", "Growling", "Breathed", "Breathing", "Watched", "Watching",
+  "Stared", "Staring", "Glanced", "Glancing", "Shrugged", "Shrugging"
+];
+
+// TWISTS AND TURNS' own additions on top of the shared base — narrative-
+// hedging/rumor vocabulary that matters specifically for how loose-thread
+// and scenario-hint scanning phrase things ("rumored to," "legend has
+// it..."), not really Codex-specific.
 var CP_STOPWORDS = new Set([
-  "The","A","An","I","He","She","They","It","We","But","And","Or","So",
-  "Then","Now","Still","Yet","There","Here","This","That","These","Those",
-  "Suddenly","Meanwhile","However","Perhaps","Maybe","Something","Someone",
-  "Nothing","Everyone","No","Yes",
-  "Rumored","Legend","Legends","According","Reportedly","Allegedly","Apparently",
-  "Once","Eventually","Recently","Later","Before","After","During","Since",
-  "Because","Although","Though","While","Despite","Unless","Until",
-  "Many","Some","Few","Most","All","Each","Every","Long",
-  "Rain","Snow","Fog","Mist","Frost","Thunder","Lightning","Wind",
-  "Storm","Dawn","Dusk","Twilight","Midnight","Noon","Sunrise","Sunset",
-  "North","South","East","West","Northeast","Northwest","Southeast","Southwest",
-  "Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday",
-  "January","February","March","April","June","July","August",
-  "September","October","November","December"
+  ...COMMON_CAPITALIZED_STOPWORDS,
+  "Rumored", "Legend", "Legends", "According", "Reportedly", "Allegedly",
+  "Apparently", "Eventually", "Recently", "Long"
 ].map(w => w.toLowerCase()));
 
 var Library = (() => {
@@ -1152,83 +1247,13 @@ var CAST_LIST_MARKER = "===";
 var CODEX_MAX_ATTEMPTS = 5;
 var CODEX_MAX_CANDIDATES_PER_TURN = 3;
 
+// Built from the same COMMON_CAPITALIZED_STOPWORDS base TWISTS AND TURNS'
+// CP_STOPWORDS uses (defined near the top of this file, alongside
+// NAME_ALPHANUM) plus Codex-specific extras — this used to be an entirely
+// separate, independently-maintained literal list, which is exactly how it
+// drifted out of sync with the twist side's own filtering for so long.
 var CODEX_STOPWORDS = new Set([
-  "I", "The", "A", "An", "You", "He", "She", "They", "It", "We", "But",
-  "And", "So", "Then", "If", "When", "As", "At", "In", "On", "With",
-  "This", "That", "There", "Here", "What", "Who", "Why", "How", "Yes",
-  "No", "Okay", "Oh", "Well", "Suddenly", "Meanwhile", "Finally",
-  "Perhaps", "Maybe", "However", "Still", "Yet", "Now", "Later",
-  "Before", "After", "Once", "Just", "Even", "Also", "Instead",
-  "Indeed", "Certainly", "Clearly", "Obviously", "Surely",
-  "Sometimes", "Always", "Never", "Really", "Actually", "Honestly",
-  "Wait", "Look", "Listen", "Right", "Alright", "Hey", "Hi", "Hello", "Huh", "Hmm", "Ah", "Heh",
-  "Easy", "Careful", "Steady", "Quiet", "Patience", "Hush", "Stop",
-  "Freeze", "Move", "Run", "Go", "Come", "Stay", "Help", "Please",
-  "Sorry", "Thanks", "Fine", "Sure", "Great", "Good", "Bad", "Nice", "Bold",
-  "Your", "My", "His", "Her", "Its", "Our", "Their", "These", "Those",
-  "Some", "Any", "All", "Each", "Every", "Nothing", "Something", "Anything",
-  "One", "Turn", "Chapter", "Part", "Scene", "Day", "Night", "Morning",
-  "Evening", "Afternoon", "Time", "Silence", "Darkness", "Light",
-  "Fate", "Death", "Life", "Space", "Everything", "Damn", "Greetings", "Traffic",
-
-  "Rain", "Snow", "Fog", "Mist", "Frost", "Thunder", "Lightning", "Wind",
-  "Storm", "Dawn", "Dusk", "Twilight", "Midnight", "Noon", "Sunrise", "Sunset",
-  "Not", "Nor", "Only", "Too", "Off", "Out", "Up", "Down", "Away", "Of", "From",
-  "Above", "Below", "Under", "Over", "Between", "Among", "Within",
-  "Without", "Behind", "Beside", "Beyond", "Around", "About", "Against",
-  "Toward", "Towards", "Upon", "Onto", "Into", "Along", "Across",
-  "Through", "Throughout", "During", "Both", "Either", "Neither",
-  "Most", "More", "Less", "Much", "Many", "Few", "Little", "Own",
-  "Such", "Same", "Other", "Another", "Next", "Last", "First",
-  "Second", "Third", "Twice", "Whether", "Although", "Though",
-  "Because", "Unless", "Until", "Since", "While", "Where", "Whatever",
-  "Whoever", "Whenever", "Wherever", "Whichever", "Almost", "Enough",
-  "Rather", "Quite", "Somehow", "Somewhat", "Anyway", "Anywhere",
-  "Nowhere", "Somewhere", "Nobody", "Somebody", "Anybody", "Everybody",
-  "Nevertheless", "Nonetheless", "Otherwise", "Therefore", "Thus",
-  "For", "Or", "Can", "Could", "Should", "Would", "Must", "Shall", "Might",
-  "Do", "Does", "Did", "Is", "Was", "Are", "Were", "Am", "Be", "Been", "Being",
-  "Have", "Has", "Had", "Let", "Given", "Despite", "Regarding", "Considering",
-  "Except", "Besides", "Unlike",
-  "North", "South", "East", "West", "Northeast", "Northwest",
-  "Southeast", "Southwest",
-  "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
-  "Saturday",
-  "January", "February", "March", "April", "June", "July", "August",
-  "September", "October", "November", "December",
-
-  // Contractions now get captured as one token by the apostrophe-aware name
-  // regex (needed for real names like O'Brien) — without these, common
-  // dialogue contractions get tracked as if they were name candidates.
-  "Don't", "Won't", "Can't", "Isn't", "Wasn't", "Wouldn't", "Couldn't",
-  "Shouldn't", "Didn't", "Doesn't", "Aren't", "Weren't", "Hasn't",
-  "Haven't", "Hadn't", "I'm", "I'll", "I've", "I'd", "You're", "You'll",
-  "You've", "You'd", "He's", "He'll", "He'd", "She's", "She'll", "She'd",
-  "It's", "It'll", "That's", "That'll", "There's", "There'll", "Here's",
-  "What's", "What'll", "Let's", "We're", "We'll", "We've", "We'd",
-  "They're", "They'll", "They've", "They'd", "Who's", "Who'll",
-
-  // A dialogue line's first word gets capitalized by ordinary sentence
-  // rules regardless of what the word is ("Talking to yourself now?"),
-  // and prose is full of narration/attribution verbs that show up this
-  // way constantly — a real transcript surfaced "Talking", "Seen",
-  // "Forget", "Call", "Fitting" this way in a single short exchange, none
-  // of which are enumerable in advance the way a closed word class is.
-  // This covers the common recurring ones rather than the specific ones
-  // observed, since the underlying pattern is general, not particular to
-  // that story.
-  "Talking", "Seen", "Forget", "Forgot", "Forgotten", "Call", "Called",
-  "Calling", "Fitting", "Asked", "Asking", "Told", "Telling", "Replied",
-  "Replying", "Answered", "Answering", "Muttered", "Muttering",
-  "Whispered", "Whispering", "Shouted", "Shouting", "Cried", "Crying",
-  "Gasped", "Gasping", "Sighed", "Sighing", "Laughed", "Laughing",
-  "Smiled", "Smiling", "Nodded", "Nodding", "Shook", "Shaking",
-  "Frowned", "Frowning", "Grinned", "Grinning", "Blinked", "Blinking",
-  "Paused", "Pausing", "Continued", "Continuing", "Added", "Adding",
-  "Admitted", "Admitting", "Explained", "Explaining", "Insisted",
-  "Insisting", "Murmured", "Murmuring", "Snapped", "Snapping",
-  "Growled", "Growling", "Breathed", "Breathing", "Watched", "Watching",
-  "Stared", "Staring", "Glanced", "Glancing", "Shrugged", "Shrugging"
+  ...COMMON_CAPITALIZED_STOPWORDS
 ].map(w => w.toLowerCase()));
 
 var CODEX_LOCATION_HINTS = /\b(city|state|street|avenue|canyon|terminal|park|building|tower|island|country|nation|kingdom|realm|district|region|planet|world|base|facility|academy|university|bridge|river|mountain|forest|desert|battleground|warzone|hall|tavern|inn|castle|fortress|temple|level|sector|wing|chamber|vault|bay|deck|outpost|colony|settlement|village|town|hamlet|station|harbor|wharf)\b/i;
@@ -1243,7 +1268,16 @@ var CODEX_LOCATION_SUFFIX_HINTS = /(tower|keep|hold|spire|haven|hollow|reach|scr
 // back to being guessed as a character.
 var CODEX_FACTION_HINTS = /\b(order|guild|alliance|empire|faction|clan|brotherhood|council|syndicate|coalition|army|legion|cult|society|corporation|company|companies|initiative|division|agency|federation|dynasty|tribe|vanguard|battalion|regiment|squad|cabal|circle|sect|resistance|movement|militia|garrison|industries|industry|enterprises|incorporated|holdings|conglomerate|group|partners|associates|firm|labs?|laboratory|laboratories|studio|studios|productions|pharmaceuticals|restaurant|diner|bistro|caf[eé]|eatery|grill|kitchen|bakery|brewery|pizzeria|steakhouse|deli|hospital|clinic|salon|boutique|store|shop|franchise|chain|brand|app|platform|network|streaming)\b/i;
 
-var CODEX_ITEM_HINTS = /\b(sword|blade|gun|rifle|pistol|staff|wand|amulet|ring|armou?r|shield|artifact|device|weapon|tool|key|book|tome|potion|elixir|gem|crystal|relic|suit|mask|cloak|helmet|gauntlet|hammer|axe|bow|orb|blaster|scroll|spear|dagger|lance|trident|chalice|sigil|banner|car|truck|motorcycle|motorbike|van|jeep|convertible|sedan|coupe|vehicle|automobile|jacket|dress|gown|coat|shirt|blouse|jeans|skirt|boots|shoes|sneakers|scarf|gloves|necklace|bracelet|earrings|sunglasses|phone|smartphone|laptop|tablet|computer|console|headset|drone|camera|backpack|purse|wallet|suitcase)\b/i;
+// Sci-fi vessel/mech/robot vocabulary was missing here entirely — the
+// modern-vehicle words (car/truck/van/vehicle) already reflect an earlier
+// real gap being closed the same way, but nothing parallel ever got added
+// for the sci-fi equivalent, meaning a starship, mech, or robot with a
+// name that happens to include one of these words (e.g. "the Mothership,"
+// "Unit-9 the Android") had no name-level signal at all and fell entirely
+// on the correction-note-plus-scoring fallback — the same accepted,
+// unavoidable limitation as a wholly invented name like "Starhopper" with
+// no recognizable component in it at all.
+var CODEX_ITEM_HINTS = /\b(sword|blade|gun|rifle|pistol|staff|wand|amulet|ring|armou?r|shield|artifact|device|weapon|tool|key|book|tome|potion|elixir|gem|crystal|relic|suit|mask|cloak|helmet|gauntlet|hammer|axe|bow|orb|blaster|scroll|spear|dagger|lance|trident|chalice|sigil|banner|car|truck|motorcycle|motorbike|van|jeep|convertible|sedan|coupe|vehicle|automobile|ship|starship|spaceship|spacecraft|shuttle|cruiser|frigate|freighter|corvette|mech|mecha|robot|android|cyborg|rover|submarine|tank|helicopter|aircraft|airship|mothership|jacket|dress|gown|coat|shirt|blouse|jeans|skirt|boots|shoes|sneakers|scarf|gloves|necklace|bracelet|earrings|sunglasses|phone|smartphone|laptop|tablet|computer|console|headset|drone|camera|backpack|purse|wallet|suitcase)\b/i;
 
 var CODEX_TITLE_WORDS = new Set([
   "Emperor", "Empress", "King", "Queen", "Prince", "Princess", "Duke",
@@ -1378,13 +1412,23 @@ function stripPossessive(w) {
 // Shared by both systems: identifies any of our own admin/status cards
 // (from either half) so neither system mistakes the other's scaffolding
 // for a real story entity or auto-adopts it as a character.
+// Canonical set of this script's own admin/system Story Card title
+// prefixes — checked here (to keep admin cards out of scenario-scanning
+// and Codex's eligible-title lists) and again, separately, inside
+// isSameCardEntity further down (to keep admin cards from ever being
+// treated as a Codex candidate's "existing card"). These used to be two
+// independently-maintained copies and drifted: this one got updated when
+// the merged config card was renamed to "UNSPOKEN TURNS — Config," but
+// isSameCardEntity's own copy never was — confirmed directly via sandbox
+// testing that a character named "Unspoken" (a very plausible dark-fantasy
+// epithet) would match the live config card through isSameCardEntity's
+// word-subset comparison and, via "/card Unspoken," actually get spliced
+// into the real shared settings card's cast list and Notes. One shared
+// list here means it can't drift apart a second time.
+var OWN_CARD_TITLE_PREFIXES = ["Twists and Turns", "Twist — ", "UNSAID", "UNSPOKEN TURNS"];
+
 function isOwnCard(title) {
-  return !!title && (
-    title.indexOf("Twists and Turns") === 0 ||
-    title.indexOf("Twist — ") === 0 ||
-    title.indexOf("UNSAID") === 0 ||
-    title.indexOf("UNSPOKEN TURNS") === 0
-  );
+  return !!title && OWN_CARD_TITLE_PREFIXES.some(p => title.indexOf(p) === 0);
 }
 
 function pushMessage(msg) {
@@ -1877,7 +1921,7 @@ function classifyCodexEntry(name, text) {
   const nearLocation = new RegExp(`(in|inside|outside|through)\\s+${escapeForRegex(name)}\\b`, "i");
   if (nearLocation.test(text)) return "location";
 
-  const nearItem = new RegExp(`(wields?|holds?|wearing|wears|wore|donned|dressed\\s+in|put\\s+on|slipped\\s+into|using|uses|draws?|grips?|picks?\\s+up|holsters?|drove|drives|driving|parked|rode|riding|climbed\\s+into|hopped\\s+into)\\s+(the\\s+|a\\s+|an\\s+|his\\s+|her\\s+|their\\s+)?${escapeForRegex(name)}\\b`, "i");
+  const nearItem = new RegExp(`(wields?|holds?|wearing|wears|wore|donned|dressed\\s+in|put\\s+on|slipped\\s+into|using|uses|draws?|grips?|picks?\\s+up|holsters?|drove|drives|driving|parked|rode|riding|climbed\\s+into|hopped\\s+into|flew|flying|piloted|piloting|boarded|boarding|launched|launching|docked|docking)\\s+(the\\s+|a\\s+|an\\s+|his\\s+|her\\s+|their\\s+)?${escapeForRegex(name)}\\b`, "i");
   if (nearItem.test(text)) return "item";
 
   // A name with no recognizable keyword in itself ("Dragon's Breath Fried
@@ -1901,10 +1945,19 @@ function classifyCodexEntry(name, text) {
 }
 
 function isSameCardEntity(cardTitle, candidateName) {
+  // An admin/system card (real title, checked via the authoritative
+  // isOwnCard) should never be considered "the same entity" as an
+  // arbitrary candidate/entity name — regardless of what that candidate
+  // name's own text happens to look like. The prior version derived
+  // "reserved-ness" symmetrically from both strings' own text (candidate
+  // included), which meant a candidate name that merely started with the
+  // same words as a reserved prefix (e.g. a character named literally
+  // "Unspoken Turns") was itself treated as reserved and could still slip
+  // through the guard and match against the real config card. Checking
+  // only the actual card title removes that residual gap.
+  if (isOwnCard(cardTitle)) return false;
   const title = cardTitle.toLowerCase();
   const name = candidateName.toLowerCase();
-  const isReserved = t => t.indexOf("twists and turns") === 0 || t.indexOf("twist — ") === 0 || t.indexOf("unsaid") === 0;
-  if (isReserved(title) !== isReserved(name)) return false;
   if (title === name) return true;
   const titleWords = title.split(" ");
   const nameWords = name.split(" ");

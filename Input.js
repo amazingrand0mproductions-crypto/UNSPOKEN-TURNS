@@ -16,10 +16,6 @@ var twistsModifier = (text) => {
       if (head === "twist") {
         const name = parts.slice(1).join(" ").trim();
         if (name) {
-          // fuzzy match, same as every other name lookup in the project —
-          // otherwise "/twist Sera" wouldn't find an existing thread already
-          // tracked under the fuller "Sera Walker" and would spawn a
-          // confusing duplicate instead of paying off the real one
           let thread = c.threads.find(t => isSameCardEntity(t.entity, name));
           if (!thread) {
             thread = Library.createThread(c, name, null, c.turn - cfg.minTurnsForPayoff, cfg);
@@ -116,8 +112,19 @@ var unsaidModifier = (text) => {
       return { text: "(A quiet moment passes.)" };
     }
 
-    const peekCoreMatch = text.match(/\/pe(?:e|a)k\s+([A-Za-z][\w\s]*?)\s+core\b/i);
-    const peekMatch = peekCoreMatch || text.match(/\/pe(?:e|a)k\s+([A-Za-z][\w\s]*?)[\s"'.!?]*$/i);
+    // Built from the shared NAME_ALPHANUM class (defined in Library.js,
+    // available here since Library is concatenated ahead of this file) so
+    // a name with an apostrophe or hyphen (O'Brien, Draconic-Ballgown,
+    // Agent-47-style designations) is captured the same way it already is
+    // everywhere else in the project. The plain \w this used to use
+    // silently failed to match the whole command for any such name —
+    // confirmed directly via sandbox: "/peek Unit-9" and "/peek O'Brien"
+    // both matched nothing at all, leaving the raw command text
+    // unprocessed with no error message telling the player anything went
+    // wrong, rather than actually peeking at the character.
+    const NAME_COMMAND_CHARS = `[${NAME_ALPHANUM}'\u2019\\-\\s]`;
+    const peekCoreMatch = text.match(new RegExp(`\\/pe(?:e|a)k\\s+([A-Za-z]${NAME_COMMAND_CHARS}*?)\\s+core\\b`, "i"));
+    const peekMatch = peekCoreMatch || text.match(new RegExp(`\\/pe(?:e|a)k\\s+([A-Za-z]${NAME_COMMAND_CHARS}*?)[\\s"'.!?]*$`, "i"));
     if (peekMatch) {
       const name = peekMatch[1].trim().slice(0, 60);
       const matchedCard = storyCards.find(c => c.title && isSameCardEntity(c.title, name));
@@ -133,7 +140,7 @@ var unsaidModifier = (text) => {
       return { text: "(A quiet moment passes.)" };
     }
 
-    const cardMatch = text.match(/\/card\s+([A-Za-z][\w\s]*?)[\s"'.!?]*$/i);
+    const cardMatch = text.match(new RegExp(`\\/card\\s+([A-Za-z]${NAME_COMMAND_CHARS}*?)[\\s"'.!?]*$`, "i"));
     if (cardMatch) {
       const name = cardMatch[1].trim().slice(0, 60);
       state.unsaid.forcedCodex = name;
