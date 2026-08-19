@@ -157,6 +157,12 @@ var unsaidModifier = (text) => {
     const cfg = readUnsaidConfig();
     text = stripConfigNoise(text);
 
+    // Same platform limitation TWISTS AND TURNS already works around for
+    // its own hint (see updateNudgeCard) — computed here too since this is
+    // a separate function from twistsModifier and doesn't share its local
+    // variables.
+    const cacheEfficient = !!(typeof info !== "undefined" && info && info.useCacheEfficient);
+
     const forcedPeek = state.unsaid.forcedPeek;
     const forcedPeekCore = state.unsaid.forcedPeekCore;
     state.unsaid.forcedPeek = null;
@@ -168,6 +174,7 @@ var unsaidModifier = (text) => {
     if (!cfg.enabled) {
       state.unsaid.pending = null;
       state.unsaid.codex.pendingNames = [];
+      updateUnsaidBackupCard(cacheEfficient, "");
       return { text };
     }
 
@@ -175,6 +182,7 @@ var unsaidModifier = (text) => {
     if (!storyAdvanced && !forcedPeek && !forcedCodex) {
       state.unsaid.pending = null;
       state.unsaid.codex.pendingNames = [];
+      updateUnsaidBackupCard(cacheEfficient, "");
       return { text };
     }
 
@@ -190,6 +198,7 @@ var unsaidModifier = (text) => {
       pushMessage(`🌗 Core-shift checks are off — turn on "Allow major events to rewrite a core truth" in the config card first.`);
       state.unsaid.pending = null;
       state.unsaid.codex.pendingNames = [];
+      updateUnsaidBackupCard(cacheEfficient, "");
       return { text };
     }
 
@@ -199,6 +208,7 @@ var unsaidModifier = (text) => {
       if (fitted) {
         state.unsaid.pending = forcedPeek;
         state.unsaid.codex.pendingNames = [];
+        updateUnsaidBackupCard(cacheEfficient, fitted);
         return { text: text + fitted };
       }
       pushMessage(`🌗 Not enough room left in context to check ${forcedPeek} this turn — try again once the story frees up some space.`);
@@ -207,6 +217,7 @@ var unsaidModifier = (text) => {
       if (fitted) {
         state.unsaid.pending = forcedPeek;
         state.unsaid.codex.pendingNames = [];
+        updateUnsaidBackupCard(cacheEfficient, fitted);
         return { text: text + fitted };
       }
       pushMessage(`👁️ Not enough room left in context to peek at ${forcedPeek} this turn — try again once the story frees up some space.`);
@@ -223,6 +234,7 @@ var unsaidModifier = (text) => {
         state.unsaid.codex.pendingTypes = { [forcedCodex]: type };
         state.unsaid.codex.lastTriggerTurn = state.unsaid.turn;
         state.unsaid.pending = null;
+        updateUnsaidBackupCard(cacheEfficient, fitted);
         return { text: text + fitted };
       }
       pushMessage(`📇 Not enough room left in context to card ${forcedCodex} this turn — try again once the story frees up some space.`);
@@ -245,6 +257,7 @@ var unsaidModifier = (text) => {
           state.unsaid.codex.pendingTypes = types;
           state.unsaid.codex.lastTriggerTurn = state.unsaid.turn;
           state.unsaid.pending = null;
+          updateUnsaidBackupCard(cacheEfficient, fitted);
           return { text: text + fitted };
         }
       }
@@ -271,12 +284,14 @@ var unsaidModifier = (text) => {
         const fitted = buildAndFitThoughtInstruction(chosen, active, text, cfg.allowCoreShift);
         if (fitted) {
           state.unsaid.pending = chosen;
+          updateUnsaidBackupCard(cacheEfficient, fitted);
           return { text: text + fitted };
         }
       }
     }
 
     state.unsaid.pending = null;
+    updateUnsaidBackupCard(cacheEfficient, "");
     return { text };
   } catch (e) {
     if (typeof log === "function") log("UNSAID Context error: " + (e && e.message));

@@ -1269,7 +1269,8 @@ var Library = (() => {
     splitSentences, findThread, findThreadFuzzy, createThread, tierFor, isEligible, priorTwistCountFor, scanForLooseThreads, scanStoryCardsForScenarioThreads,
     scanPlotEssentialsForThreads, scanAuthorsNoteForThreads, pickForeshadowThread, pickMostBuiltUpBrewingThread, pickPayoffThread, pickCompoundPayoffThreads, pickWildcardEntity,
     foreshadowHint, payoffHint, compoundPayoffHint, safeSetCard, createTwistStoryCard, safeLog, applyEntryConfig,
-    updateCacheEfficiencyWarning, updateNudgeCard, updateConfigCard, updateTwistLogCard, updateThreadsOverview, reinforceFromCoreShift
+    updateCacheEfficiencyWarning, updateNudgeCard, updateConfigCard, updateTwistLogCard, updateThreadsOverview, reinforceFromCoreShift,
+    CP_ALWAYS_MATCH_KEYS
   };
 })();
 
@@ -1379,6 +1380,50 @@ var CARD_TEMPLATES = {
   faction: FACTION_CARD_FIELDS
 };
 
+// TWISTS AND TURNS already solved this exact problem for its own hint
+// delivery (see updateNudgeCard inside the Library object above) — this is
+// the same fix, applied to UNSAID, which never got it. Confirmed directly
+// against AI Dungeon's own scripting documentation: on a cache-efficient
+// model, the Context hook still runs and can *read* the context, but
+// whatever text it *returns* is silently discarded — the model never sees
+// it. That means every one of UNSAID's own instructions (Codex card
+// requests, private-thought reveal requests, core-shift checks), which are
+// delivered purely by appending to the returned context text, were being
+// built correctly and then thrown away before the model ever saw them, on
+// any such model — a total, silent failure completely independent of
+// instruction wording or which name was requested. This matches real
+// captured evidence closely (clean, legitimate names exhausting every
+// retry with zero cards created; reveal requests producing nothing
+// usable), though the specific evidence gathered didn't show the existing
+// cache-efficient warning card active at the time, so this closes a real
+// platform-limitation gap without being a confirmed fix for that specific
+// report — the markdown-formatting fix already made is the one directly
+// confirmed against that evidence. A Story Card's entry, unlike the hook's
+// returned text, does still reach the model on these models, so the same
+// near-universal-match-keys trick carries whichever instruction would
+// otherwise have been silently lost.
+function updateUnsaidBackupCard(cacheEfficient, instructionText) {
+  const title = "UNSAID — Backup Delivery";
+  if (!cacheEfficient) { removeStoryCardByTitle(title); return; }
+  const entry = instructionText || " ";
+  const notes = "BACKUP INSTRUCTION DELIVERY\n\n" +
+    "Active only because Optimized Context was detected this turn — see the \"UNSAID — Important, " +
+    "Read This ⚠️\" card. Carries whichever Codex card request or private-thought request would " +
+    "otherwise be delivered by appending directly to the model context, which doesn't reach the " +
+    "model on this kind of model.";
+  let card = storyCards.find(c => c.title === title);
+  if (!card) {
+    card = createOrFindCard(Library.CP_ALWAYS_MATCH_KEYS, entry, "Class");
+    if (card) { card.title = title; }
+  }
+  if (card) {
+    card.keys = Library.CP_ALWAYS_MATCH_KEYS;
+    card.type = "Class";
+    card.entry = entry;
+    card.description = notes;
+  }
+}
+
 function checkCacheEfficientWarning() {
   const title = "UNSAID — Important, Read This ⚠️";
   const card = storyCards.find(c => c.title === title);
@@ -1400,12 +1445,15 @@ function checkCacheEfficientWarning() {
   const warningText =
     "Your current model is running in cache-efficient mode. AI Dungeon's " +
     "own documentation states that on these models, the Context hook " +
-    "still runs but its result is never sent to the AI — meaning " +
-    "UNSAID's private thoughts and auto-generated Story Cards cannot " +
-    "work right now, through no fault of your config. This is a " +
-    "platform limitation, not a bug in the script. To use UNSAID, " +
-    "switch to a model without cache efficiency enabled, or disable " +
-    "cache efficiency for this model if your plan allows it.";
+    "still runs but its result is never sent to the AI — meaning UNSAID's " +
+    "private thoughts and auto-generated Story Cards can't be delivered " +
+    "the normal way. As a backup, the same request is now also written to " +
+    "a \"UNSAID — Backup Delivery\" card, which the AI does still see, the " +
+    "same way TWISTS AND TURNS already backs up its own hints — so things " +
+    "should mostly keep working, just less precisely-timed than normal. " +
+    "For the most reliable results, switch to a model without cache " +
+    "efficiency enabled, or disable cache efficiency for this model if " +
+    "your plan allows it.";
   if (!card) {
     const newCard = createOrFindCard("unsaid warning", warningText, "Class");
     if (newCard) {

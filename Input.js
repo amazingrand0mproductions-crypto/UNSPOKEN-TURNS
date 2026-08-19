@@ -14,6 +14,11 @@ var twistsModifier = (text) => {
       const head = (parts[0] || "").toLowerCase();
 
       if (head === "twist") {
+        if (!cfg.enabled) {
+          pushMessage("🌀 TWISTS AND TURNS is currently disabled — turn on \"Enable Twists and Turns\" on the config card first, or nothing will actually happen this turn.");
+          text = "(A quiet moment passes.)";
+          return { text };
+        }
         const name = parts.slice(1).join(" ").trim();
         if (name) {
           let thread = c.threads.find(t => isSameCardEntity(t.entity, name));
@@ -32,6 +37,11 @@ var twistsModifier = (text) => {
         }
         text = "(A quiet moment passes.)";
       } else if (head === "plant") {
+        if (!cfg.enabled) {
+          pushMessage("🌱 TWISTS AND TURNS is currently disabled — turn on \"Enable Twists and Turns\" on the config card first, or nothing will actually happen this turn.");
+          text = "(A quiet moment passes.)";
+          return { text };
+        }
         const rest = parts.slice(1);
         let category = null;
         if (rest.length > 1) {
@@ -91,9 +101,9 @@ var unsaidModifier = (text) => {
   const originalText = text;
   try {
     trackMentions(text);
+    const cfg = readUnsaidConfig();
 
     if (/\/unsaid\s+status\b/i.test(text)) {
-      const cfg = readUnsaidConfig();
       const report = buildStatusReport(cfg);
       let card = storyCards.find(c => c.title === "UNSAID — Status");
       if (!card) {
@@ -127,6 +137,10 @@ var unsaidModifier = (text) => {
     const peekMatch = peekCoreMatch || text.match(new RegExp(`\\/pe(?:e|a)k\\s+([A-Za-z]${NAME_COMMAND_CHARS}*?)[\\s"'.!?]*$`, "i"));
     if (peekMatch) {
       const name = peekMatch[1].trim().slice(0, 60);
+      if (!cfg.enabled) {
+        pushMessage(`👁️ UNSAID is currently disabled — turn on "Enable UNSAID" on the config card first, or ${name} won't actually be peeked at this turn.`);
+        return { text: "(A quiet moment passes.)" };
+      }
       const matchedCard = storyCards.find(c => c.title && isSameCardEntity(c.title, name));
       if (matchedCard && !isCharacterLikeCard(name)) {
         pushMessage(`👁️ "${matchedCard.title}" is typed "${matchedCard.type}" on its Story Card, not a character — skipping the peek.`);
@@ -143,6 +157,10 @@ var unsaidModifier = (text) => {
     const cardMatch = text.match(new RegExp(`\\/card\\s+([A-Za-z]${NAME_COMMAND_CHARS}*?)[\\s"'.!?]*$`, "i"));
     if (cardMatch) {
       const name = cardMatch[1].trim().slice(0, 60);
+      if (!cfg.enabled) {
+        pushMessage(`📇 UNSAID is currently disabled — turn on "Enable UNSAID" on the config card first, or no card will actually be written for ${name} this turn.`);
+        return { text: "(A quiet moment passes.)" };
+      }
       state.unsaid.forcedCodex = name;
       pushMessage(`📇 Writing a Story Card for ${name}...`);
       return { text: "(A quiet moment passes.)" };
