@@ -1,5 +1,16 @@
 var CP_VERSION = "1.0";
 
+// Shared by both systems' name/entity detection (TWISTS AND TURNS'
+// findEntityInSentence and UNSAID's CODEX_NAME_TOKEN below) — the set of
+// characters allowed within a capitalized name token after its required
+// leading capital letter. These lived as two separately-maintained copies
+// for a long time, and drifted out of sync on the exact same gap three
+// times in a row: apostrophes (O'Brien), hyphens (Draconic-Ballgown), and
+// digits (a designation like Agent47 or Unit9 has no word-boundary between
+// the letter and the digit, so it silently failed to match at all). One
+// shared definition means a future gap only needs finding and fixing once.
+var NAME_ALPHANUM = "a-zA-Z0-9";
+
 var CP_DEFAULTS = {
   enabled: true,
   intensity: "medium",
@@ -498,7 +509,7 @@ var Library = (() => {
   }
 
   function findEntityInSentence(sentence) {
-    const matches = Array.from(sentence.matchAll(/\b[A-Z][a-zA-Z'-]*\b/g));
+    const matches = Array.from(sentence.matchAll(new RegExp(`\\b[A-Z][${NAME_ALPHANUM}'-]*\\b`, "g")));
     if (!matches.length) return null;
 
     const bridge = (i) => {
@@ -1251,16 +1262,12 @@ var SENTENCE_ABBREVIATIONS = new Set([
   "Col", "Lt", "Sgt", "Rev", "Hon", "Fr", "Rep", "Sen", "Gov", "Adm",
   "Cmdr", "Maj", "Mt", "vs", "etc"
 ]);
-// A name "word" is a capitalized token that may contain an internal
-// apostrophe or hyphen (O'Brien, Ba'al, D'Angelo, Draconic-Ballgown) —
-// without this, the punctuation was treated as a hard break, fracturing a
-// single name into separate tracked/carded fragments (e.g. "Captain
-// O'Brien" splitting into "Captain O" and "Brien" as two unrelated
-// entities; "Draconic-Ballgown" splitting into "Draconic" and "Ballgown").
-// Matches the character class TWISTS AND TURNS' own entity regex
-// (findEntityInSentence, `[A-Z][a-zA-Z'-]*`) already used — this was the
-// one place UNSAID's separately-maintained equivalent hadn't caught up.
-var CODEX_NAME_TOKEN = "[A-Z][a-zA-Z]*(?:['\u2019-][a-zA-Z]+)*";
+// A name "word" is a capitalized token that may contain internal
+// apostrophes, hyphens, or digits (O'Brien, Ba'al, Draconic-Ballgown,
+// Agent47) — built from the shared NAME_ALPHANUM class at the top of this
+// file so this and TWISTS AND TURNS' own equivalent (findEntityInSentence)
+// can no longer drift out of sync the way they already have three times.
+var CODEX_NAME_TOKEN = `[A-Z][${NAME_ALPHANUM}]*(?:['\u2019-][${NAME_ALPHANUM}]+)*`;
 var CODEX_TITLE_ABBREV_REGEX = new RegExp(
   `\\b(?:(?:${[...SENTENCE_ABBREVIATIONS].filter(w => w.length > 1).join("|")})\\.\\s+)?${CODEX_NAME_TOKEN}(?:\\s+of\\s+${CODEX_NAME_TOKEN}|\\s+${CODEX_NAME_TOKEN}){0,2}\\b`,
   "g"
@@ -1832,6 +1839,22 @@ function trackMentions(text) {
 
 function pruneMentionCounts() {
   const counts = state.unsaid.codex.mentionCounts;
+  // A name that already has a matching Story Card will never be
+  // reconsidered by Codex again regardless of its count (findCodexCandidates
+  // excludes it directly) — but nothing ever stopped its count from
+  // climbing forever as an established character keeps getting mentioned.
+  // Since pruning below keeps the highest counts and drops the lowest, an
+  // already-carded character's ever-growing, now-pointless count would
+  // permanently occupy a slot immune to pruning, at the direct expense of
+  // genuinely new, not-yet-carded names still trying to reach the mention
+  // threshold — confirmed directly: a long-running game with one carded
+  // character mentioned constantly could starve out new candidates
+  // entirely. Clearing these every pass keeps every slot meaningful.
+  Object.keys(counts).forEach(name => {
+    if (storyCards.some(c => c.title && isSameCardEntity(c.title, name))) {
+      delete counts[name];
+    }
+  });
   const keys = Object.keys(counts);
   if (keys.length > MENTION_TRACKING_CAP + 50) {
     keys
