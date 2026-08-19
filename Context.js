@@ -73,6 +73,18 @@ var twistsModifier = (text) => {
         c.pendingPayoffId2 = null;
         c.lastPayoffTurn = c.turn;
         Library.safeLog("[Twists and Turns] /twist forced a payoff for " + thread.entity + " (" + thread.category + ")");
+      } else {
+        // The Input hook always shows "Forcing the next twist..." on
+        // /twist with no name, since it can't know in advance whether
+        // anything will actually be available by the time this hook
+        // runs — confirmed directly via sandbox that with zero threads
+        // of any kind (a genuinely fresh game, nothing /planted, nothing
+        // scanned yet), the player got that confident message and then
+        // nothing happened at all: no hint, no thread, no log entry, and
+        // no explanation, the exact same shape of "the command doesn't
+        // work" complaint as the cfg.enabled gap fixed last round, just
+        // triggered by empty state instead of a disabled system.
+        pushMessage("🌀 Nothing has built up enough yet to force a twist on — try \"/plant a name\" first, or let the story develop a bit more.");
       }
       c.forceEntity = null;
     }

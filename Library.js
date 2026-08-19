@@ -1293,6 +1293,10 @@ var UNSAID_DEFAULTS = {
 
 var CONTEXT_SAFETY_MARGIN = 20;
 var MAX_CARD_ENTRY_LENGTH = 1800;
+// Generous enough that no normal game ever notices it, low enough to
+// bound the per-turn cost of scanning the cast list for who's currently
+// "active" — see readUnsaidConfig for the full reasoning.
+var MAX_CAST_SIZE = 60;
 
 var FEELING_HISTORY_LIMIT = 3;
 var RELATION_HISTORY_LIMIT = 2;
@@ -1926,6 +1930,28 @@ function readUnsaidConfig() {
         const head = unsaidNotes.slice(0, markerIdx2 + CAST_LIST_MARKER.length);
         unsaidNotes = `${head}\n${cfg.cast.join("\n")}`;
       }
+    }
+  }
+
+  // Nothing previously capped how large this list could grow — over a
+  // genuinely long game with hundreds of Codex-carded characters, this
+  // both bloats the config card itself and, more importantly, means
+  // `active = cfg.cast.filter(name => nameAppears(name, recent))` below
+  // runs one regex test per cast member on every single turn, which
+  // starts to matter against the platform's 2-second-per-hook execution
+  // limit. Reading Auto-Cards' source directly for this round surfaced
+  // exactly this discipline throughout their own code — they cap every
+  // growing collection (candidate titles, memory banks, pending queues)
+  // rather than letting any of them grow unboundedly, for the same
+  // reason. Trimming the oldest-adopted names first (the ones least
+  // likely to still be narratively active) is the same tradeoff the
+  // Codex log already makes at its own cap.
+  if (MAX_CAST_SIZE < cfg.cast.length) {
+    cfg.cast = cfg.cast.slice(cfg.cast.length - MAX_CAST_SIZE);
+    const markerIdx3 = unsaidNotes.indexOf(CAST_LIST_MARKER);
+    if (markerIdx3 !== -1) {
+      const head = unsaidNotes.slice(0, markerIdx3 + CAST_LIST_MARKER.length);
+      unsaidNotes = `${head}\n${cfg.cast.join("\n")}`;
     }
   }
 
