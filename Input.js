@@ -2,7 +2,9 @@ state.message = "";
 
 try {
   initUnsaid();
-} catch (e) {}
+} catch (e) {
+  utLog("Input init", e);
+}
 
 var twistsModifier = (text) => {
   try {
@@ -12,6 +14,8 @@ var twistsModifier = (text) => {
     if (cmd) {
       const parts = cmd.slice(1).trim().split(/\s+/);
       const head = (parts[0] || "").toLowerCase();
+      const ownCommand = ["twist", "plant", "twistlog", "intensity", "threads", "rescan", "twists", "twisthelp"].includes(head);
+      if (ownCommand && state.unsaid) state.unsaid.skipStoryAdvance = true;
 
       if (head === "twist") {
         if (!cfg.enabled) {
@@ -62,6 +66,19 @@ var twistsModifier = (text) => {
       } else if (head === "twistlog") {
         cfg.showTwistLog = !cfg.showTwistLog;
         Library.updateTwistLogCard(c, cfg);
+        // Every other setting-changing command here (see /intensity right
+        // below) writes its new value back to the actual config card text
+        // via updateConfigCard — this one never did, meaning the toggle
+        // only ever lived in memory for the current turn. Since the next
+        // turn's applyEntryConfig always re-parses cfg.showTwistLog fresh
+        // from the card's own rendered text, and that text was never
+        // updated, the very next turn silently reverted the toggle right
+        // back to whatever it was before — confirmed directly via a real
+        // captured transcript and reproduced in the sandbox: the
+        // confirmation message correctly said "now visible," but the
+        // config card's own text still read "false" immediately
+        // afterward, before a single further turn had even passed.
+        Library.updateConfigCard(cfg, c);
         pushMessage(cfg.showTwistLog
           ? "📜 Twist log now visible — check the \"Twists and Turns — Twist Log\" card."
           : "📜 Twist log now hidden.");
@@ -100,10 +117,10 @@ var twistsModifier = (text) => {
 var unsaidModifier = (text) => {
   const originalText = text;
   try {
-    trackMentions(text);
     const cfg = readUnsaidConfig();
 
     if (/\/unsaid\s+status\b/i.test(text)) {
+      state.unsaid.skipStoryAdvance = true;
       const report = buildStatusReport(cfg);
       let card = storyCards.find(c => c.title === "UNSAID — Status");
       if (!card) {
@@ -136,6 +153,7 @@ var unsaidModifier = (text) => {
     const peekCoreMatch = text.match(new RegExp(`\\/pe(?:e|a)k\\s+([A-Za-z]${NAME_COMMAND_CHARS}*?)\\s+core\\b`, "i"));
     const peekMatch = peekCoreMatch || text.match(new RegExp(`\\/pe(?:e|a)k\\s+([A-Za-z]${NAME_COMMAND_CHARS}*?)[\\s"'.!?]*$`, "i"));
     if (peekMatch) {
+      state.unsaid.skipStoryAdvance = true;
       const name = peekMatch[1].trim().slice(0, 60);
       if (!cfg.enabled) {
         pushMessage(`👁️ UNSAID is currently disabled — turn on "Enable UNSAID" on the config card first, or ${name} won't actually be peeked at this turn.`);
@@ -156,6 +174,7 @@ var unsaidModifier = (text) => {
 
     const cardMatch = text.match(new RegExp(`\\/card\\s+([A-Za-z]${NAME_COMMAND_CHARS}*?)[\\s"'.!?]*$`, "i"));
     if (cardMatch) {
+      state.unsaid.skipStoryAdvance = true;
       const name = cardMatch[1].trim().slice(0, 60);
       if (!cfg.enabled) {
         pushMessage(`📇 UNSAID is currently disabled — turn on "Enable UNSAID" on the config card first, or no card will actually be written for ${name} this turn.`);
@@ -166,9 +185,10 @@ var unsaidModifier = (text) => {
       return { text: "(A quiet moment passes.)" };
     }
 
+    trackMentions(text, false);
     return { text };
   } catch (e) {
-    if (typeof log === "function") log("UNSAID Input error: " + (e && e.message));
+    utLog("UNSAID Input", e);
     return { text: originalText };
   }
 };

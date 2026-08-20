@@ -1,6 +1,8 @@
 try {
   initUnsaid();
-} catch (e) {}
+} catch (e) {
+  utLog("Output init", e);
+}
 
 if (!state.memory) state.memory = {};
 
@@ -84,10 +86,16 @@ var unsaidModifier = (text) => {
   try {
     const cfg = readUnsaidConfig();
 
-    const blockPattern = /【CARD】([\s\S]*?)【\/CARD】/g;
-    const blockMatches = [...text.matchAll(blockPattern)];
-    const expectedNames = state.unsaid.codex.pendingNames || [];
+    // Accept the exact markers requested by this version plus the two
+    // common bracket variants models sometimes substitute on their own.
+    // This is only evaluated while Codex has pending names, so broadening
+    // the marker spelling cannot eat ordinary story text by itself.
+    const cardOpenSource = "(?:【CARD】|〖CARD〗|\\[CARD\\]|<CARD>)";
+    const cardCloseSource = "(?:【\\/CARD】|〖\\/CARD〗|\\[\\/CARD\\]|<\\/CARD>)";
+    const blockPattern = new RegExp(cardOpenSource + "([\\s\\S]*?)" + cardCloseSource, "gi");
+    const expectedNames = utUniqueNames(state.unsaid.codex.pendingNames || []);
     const expectedTypes = state.unsaid.codex.pendingTypes || {};
+    const blockMatches = expectedNames.length > 0 ? [...text.matchAll(blockPattern)] : [];
     const succeededNames = new Set();
     const cardWasNew = {};
 
@@ -131,11 +139,54 @@ var unsaidModifier = (text) => {
       try {
         let type = upfrontType || "character";
         const fields = {};
-        blockContent.split("\n").forEach(line => {
+        const allCanonicalFields = [
+          ...new Set([
+            ...CHARACTER_CARD_FIELDS,
+            ...LOCATION_CARD_FIELDS,
+            ...ITEM_CARD_FIELDS,
+            ...FACTION_CARD_FIELDS
+          ])
+        ];
+        const fieldAliases = {
+          "strength": "Strength Level",
+          "power level": "Strength Level",
+          "bio": "Background",
+          "biography": "Background",
+          "backstory": "Background",
+          "looks": "Appearance",
+          "skills": "Abilities",
+          "powers": "Abilities",
+          "flaws": "Weaknesses",
+          "relations": "Relationships"
+        };
+
+        // A model occasionally compresses the template onto one line with
+        // pipes/semicolons. Expand only when a separator is followed by
+        // another label-shaped "Field:" token, so punctuation inside a
+        // normal value is left alone.
+        const expandedBlock = blockContent.replace(
+          /\s*[|;]\s*(?=[A-Za-z][A-Za-z ]{1,28}\s*:)/g,
+          "\n"
+        );
+
+        expandedBlock.split("\n").forEach(line => {
           const fieldMatch = matchFieldLine(line);
-          if (fieldMatch) fields[fieldMatch[1].trim()] = fieldMatch[2].trim();
+          if (!fieldMatch) return;
+          const rawLabel = fieldMatch[1].trim();
+          const lower = rawLabel.toLowerCase();
+          const canonical = allCanonicalFields.find(f => f.toLowerCase() === lower) || fieldAliases[lower];
+          if (canonical) {
+            const cleanValue = fieldMatch[2].trim().replace(/\s{2,}/g, " ");
+            fields[canonical] = cleanValue.length > CODEX_FIELD_VALUE_LIMIT
+              ? cleanValue.slice(0, CODEX_FIELD_VALUE_LIMIT - 3) + "..."
+              : cleanValue;
+          }
         });
-        if (!fields["Name"]) return false;
+
+        // The expected name is authoritative. If the model lowercases it,
+        // omits the Name line, or accidentally echoes a nearby candidate,
+        // do not throw away otherwise valid semantic details.
+        fields["Name"] = name;
 
         // Weigh the actual evidence with a proper scoring comparison rather
         // than a chain of single-condition overrides — a real transcript
@@ -186,8 +237,28 @@ var unsaidModifier = (text) => {
           item: itemFieldCount + nameItemHint,
           faction: factionShapeScore + nameFactionHint
         };
+        // Context has already classified the candidate using the story that
+        // actually triggered it. Give that prior a small vote so one incidental
+        // field cannot flip a well-established character into a location, while
+        // still allowing several strong fields to correct a genuinely bad guess.
+        if (upfrontType && Object.prototype.hasOwnProperty.call(scores, upfrontType)) {
+          scores[upfrontType] += 2;
+        }
         const best = Object.keys(scores).reduce((a, b) => (scores[b] > scores[a] ? b : a));
         if (scores[best] > 0) type = best;
+
+        // A copied template full of "..." is not a successful card. Require
+        // every field in the chosen template to contain a concrete value so
+        // Codex keeps retrying until the model has actually generated the
+        // details the player asked for.
+        const requiredOrder = CARD_TEMPLATES[type] || CHARACTER_CARD_FIELDS;
+        const placeholderValue = (value) => {
+          if (!value || !value.trim()) return true;
+          const v = value.trim();
+          return /^(?:\.{2,}|unknown|n\/?a|tbd|none given|not specified|<[^>]+>|\[[^\]]+\])$/i.test(v);
+        };
+        const missingRequired = requiredOrder.filter(f => f !== "Name" && placeholderValue(fields[f]));
+        if (missingRequired.length > 0) return false;
 
         let card = storyCards.find(c => c.title && isSameCardEntity(c.title, name));
         const isNewCard = !card;
@@ -285,14 +356,20 @@ var unsaidModifier = (text) => {
     if (blockMatches.length > 0) {
       text = text.replace(blockPattern, "").replace(/\n{3,}/g, "\n\n");
     }
-    const remainingOpenMatch = text.match(/【CARD】([\s\S]*)$/);
+    const remainingOpenPattern = new RegExp(cardOpenSource + "([\\s\\S]*)$", "i");
+    const remainingOpenMatch = expectedNames.length > 0 ? text.match(remainingOpenPattern) : null;
     if (remainingOpenMatch) {
       const nextName = claimBlockName(remainingOpenMatch[1]);
       if (nextName && !succeededNames.has(nextName)) {
         tryBuildCard(remainingOpenMatch[1], nextName, expectedTypes[nextName]);
       }
-      text = text.replace(/【CARD】[\s\S]*$/, "").replace(/\n{3,}/g, "\n\n").trimEnd();
+      text = text.replace(remainingOpenPattern, "").replace(/\n{3,}/g, "\n\n").trimEnd();
     }
+
+    // If markers were bolded on their own lines, stripping the marker can
+    // leave a bare markdown fence behind. Remove only content-less fence
+    // lines; ordinary emphasis in the story is untouched.
+    text = text.replace(/^\s*[*_]{2,}\s*$/gm, "").replace(/\n{3,}/g, "\n\n").trimEnd();
 
     const messageParts = [];
     if (succeededNames.size > 0) {
@@ -316,8 +393,15 @@ var unsaidModifier = (text) => {
 
     const exhausted = expectedNames.filter(name => {
       if (succeededNames.has(name)) return false;
+      if (state.unsaid.codex.likelyCharacters && state.unsaid.codex.likelyCharacters[name]) return false;
       return (state.unsaid.codex.attempts[name] || 0) >= cfg.codexMaxAttempts;
     });
+    const characterRetryMilestone = expectedNames.filter(name =>
+      !succeededNames.has(name) &&
+      state.unsaid.codex.likelyCharacters &&
+      state.unsaid.codex.likelyCharacters[name] &&
+      (state.unsaid.codex.attempts[name] || 0) === cfg.codexMaxAttempts
+    );
 
     if (!state.unsaid.codex.consecutiveFailedNames) state.unsaid.codex.consecutiveFailedNames = [];
     if (expectedNames.length > 0 && succeededNames.size === 0) {
@@ -336,17 +420,23 @@ var unsaidModifier = (text) => {
     if (strugglingCount >= 3 && exhausted.length === 0 && succeededNames.size === 0) {
       messageParts.push(`📇 Codex has attempted ${strugglingCount} different names in a row without a single card succeeding — this pattern usually means something broader than any one name, not bad luck on a few names specifically. Check "/unsaid status" and, if you're on a model prone to it, the cache-efficient warning card.`);
     }
+    if (characterRetryMilestone.length > 0) {
+      messageParts.push(characterRetryMilestone.length === 1
+        ? `📇 Codex still hasn't received a complete profile for ${characterRetryMilestone[0]}, so it is escalating instead of giving up and will retry automatically on the next story turn.`
+        : `📇 Codex still hasn't received complete profiles for ${characterRetryMilestone.join(", ")}, so it is escalating instead of giving up and will retry them automatically.`);
+    }
     if (exhausted.length > 0) {
       messageParts.push(exhausted.length === 1
-        ? `📇 Codex has tried "${exhausted[0]}" ${state.unsaid.codex.attempts[exhausted[0]]} times without a usable response — automatic retries stop here, but "/card ${exhausted[0]}" still works any time you ask for it directly, or "Reset Codex tracking now" in the config card clears this and starts fresh.`
-        : `📇 Codex has tried ${exhausted.length} names (${exhausted.join(", ")}) repeatedly without a usable response — automatic retries stop here, but "/card <name>" still works any time you ask for one of them directly, or "Reset Codex tracking now" in the config card clears this and starts fresh.`);
+        ? `📇 Codex paused the non-character candidate "${exhausted[0]}" after ${state.unsaid.codex.attempts[exhausted[0]]} unusable responses. "/card ${exhausted[0]}" still works directly, or "Reset Codex tracking now" clears its retry state.`
+        : `📇 Codex paused ${exhausted.length} non-character candidates (${exhausted.join(", ")}) after repeated unusable responses. "/card <name>" still works directly, or "Reset Codex tracking now" clears their retry state.`);
     }
     if (messageParts.length > 0) pushMessage(messageParts.join(" "));
 
     state.unsaid.codex.pendingNames = [];
     state.unsaid.codex.pendingTypes = {};
 
-    trackMentions(text);
+    const visibleTrackingText = text.replace(/《[^》]*》?/g, " ");
+    trackMentions(visibleTrackingText, true);
 
     const revealWasRequested = !!state.unsaid.pending;
     if (state.unsaid.pending) {
@@ -380,7 +470,7 @@ var unsaidModifier = (text) => {
             usedFallback = true;
           } else {
             const barePattern = new RegExp(
-              `(?<=^|\\n)\\s*${escapeForRegex(name)},\\s*([a-zA-Z]+)(?:,\\s*(about\\s+[^:\\n]+|core-shift))?:\\s*([^\\n]+)`,
+              `(?:^|\\n)\\s*${escapeForRegex(name)},\\s*([a-zA-Z]+)(?:,\\s*(about\\s+[^:\\n]+|core-shift))?:\\s*([^\\n]+)`,
               "i"
             );
             const bareMatch = text.match(barePattern);
@@ -525,7 +615,7 @@ var unsaidModifier = (text) => {
 
     return { text };
   } catch (e) {
-    if (typeof log === "function") log("UNSAID Output error: " + (e && e.message));
+    utLog("UNSAID Output", e);
     return { text: originalText };
   }
 };

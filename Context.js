@@ -1,7 +1,9 @@
 try {
   initUnsaid();
   checkCacheEfficientWarning();
-} catch (e) {}
+} catch (e) {
+  utLog("Context init", e);
+}
 
 var twistsModifier = (text) => {
   try {
@@ -191,6 +193,9 @@ var unsaidModifier = (text) => {
     }
 
     const storyAdvanced = isNewStoryTurn();
+    const skipStoryAdvance = !!state.unsaid.skipStoryAdvance;
+    state.unsaid.skipStoryAdvance = false;
+
     if (!storyAdvanced && !forcedPeek && !forcedCodex) {
       state.unsaid.pending = null;
       state.unsaid.codex.pendingNames = [];
@@ -198,7 +203,14 @@ var unsaidModifier = (text) => {
       return { text };
     }
 
-    state.unsaid.turn++;
+    if (storyAdvanced && !skipStoryAdvance) state.unsaid.turn++;
+
+    if (skipStoryAdvance && !forcedPeek && !forcedCodex) {
+      state.unsaid.pending = null;
+      state.unsaid.codex.pendingNames = [];
+      updateUnsaidBackupCard(cacheEfficient, "");
+      return { text };
+    }
 
     const recent = recentTurnsText(text, cfg.recentTurnsWindow);
     const active = cfg.cast.filter(name => nameAppears(name, recent));
@@ -238,10 +250,11 @@ var unsaidModifier = (text) => {
     if (forcedCodex) {
       const type = classifyCodexEntry(forcedCodex, text);
       const priorFailures = state.unsaid.codex.attempts[forcedCodex] || 0;
-      const instruction = buildCodexInstruction([forcedCodex], text, true, priorFailures);
+      const instruction = buildCodexInstruction([forcedCodex], text, true, priorFailures, true);
       const fitted = fitInstructionToBudget(text, instruction);
       if (fitted) {
         state.unsaid.codex.attempts[forcedCodex] = (state.unsaid.codex.attempts[forcedCodex] || 0) + 1;
+        state.unsaid.codex.lastAttemptTurn[forcedCodex] = state.unsaid.turn;
         state.unsaid.codex.pendingNames = [forcedCodex];
         state.unsaid.codex.pendingTypes = { [forcedCodex]: type };
         state.unsaid.codex.lastTriggerTurn = state.unsaid.turn;
@@ -253,17 +266,107 @@ var unsaidModifier = (text) => {
     }
 
     const sinceLastCodex = state.unsaid.turn - (state.unsaid.codex.lastTriggerTurn || 0);
-    if (cfg.codexEnabled && sinceLastCodex >= cfg.codexCooldown) {
-      const candidates = findCodexCandidates(cfg.mentionThreshold, excludedNames(cfg), cfg.codexMaxAttempts);
+
+    if (cfg.codexEnabled) {
+      const codexRecent = recentTurnsText(
+        text,
+        Math.max(
+          cfg.recentTurnsWindow || 3,
+          cfg.codexCharacterDeadline || 5,
+          (cfg.codexCharacterMinTurns || 3) + 1
+        )
+      );
+
+      // Migration + false-positive cleanup for saves that were already run
+      // with the previous fast-track logic. That version could mark a mere
+      // off-screen reference ("Mirelle said you'd be coming") as a character
+      // introduction. We now require direct scene-presence evidence before
+      // starting the character timer. Existing "likely" flags with no real
+      // introduction timestamp are therefore revalidated instead of trusted.
+      Object.keys(state.unsaid.codex.mentionCounts).forEach(name => {
+        if (storyCards.some(c => c.title && isSameCardEntity(c.title, name))) return;
+
+        if (typeof state.unsaid.codex.firstSeenTurn[name] !== "number") {
+          state.unsaid.codex.firstSeenTurn[name] = state.unsaid.turn;
+        }
+
+        const directlyIntroduced = isLikelyCharacterIntroduction(name, codexRecent);
+        const hadLegacyFlag = !!state.unsaid.codex.likelyCharacters[name];
+        const hasIntroTurn = typeof state.unsaid.codex.introducedTurn[name] === "number";
+
+        if (directlyIntroduced) {
+          state.unsaid.codex.likelyCharacters[name] = true;
+          state.unsaid.codex.observedTypes[name] = "character";
+          if (!hasIntroTurn) {
+            // Conservative migration: if we cannot know which exact old turn
+            // contained the introduction, start the observation clock now.
+            // Waiting three extra turns is preferable to canonizing a profile
+            // too early.
+            state.unsaid.codex.introducedTurn[name] = state.unsaid.turn;
+          }
+        } else if (hadLegacyFlag && !hasIntroTurn) {
+          delete state.unsaid.codex.likelyCharacters[name];
+          state.unsaid.codex.observedTypes[name] = state.unsaid.codex.observedTypes[name] || "character";
+        }
+      });
+
+      const available = findCodexCandidates(
+        cfg.mentionThreshold,
+        excludedNames(cfg),
+        cfg.codexMaxAttempts
+      ).filter(name => (state.unsaid.codex.lastAttemptTurn[name] || -999999) < state.unsaid.turn);
+
+      const minObserve = Math.max(0, cfg.codexCharacterMinTurns || 0);
+      const deadline = Math.max(minObserve, cfg.codexCharacterDeadline || 5);
+      const evidenceNeeded = Math.max(1, cfg.codexCharacterEvidenceThreshold || 6);
+
+      const matureCharacters = available.filter(name => {
+        if (!state.unsaid.codex.likelyCharacters[name]) return false;
+        const introduced = state.unsaid.codex.introducedTurn[name];
+        if (typeof introduced !== "number") return false;
+        const age = state.unsaid.turn - introduced;
+        if (age < minObserve) return false;
+        return codexEvidenceScore(name) >= evidenceNeeded || age >= deadline;
+      });
+
+      const nonCharacters = available.filter(name => !state.unsaid.codex.likelyCharacters[name]);
+      const batchSize = Math.max(1, Math.min(CODEX_MAX_CANDIDATES_PER_TURN, cfg.codexAutoBatchSize || 1));
+
+      // Introduced characters wait for both the observation floor and useful
+      // evidence unless the hard deadline is reached. One profile per turn by
+      // default keeps Codex from dumping several new cards into a fresh scene.
+      const candidates = matureCharacters.length > 0
+        ? matureCharacters.slice(0, batchSize)
+        : (sinceLastCodex >= cfg.codexCooldown ? nonCharacters.slice(0, batchSize) : []);
+
       if (candidates.length > 0) {
-        const instruction = buildCodexInstruction(candidates, text);
+        const priorFailures = candidates.reduce(
+          (max, name) => Math.max(max, state.unsaid.codex.attempts[name] || 0),
+          0
+        );
+
+        const hardDeadline = candidates.some(name => {
+          if (!state.unsaid.codex.likelyCharacters[name]) return false;
+          const introduced = state.unsaid.codex.introducedTurn[name];
+          if (typeof introduced !== "number") return false;
+          return (state.unsaid.turn - introduced) >= deadline;
+        });
+
+        const instruction = buildCodexInstruction(
+          candidates,
+          text,
+          false,
+          priorFailures,
+          hardDeadline
+        );
         const fitted = fitInstructionToBudget(text, instruction);
 
         if (fitted) {
           const types = {};
           candidates.forEach(name => {
             state.unsaid.codex.attempts[name] = (state.unsaid.codex.attempts[name] || 0) + 1;
-            types[name] = classifyCodexEntry(name, text);
+            state.unsaid.codex.lastAttemptTurn[name] = state.unsaid.turn;
+            types[name] = state.unsaid.codex.observedTypes[name] || classifyCodexEntry(name, text);
           });
           state.unsaid.codex.pendingNames = candidates;
           state.unsaid.codex.pendingTypes = types;
@@ -272,11 +375,18 @@ var unsaidModifier = (text) => {
           updateUnsaidBackupCard(cacheEfficient, fitted);
           return { text: text + fitted };
         }
+
+        // Context-budget failures do not consume an attempt. Mature
+        // characters remain eligible next turn; non-characters wait for
+        // their normal scheduling opportunity.
+        pushMessage(`📇 Not enough room left in context to card ${
+          candidates.length === 1 ? candidates[0] : candidates.length + " eligible names"
+        } right now — Codex will retry automatically later.`);
       }
     }
     state.unsaid.codex.pendingNames = [];
 
-    if (cfg.cast.length > 0) {
+    if (cfg.cast.length > 0 && !skipStoryAdvance) {
       const eligible = active.filter(name => {
         const mind = state.unsaid.minds[name];
         return !mind || !mind.lastTurn || (state.unsaid.turn - mind.lastTurn) >= cfg.cooldown;
@@ -306,7 +416,7 @@ var unsaidModifier = (text) => {
     updateUnsaidBackupCard(cacheEfficient, "");
     return { text };
   } catch (e) {
-    if (typeof log === "function") log("UNSAID Context error: " + (e && e.message));
+    utLog("UNSAID Context", e);
     return { text: originalText };
   }
 };
