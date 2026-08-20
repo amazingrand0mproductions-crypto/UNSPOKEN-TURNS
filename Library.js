@@ -171,7 +171,18 @@ var CP_CATEGORIES = {
   criminalTies: "a character has an ongoing, hidden tie to something illicit",
   theCoverUp: "someone with power has been actively covering up real wrongdoing to protect themselves",
   soldOut: "a character quietly betrayed something or someone they claimed to believe in, for personal gain",
-  forbiddenBond: "two characters share a connection the people around them would never accept"
+  forbiddenBond: "two characters share a connection the people around them would never accept",
+
+  hiddenAilment: "someone has been hiding a worsening condition that's about to become impossible to conceal",
+  theInfection: "something has been quietly spreading through a person, place, or group, changing them from within",
+  notFullyHuman: "someone isn't entirely what their body appears to be",
+  theRegression: "someone is reverting to an earlier, more dangerous version of themselves",
+  inheritedTrait: "a trait passed down through blood carries consequences nobody warned about",
+  theTransferal: "something has moved from one body to another, and it wasn't supposed to",
+  slowPoison: "someone has been worn down gradually by something, not struck all at once",
+  theAdaptation: "someone or something has been quietly changing to survive a threat no one else has noticed yet",
+  buriedInstinct: "an old, suppressed nature is starting to resurface",
+  theVessel: "someone's body is carrying, containing, or channeling something that isn't their own"
 };
 var CP_CATEGORY_KEYS = Object.keys(CP_CATEGORIES);
 
@@ -186,7 +197,8 @@ var CP_CATEGORY_CLUSTERS = {
   "Group & Society": ["allianceOfConvenience","hiddenFaction","infiltratedOrder","theCult","dividedLoyalties","theOutcast","collectiveAmnesia","theGatekeepers","falseConsensus","theInsurance","splinterGroup"],
   "Perception & Reality": ["misdirection","theIllusion","wrongTimeline","theDouble","theSimulation","sharedDelusion","theGaslight","wrongVillain","theRecording","dreamWithinReality","theStandin"],
   "Fate & Destiny": ["secretDebt","sharedFate","theWarningWasReal","theCostWasHidden","thePropheciesTwist","bornForThis","theSacrificePlanned","inheritedEnemy","theChosenWrong","fatesLoophole","theBargain","destinyDeferred","theSign","circleComplete"],
-  "Vice & Corruption": ["hiddenAffair","theBlackmail","secretDependency","theExploiter","corruptedOath","theObsession","criminalTies","theCoverUp","soldOut","forbiddenBond"]
+  "Vice & Corruption": ["hiddenAffair","theBlackmail","secretDependency","theExploiter","corruptedOath","theObsession","criminalTies","theCoverUp","soldOut","forbiddenBond"],
+  "Body & Transformation": ["hiddenAilment","theInfection","notFullyHuman","theRegression","inheritedTrait","theTransferal","slowPoison","theAdaptation","buriedInstinct","theVessel"]
 };
 var CP_CLUSTER_NAMES = Object.keys(CP_CATEGORY_CLUSTERS);
 var CP_CATEGORY_TO_CLUSTER = {};
@@ -335,7 +347,18 @@ var CP_CATEGORY_LABELS = {
   criminalTies: "Criminal Ties",
   theCoverUp: "The Cover-Up",
   soldOut: "Sold Out",
-  forbiddenBond: "Forbidden Bond"
+  forbiddenBond: "Forbidden Bond",
+
+  hiddenAilment: "Hidden Ailment",
+  theInfection: "The Infection",
+  notFullyHuman: "Not Fully Human",
+  theRegression: "The Regression",
+  inheritedTrait: "Inherited Trait",
+  theTransferal: "The Transferal",
+  slowPoison: "Slow Poison",
+  theAdaptation: "The Adaptation",
+  buriedInstinct: "Buried Instinct",
+  theVessel: "The Vessel"
 };
 
 var CP_TWIST_CARD_TYPE = "Twist / Turn";
@@ -384,10 +407,21 @@ var CP_LOOSE_THREAD_PATTERNS = [
   { rx: /\b(couldn't stop thinking about|watched (him|her|them) from afar|fixated on|obsessed over)\b/i, cat: "theObsession" },
   { rx: /\b(still owed (the|his|her|their) (old )?crew|hadn't really left that life behind|one foot still in that world)\b/i, cat: "criminalTies" },
   { rx: /\b(buried the report|made the (evidence|problem) disappear|quietly made it go away|scrubbed from the record)\b/i, cat: "theCoverUp" },
-  { rx: /\b(sold (?:\w+\s+){0,2}out|betrayed (?:his|her|their|\w+'s) own (?:side|crew|people|team|family))\b/i, cat: "soldOut" }
+  { rx: /\b(sold (?:\w+\s+){0,2}out|betrayed (?:his|her|their|\w+'s) own (?:side|crew|people|team|family))\b/i, cat: "soldOut" },
+
+  { rx: /\b(kept (?:it|the pain|this) (?:hidden|secret|to (?:himself|herself|themselves))|hadn't told anyone how (?:sick|bad) it had gotten)\b/i, cat: "hiddenAilment" },
+  { rx: /\b(spreading (?:through|beneath) (?:his|her|their) skin|something was (?:wrong|changing) beneath the surface)\b/i, cat: "theInfection" },
+  { rx: /\b(eyes (?:flickered|shifted) unnaturally|something (?:moved|shifted) beneath (?:his|her|their) skin|not (?:entirely|fully|quite) human)\b/i, cat: "notFullyHuman" },
+  { rx: /\b(revert(?:ing|ed) to (?:an? )?(?:old|former|earlier) self|slipping back into (?:old|former) habits (?:no one|nobody) (?:thought|believed) (?:were gone|had ended))\b/i, cat: "theRegression" },
+  { rx: /\b(had been getting (?:worse|sicker) for (?:weeks|months|days)|something in (?:his|her|their) (?:food|water|drink) all along)\b/i, cat: "slowPoison" },
+  { rx: /\b(old instincts? (?:resurfacing|returning|clawing back)|couldn't explain the sudden urge)\b/i, cat: "buriedInstinct" }
 ];
 
 var CP_SCENARIO_HINT_PATTERNS = [
+  { rx: /\b(infected|contagion|plague|parasite|spreading sickness)\b/i, cat: "theInfection" },
+  { rx: /\b(not fully human|part[- ]?(?:demon|beast|machine)|hybrid (?:nature|origin))\b/i, cat: "notFullyHuman" },
+  { rx: /\b(vessel for|host (?:body|to)|possessed by|carries something not (?:its|his|her|their) own)\b/i, cat: "theVessel" },
+  { rx: /\b(hereditary curse|runs in the (?:family|bloodline)|passed down through blood)\b/i, cat: "inheritedTrait" },
   { rx: /\b(secretly|in truth|unbeknownst to|hidden agenda)\b/i, cat: "ulteriorMotive" },
   { rx: /\b(true identity|disguised as|masquerading as|not what (he|she|they) seem)\b/i, cat: "hiddenIdentity" },
   { rx: /\b(exiled|banished|forbidden|sealed away)\b/i, cat: "buriedPast" },
@@ -471,6 +505,19 @@ var COMMON_CAPITALIZED_STOPWORDS = [
   "Which", "People", "Outside", "Got", "Like", "Yeah", "To", "Very",
   "Inside", "Others", "Sounds", "Absolutely", "Especially", "Downstairs",
   "Bodies", "Honesty", "Accepted",
+  // Ordinary descriptive adjectives with essentially zero plausibility as
+  // an actual character/place name on their own (unlike "Red" or
+  // "Ancient," left alone elsewhere for having real nickname/epithet
+  // plausibility) — confirmed a real, reachable instance of exactly the
+  // "words becoming cards" failure class via a full sandbox scenario
+  // replay: a dialogue line opening with "Old instincts keep
+  // resurfacing..." made "Old" the sentence's only capitalized word,
+  // which then became `lastEntity` and silently attached itself to a
+  // *later*, unrelated sentence that matched a real twist pattern but had
+  // no capitalized word of its own — attributing someone else's twist to
+  // a plain adjective, twice, across two different categories.
+  "Old", "New", "Young", "Small", "Large", "Long", "Short", "Certain",
+  "Sure", "True", "Real", "Whole", "Empty", "Full", "Simple",
   "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten",
   "One", "Turn", "Chapter", "Part", "Scene", "Day", "Night", "Morning",
   "Evening", "Afternoon", "Time", "Silence", "Darkness", "Light",
