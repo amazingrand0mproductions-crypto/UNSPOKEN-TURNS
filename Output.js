@@ -110,6 +110,23 @@ var unsaidModifier = (text) => {
       return line.match(/^\s*(?:#{1,6}\s*|[-*•+]\s*|\d+[.)]\s*)?[*_]{0,3}\s*([A-Za-z ]+?)\s*[*_]{0,3}\s*:\s*[*_]{0,3}\s*(.+?)\s*[*_]{0,3}\s*$/);
     }
 
+    // A quick, non-committal peek at just the Name field of a raw block —
+    // deliberately much lighter than the full tryBuildCard parse below,
+    // since this only needs to answer "which candidate does this block
+    // claim to be," not fully validate or score it.
+    function peekBlockName(blockContent) {
+      let found = null;
+      const lines = blockContent.split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        const fieldMatch = matchFieldLine(lines[i]);
+        if (fieldMatch && fieldMatch[1].trim().toLowerCase() === "name") {
+          found = fieldMatch[2].trim();
+          break;
+        }
+      }
+      return found;
+    }
+
     function tryBuildCard(blockContent, name, upfrontType) {
       try {
         let type = upfrontType || "character";
@@ -228,8 +245,39 @@ var unsaidModifier = (text) => {
       }
     }
 
-    blockMatches.forEach((match, i) => {
-      const name = expectedNames[i];
+    // Positional order (block i -> expectedNames[i]) was the only signal
+    // ever used to decide which candidate a block belonged to — no check
+    // that the block's own stated Name actually matched. Confirmed this
+    // is reachable, not just theoretical: multiple candidates go out in
+    // one batch (up to 3 at a time, by design), and a model that skips
+    // one candidate entirely, or simply writes its blocks in a different
+    // order than the profiles were listed in — an ordinary thing for a
+    // model to do, especially under the cache-efficient-mode backup
+    // delivery path where the instruction arrives as ordinary card text
+    // rather than a direct request — would silently shift every block
+    // after that point onto the wrong name, exactly the kind of junk-card
+    // cross-assignment (one person's card fields saved under a different
+    // person's title) this round's testing was specifically checking
+    // for. Matching each block against its own claimed Name field first,
+    // falling back to strict position only when that can't be read or
+    // doesn't correspond to anything actually expected this turn,
+    // preserves identical behavior for the common case (one candidate
+    // straightforwardly self-identifying) while no longer trusting order
+    // alone when there's a better signal sitting right there in the text.
+    const remainingExpected = expectedNames.slice();
+    function claimBlockName(blockContent) {
+      const claimed = peekBlockName(blockContent);
+      if (claimed) {
+        const idx = remainingExpected.findIndex(n =>
+          n.toLowerCase() === claimed.toLowerCase() || isSameCardEntity(n, claimed)
+        );
+        if (idx !== -1) return remainingExpected.splice(idx, 1)[0];
+      }
+      return remainingExpected.shift();
+    }
+
+    blockMatches.forEach((match) => {
+      const name = claimBlockName(match[1]);
       if (!name) return;
       tryBuildCard(match[1], name, expectedTypes[name]);
     });
@@ -239,7 +287,7 @@ var unsaidModifier = (text) => {
     }
     const remainingOpenMatch = text.match(/【CARD】([\s\S]*)$/);
     if (remainingOpenMatch) {
-      const nextName = expectedNames[blockMatches.length];
+      const nextName = claimBlockName(remainingOpenMatch[1]);
       if (nextName && !succeededNames.has(nextName)) {
         tryBuildCard(remainingOpenMatch[1], nextName, expectedTypes[nextName]);
       }

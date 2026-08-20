@@ -1355,7 +1355,25 @@ var CODEX_TITLE_WORDS = new Set([
   "Master", "Mistress", "Reverend", "Bishop", "Cardinal", "Judge",
   "Justice", "Mayor", "Chancellor", "Agent", "Officer", "Detective",
   "Sheriff", "Marshal", "Warden", "Overlord", "Warlord", "Elder",
-  "Guardian", "Knight", "Priest", "Priestess"
+  "Guardian", "Knight", "Priest", "Priestess",
+  // Everyday courtesy titles — a distinct flavor (address form rather
+  // than rank/office) but the exact same problem: "Mr. Carver" and
+  // "Ms. Ogena" burning their own separate Codex retry budgets instead
+  // of being recognized as "Carver" and "Jessica Ogena" (confirmed via a
+  // real player's status report a few rounds back) turned out to be only
+  // half of this same bug — this list already existed specifically to
+  // keep a bare title word from becoming its own candidate, but was never
+  // used to *strip* a leading title from a longer candidate the way the
+  // stopword list below is, and the courtesy-title fix only patched
+  // isSameCardEntity's comparison, never mention-tracking's own counting.
+  // Confirmed directly: "Commander Reyes" and bare "Reyes" were tracked
+  // as two entirely separate candidates because the leading rank word
+  // was never stripped at the point mentions actually get counted, and
+  // in one sandbox run this went further — one candidate's card fields
+  // ended up written under the *other* candidate's bare-surname title
+  // entirely, a genuine cross-assignment, not just wasted budget. One
+  // shared set, used for both jobs everywhere, closes both at once.
+  "Mr", "Mrs", "Ms", "Miss", "Dr", "Madam", "Mx"
 ].map(w => w.toLowerCase()));
 
 var SENTENCE_ABBREVIATIONS = new Set([
@@ -2000,8 +2018,17 @@ function trackMentions(text) {
     // normalize curly apostrophes to straight before stopword lookups —
     // otherwise "Won't" (curly ’) wouldn't match the stopword list's "won't"
     // (straight ') even though they're the same contraction
-    const stopKey = (w) => w.toLowerCase().replace(/\u2019/g, "'");
-    while (words.length > 1 && CODEX_STOPWORDS.has(stopKey(words[0]))) {
+    // Also strips a trailing period before lookup — otherwise "Mr." or
+    // "Ms." (how these are always actually written) never matched the
+    // title-word set at all, since it stores them bare ("mr", "ms").
+    // isSameCardEntity's own courtesy-title stripping already handled
+    // this correctly; this stripping loop, doing the same conceptual job
+    // one step earlier in the pipeline, didn't — confirmed directly via
+    // sandbox: "Mr. Cole" and "Marcus Cole" stayed completely separate
+    // counters even after the title-word set itself was extended and
+    // wired into this loop, specifically because of the period.
+    const stopKey = (w) => w.toLowerCase().replace(/\u2019/g, "'").replace(/\.$/, "");
+    while (words.length > 1 && (CODEX_STOPWORDS.has(stopKey(words[0])) || CODEX_TITLE_WORDS.has(stopKey(words[0])))) {
       words = words.slice(1);
       name = words.join(" ");
     }
