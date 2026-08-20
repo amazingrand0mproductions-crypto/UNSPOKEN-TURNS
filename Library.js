@@ -446,7 +446,74 @@ var CP_SCENARIO_HINT_PATTERNS = [
   { rx: /\b(being blackmailed|held (something|a secret) over|extorted by)\b/i, cat: "theBlackmail" },
   { rx: /\b(secret addiction|hidden vice|struggles? with (a |an )?(addiction|dependency))\b/i, cat: "secretDependency" },
   { rx: /\b(criminal underworld|ties to organized crime|debt to a crime (boss|lord|syndicate))\b/i, cat: "criminalTies" },
-  { rx: /\b(cover[- ]?up|corrupt official|bribed into silence)\b/i, cat: "theCoverUp" }
+  { rx: /\b(cover[- ]?up|corrupt official|bribed into silence)\b/i, cat: "theCoverUp" },
+
+  // The batch below closes a real, substantial gap: an audit found 86 of
+  // the (at the time) 140 twist categories had no detection pattern in
+  // either list at all — meaning they could only ever be picked at
+  // random, never actually recognized from real scenario or story text,
+  // undermining this whole project's founding requirement that twists
+  // build up "logically... not randomly." This doesn't close the whole
+  // gap in one pass (that would risk rushed, low-quality patterns), but
+  // covers a substantial, carefully-tested spread across every cluster.
+  { rx: /\b(had been working against (?:him|her|them) the whole time|betrayed (?:his|her|their) trust from the start)\b/i, cat: "falseAlly" },
+  { rx: /\b(were related and neither (?:knew|had known)|shared blood (?:they|neither) (?:had )?ever knew about)\b/i, cat: "secretRelation" },
+  { rx: /\b(wasn't in (?:his|her|their) own body|consciousness had been swapped)\b/i, cat: "bodySwap" },
+  { rx: /\b((?:his|her|their) memory of that night didn't match|remembered it differently than everyone else)\b/i, cat: "unreliableMemory" },
+  { rx: /\b(had been (?:the enemy|working against them) since before it (?:all )?began|hiding in plain sight the whole time)\b/i, cat: "disguisedEnemy" },
+  { rx: /\b(the legend was real after all|thought to be (?:a myth|dead) (?:and )?stood before them)\b/i, cat: "livingLegend" },
+
+  { rx: /\b(had a (?:brother|sister|sibling) (?:nobody|no one) knew about)\b/i, cat: "secretSibling" },
+  { rx: /\b(stood to inherit .{0,30} nobody knew|secretly (?:next|first) in line to inherit)\b/i, cat: "theInheritance" },
+  { rx: /\b(was cut off from (?:his|her|their) family, though (?:no one|nobody) would say why|disowned .{0,20} for reasons no one (?:explained|understood))\b/i, cat: "disownedHeir" },
+  { rx: /\b(were already (?:married|wed) in secret|a vow (?:no one|nobody) else knew about)\b/i, cat: "secretMarriage" },
+  { rx: /\b(the rivalry wasn't as friendly as it looked|an old grudge behind the friendly rivalry)\b/i, cat: "theRival" },
+
+  { rx: /\b(was (?:just|only) a figurehead|took orders from someone else entirely)\b/i, cat: "theFigurehead" },
+  { rx: /\b(the (?:title|rank) turned out to be fake|had no real claim to the (?:title|position))\b/i, cat: "falseAuthority" },
+  { rx: /\b(had been pulling the strings (?:unseen|from the shadows)|shaped events without anyone noticing)\b/i, cat: "theKingmaker" },
+  { rx: /\b(the exile had (?:quietly|secretly) returned|banished .{0,20} years ago, now back)\b/i, cat: "theExile" },
+  { rx: /\b((?:his|her|their) own (?:people|guards|men) were plotting against (?:him|her|them))\b/i, cat: "rebellionWithin" },
+
+  { rx: /\b((?:had|has) known all along and (?:covered|hushed) it up|actively covered up what (?:it|they) already knew)\b/i, cat: "suppressedTruth" },
+  { rx: /\b(had been trying to (?:say|tell|admit) something and kept getting (?:interrupted|cut off)|almost confessed before)\b/i, cat: "theConfession" },
+  { rx: /\b(a journal revealed what (?:he|she|they) (?:really|actually) believed|diary entries told a different story)\b/i, cat: "hiddenJournal" },
+  { rx: /\b(a message hidden in plain sight the whole time|hidden inside what looked like nothing)\b/i, cat: "codedMessage" },
+
+  { rx: /\b(a hidden (?:passage|door|route) had been there the whole time|a passage no map showed)\b/i, cat: "secretPassage" },
+  { rx: /\b(was a forgery, and (?:he|she|they) already knew it|the document was fake all along)\b/i, cat: "theForgery" },
+  { rx: /\b(the gift came with a price (?:no one|nobody) mentioned|a generous gift carried a hidden cost)\b/i, cat: "cursedGift" },
+  { rx: /\b(the proof had been (?:buried|hidden) nearby the whole time|evidence sat hidden, waiting to be found)\b/i, cat: "buriedEvidence" },
+  { rx: /\b(a hidden cache (?:sat|waited) unnoticed nearby|a stash no one had found yet)\b/i, cat: "theVault" },
+
+  { rx: /\b(had orchestrated (?:his|her|their) own suffering|played the victim to hide (?:his|her|their) own hand in it)\b/i, cat: "falseVictim" },
+  { rx: /\b(wasn't cruelty, it was mercy|meant to spare (?:him|her|them) something worse)\b/i, cat: "mercyKilling" },
+  { rx: /\b(had been quietly stoking the conflict|fanned the flames for (?:his|her|their) own reasons)\b/i, cat: "theProvocateur" },
+  { rx: /\b(the rescue wasn't as selfless as it looked|had (?:his|her|their) own reasons for the rescue)\b/i, cat: "selfishRescue" },
+
+  { rx: /\b(had happened before, and (?:no one|nobody) remembered|this had all happened once already)\b/i, cat: "alreadyHappened" },
+  { rx: /\b(was finally catching up after all this time|a debt from long ago come due)\b/i, cat: "delayedConsequence" },
+  { rx: /\b(the pattern was repeating itself|history was repeating, exactly as before)\b/i, cat: "theRecurrence" },
+  { rx: /\b(the prophecy had already come true, quietly|the sign had already come to pass unnoticed)\b/i, cat: "theOmen" },
+
+  { rx: /\b((?:the order|the institution) had already been compromised from within|infiltrated long before anyone noticed)\b/i, cat: "infiltratedOrder" },
+  { rx: /\b(the group's true purpose was (?:nothing|far) like what it claimed|a front for something else entirely)\b/i, cat: "theCult" },
+  { rx: /\b(the order was secretly split into (?:two|opposing) camps|loyalties inside the group weren't what they seemed)\b/i, cat: "dividedLoyalties" },
+  { rx: /\b(had broken away and operated (?:independently|in secret)|a splinter faction no one outside knew existed)\b/i, cat: "splinterGroup" },
+
+  { rx: /\b(what (?:he|she|they) (?:were|was) perceiving wasn't (?:physically )?real|none of it had been physically real)\b/i, cat: "theIllusion" },
+  { rx: /\b(two people had been mistaken for one the whole time|there had always been two of them, not one)\b/i, cat: "theDouble" },
+  { rx: /\b(everyone had been led to believe the same false thing|the whole group shared the same false belief)\b/i, cat: "sharedDelusion" },
+  { rx: /\b(the real (?:enemy|villain) had been operating unnoticed|someone else entirely was behind it all along)\b/i, cat: "wrongVillain" },
+
+  { rx: /\b(a deal struck long ago had terms coming due|an old bargain with a price only now demanded)\b/i, cat: "theBargain" },
+  { rx: /\b(the feud (?:was|had been) inherited, not started fresh|a conflict passed down from a previous generation)\b/i, cat: "inheritedEnemy" },
+  { rx: /\b(had always intended to (?:give up|sacrifice) (?:himself|herself|themselves) when the time came)\b/i, cat: "theSacrificePlanned" },
+  { rx: /\b(history (?:was|is) completing a circle generations in the making|mirrored something from generations back)\b/i, cat: "circleComplete" },
+
+  { rx: /\b(a bond (?:no one|nobody) would (?:accept|understand)|a connection everyone around them would reject)\b/i, cat: "forbiddenBond" },
+  { rx: /\b(something had moved from one body to another, and it wasn't supposed to|a consciousness transferred into someone else entirely)\b/i, cat: "theTransferal" },
+  { rx: /\b(had been quietly changing to survive something no one else (?:had )?noticed|adapting to a threat still invisible to everyone else)\b/i, cat: "theAdaptation" }
 ];
 
 var CP_TIER_MINOR = "minor";
@@ -518,6 +585,24 @@ var COMMON_CAPITALIZED_STOPWORDS = [
   // a plain adjective, twice, across two different categories.
   "Old", "New", "Young", "Small", "Large", "Long", "Short", "Certain",
   "Sure", "True", "Real", "Whole", "Empty", "Full", "Simple",
+  // Found via a fresh round of stopword-hunting across sentence-initial
+  // dialogue openers, narration/scene-setting adverbs, and interjections
+  // — the same systematic approach that found "Old" last round, applied
+  // more broadly this time. A few of these (Apparently, Eventually,
+  // Recently) were already excluded from twist-entity detection via
+  // CP_STOPWORDS' own twist-specific extras below, but never made it into
+  // this shared base — meaning they were still valid Codex candidates,
+  // able to waste retry attempts the exact same way "L"/"S"/"To" did in
+  // real captured evidence, despite being correctly blocked on the twist
+  // side the whole time. Adding them here instead closes the gap for
+  // both systems at once and removes the risk of it splitting again.
+  "Frankly", "Naturally", "Apparently", "Supposedly", "Technically",
+  "Ultimately", "Eventually", "Regardless", "Nearby", "Ahead", "Overhead",
+  "Underneath", "Nope", "Yep", "Ugh", "Wow", "Oof", "Argh", "Phew",
+  "Terrific", "Excellent", "Understood", "Agreed", "Precisely", "Exactly",
+  "Presumably", "Curiously", "Strangely", "Interestingly", "Unfortunately",
+  "Fortunately", "Surprisingly", "Predictably", "Understandably",
+  "Admittedly", "Reportedly", "Allegedly", "According",
   "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten",
   "One", "Turn", "Chapter", "Part", "Scene", "Day", "Night", "Morning",
   "Evening", "Afternoon", "Time", "Silence", "Darkness", "Light",
@@ -860,6 +945,32 @@ var Library = (() => {
       (c.turn - thread.originTurn) >= cfg.minTurnsForPayoff;
   }
 
+  // Checks a sentence against both pattern lists — loose-thread patterns
+  // first, falling through to scenario-hint patterns — the exact same
+  // priority order matchScenarioCategory already uses. Extracted as its
+  // own helper because scanForLooseThreads previously only ever checked
+  // CP_LOOSE_THREAD_PATTERNS directly, meaning every scenario-hint
+  // pattern (all of the original ~28, plus a further 45 added in one
+  // batch to close a real, substantial detection-coverage gap) was only
+  // ever reachable through scenario-adaptation scanning — a hand-authored
+  // Story Card, Plot Essentials, or Author's Note — and never through
+  // ordinary per-turn narrative during actual play, where the exact same
+  // phrasing is at least as likely to show up. Confirmed directly:
+  // "his own guards were plotting against him" correctly triggered
+  // rebellionWithin when read from Plot Essentials but did nothing at all
+  // when the identical sentence appeared in ordinary story text one turn
+  // later, purely because the two scanners drew from different pattern
+  // pools for what should be the same underlying check.
+  function matchAnyThreadPattern(sentence) {
+    for (const p of CP_LOOSE_THREAD_PATTERNS) {
+      if (p.rx.test(sentence)) return p.cat;
+    }
+    for (const p of CP_SCENARIO_HINT_PATTERNS) {
+      if (p.rx.test(sentence)) return p.cat;
+    }
+    return null;
+  }
+
   function scanForLooseThreads(text, c, cfg, cardTitles) {
     if (!text) return;
     const sentences = splitSentences(text);
@@ -868,23 +979,21 @@ var Library = (() => {
     for (const s of sentences) {
       const sentenceEntity = findKnownEntityInSentence(s, cardTitles) || findEntityInSentence(s);
       if (sentenceEntity) lastEntity = sentenceEntity;
-      for (const p of CP_LOOSE_THREAD_PATTERNS) {
-        if (p.rx.test(s)) {
-          const entity = sentenceEntity || lastEntity;
-          if (!entity) continue;
-          if (isPlayerEntity(c, entity) && !cfg.involvePlayer) continue;
-          if (alreadyResolvedCombo(c, entity, p.cat)) continue;
-          const existing = findThread(c, entity, p.cat);
-          if (existing) {
-            if (existing.status === "brewing") {
-              existing.seedTouches += 1;
-              existing.tier = tierFor(existing.seedTouches);
-              if (isEligible(existing, c, cfg)) existing.status = "ready";
-            }
-          } else {
-            createThread(c, entity, p.cat, c.turn, cfg);
+      const cat = matchAnyThreadPattern(s);
+      if (cat) {
+        const entity = sentenceEntity || lastEntity;
+        if (!entity) continue;
+        if (isPlayerEntity(c, entity) && !cfg.involvePlayer) continue;
+        if (alreadyResolvedCombo(c, entity, cat)) continue;
+        const existing = findThread(c, entity, cat);
+        if (existing) {
+          if (existing.status === "brewing") {
+            existing.seedTouches += 1;
+            existing.tier = tierFor(existing.seedTouches);
+            if (isEligible(existing, c, cfg)) existing.status = "ready";
           }
-          break;
+        } else {
+          createThread(c, entity, cat, c.turn, cfg);
         }
       }
     }
