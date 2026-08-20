@@ -2489,6 +2489,19 @@ function loadMindFromCard(card) {
       if (typeof parsed.lastThought === "string") mind.lastThoughtText = parsed.lastThought;
       if (typeof parsed.want === "string") mind.want = parsed.want;
       if (typeof parsed.revealCount === "number" && parsed.revealCount >= 0) mind.revealCount = parsed.revealCount;
+      // Both of these are written (coreStableSince, formerlyBelieved) but
+      // were never read back on reload, in either format — coreStableSince
+      // actually stores an *elapsed turn count* (state.unsaid.turn minus
+      // the real coreSetTurn at write time), so state.unsaid.turn minus
+      // that count reconstructs a coreSetTurn that's at least approximately
+      // right, rather than the reload always restarting the stability
+      // clock from zero as if the belief had just now been established.
+      if (typeof parsed.coreStableSince === "number" && parsed.coreStableSince >= 0) {
+        mind.coreSetTurn = state.unsaid.turn - parsed.coreStableSince;
+      }
+      if (typeof parsed.formerlyBelieved === "string" && parsed.formerlyBelieved) {
+        mind.coreHistory = [parsed.formerlyBelieved];
+      }
       if (parsed.relations && typeof parsed.relations === "object") {
         Object.keys(parsed.relations).forEach(other => {
           const r = parsed.relations[other];
@@ -2507,7 +2520,37 @@ function loadMindFromCard(card) {
   const mind = createMind();
   let found = false;
   const coreMatch = body.match(/Core truth:\n([\s\S]*?)(?:\n\n|$)/);
-  if (coreMatch && coreMatch[1].trim()) { mind.core = coreMatch[1].trim(); found = true; }
+  if (coreMatch && coreMatch[1].trim()) {
+    // The prose writer (syncMindToCard) appends a stability annotation
+    // directly onto this same line — "<belief> (steady for N turns)" —
+    // since it reads naturally as one sentence for the player. But that
+    // annotation is a transient, freshly-recomputed display value (from
+    // state.unsaid.turn - mind.coreSetTurn), not part of the belief
+    // itself, and this capture group has no way to tell them apart from
+    // plain text. Confirmed directly via a full sync-then-reload cycle:
+    // without stripping it here, a reload after the core had stabilized
+    // permanently baked the stale "(steady for 6 turns)" text into
+    // mind.core itself — corrupting the actual belief a little more
+    // permanently with every future reload, and something the model
+    // would then see as if it were literally part of the character's
+    // stated belief on their next reveal instruction.
+    const rawCore = coreMatch[1].trim();
+    const stabilityMatch = rawCore.match(/\s*\(steady for (\d+) turns?\)\s*$/);
+    mind.core = rawCore.replace(/\s*\(steady for \d+ turns?\)\s*$/, "");
+    // The elapsed-turn count this annotation encodes is exactly what's
+    // needed to reconstruct coreSetTurn (never otherwise read back on
+    // reload, same gap as the JSON path above) — an approximation, since
+    // state.unsaid.turn at reload time isn't the same moment as the
+    // original sync, but far better than always restarting the
+    // stability clock from zero as if the belief had just now formed.
+    if (stabilityMatch) mind.coreSetTurn = state.unsaid.turn - parseInt(stabilityMatch[1], 10);
+    found = true;
+  }
+  const formerlyMatch = body.match(/Formerly believed:\n([\s\S]*?)(?:\n\n|$)/);
+  if (formerlyMatch && formerlyMatch[1].trim()) {
+    mind.coreHistory = [formerlyMatch[1].trim()];
+    found = true;
+  }
   const feelingMatch = body.match(/Currently feeling:\s*([^\n]+)/);
   if (feelingMatch) { mind.feeling = feelingMatch[1].trim(); found = true; }
   const wantMatch = body.match(/Wants:\s*([^\n]+)/);
