@@ -279,7 +279,7 @@ var unsaidModifier = (text) => {
     if (cfg.cast.length > 0) {
       const eligible = active.filter(name => {
         const mind = state.unsaid.minds[name];
-        return !mind || (state.unsaid.turn - mind.lastTurn) >= cfg.cooldown;
+        return !mind || !mind.lastTurn || (state.unsaid.turn - mind.lastTurn) >= cfg.cooldown;
       });
 
       const actionType = getLastActionType();

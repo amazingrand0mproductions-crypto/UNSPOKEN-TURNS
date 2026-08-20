@@ -468,7 +468,7 @@ var COMMON_CAPITALIZED_STOPWORDS = [
   "Sorry", "Thanks", "Fine", "Sure", "Great", "Good", "Bad", "Nice", "Bold",
   "Your", "My", "His", "Her", "Its", "Our", "Their", "These", "Those",
   "Some", "Any", "All", "Each", "Every", "Nothing", "Something", "Anything", "Someone", "Everyone",
-  "Which", "People", "Outside", "Got", "Like", "Yeah",
+  "Which", "People", "Outside", "Got", "Like", "Yeah", "To", "Very",
   "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten",
   "One", "Turn", "Chapter", "Part", "Scene", "Day", "Night", "Morning",
   "Evening", "Afternoon", "Time", "Silence", "Darkness", "Light",
@@ -2005,6 +2005,13 @@ function trackMentions(text) {
     }
     if (words.length === 1 && CODEX_STOPWORDS.has(stopKey(words[0]))) return;
     if (words.length === 1 && CODEX_TITLE_WORDS.has(stopKey(name))) return;
+    // A single bare letter ("L", "S") is essentially never a real name on
+    // its own — confirmed directly from a real player's status report
+    // showing exactly these burning a full 5-attempt retry budget each,
+    // repeatedly, alongside dozens of other short fragments. These come
+    // from initials or stray capitals in ordinary prose, not from an
+    // actual named character.
+    if (words.length === 1 && name.length <= 1) return;
     // A short, fully-uppercase single word (SUV, USB, VIP) reads as an
     // acronym or abbreviation almost every time — essentially never a
     // proper name actually written that way — so skip tracking it rather
@@ -2078,6 +2085,27 @@ function classifyCodexEntry(name, text) {
   return "character";
 }
 
+// A courtesy title alone doesn't identify anyone — "Mr. Carver" and
+// "Ms. Ogena" refer to the same people as "Carver"/"Carver Graywolf" and
+// "Jessica Ogena," but the word-subset check below couldn't see that
+// whenever the title word added an extra word beyond what the full name
+// already had, since neither side was then a subset of the other.
+// Confirmed directly from a real player's status report: "Mr. Carver,"
+// "Mr. Graywolf," "Ms. Ogena," and "Miss Ogena" were all separately
+// burning their own 5-attempt Codex retry budget as if each were a
+// distinct, never-before-seen person, alongside "Carver," "Carver
+// Graywolf," and "Jessica Ogena" already being tracked under their own
+// names — pure waste on names that were never actually new. Stripping a
+// leading courtesy title before comparing closes that gap the same way
+// for every matching/dedup use of this function at once.
+var COURTESY_TITLE_WORDS = new Set(["mr", "mrs", "ms", "miss", "dr", "sir", "lady", "lord", "madam", "mx"]);
+function stripCourtesyTitle(words) {
+  if (words.length > 1 && COURTESY_TITLE_WORDS.has(words[0].replace(/\.$/, ""))) {
+    return words.slice(1);
+  }
+  return words;
+}
+
 function isSameCardEntity(cardTitle, candidateName) {
   // An admin/system card (real title, checked via the authoritative
   // isOwnCard) should never be considered "the same entity" as an
@@ -2093,8 +2121,8 @@ function isSameCardEntity(cardTitle, candidateName) {
   const title = cardTitle.toLowerCase();
   const name = candidateName.toLowerCase();
   if (title === name) return true;
-  const titleWords = title.split(" ");
-  const nameWords = name.split(" ");
+  const titleWords = stripCourtesyTitle(title.split(" "));
+  const nameWords = stripCourtesyTitle(name.split(" "));
   const shorter = titleWords.length <= nameWords.length ? titleWords : nameWords;
   const longer = titleWords.length <= nameWords.length ? nameWords : titleWords;
   return shorter.length > 0 && shorter.every(w => longer.includes(w));
@@ -2211,7 +2239,8 @@ function buildStatusReport(cfg) {
     mindNames.forEach(name => {
       const m = state.unsaid.minds[name];
       const coreNote = m.core ? "has a core truth" : "no standalone thought yet";
-      lines.push(`  ${name} — ${coreNote}, feeling: ${m.feeling || "none yet"}, ${m.revealCount || 0} reveal(s), last active turn ${m.lastTurn}`);
+      const lastActiveNote = m.lastTurn ? `last active turn ${m.lastTurn}` : "not yet revealed under tracking";
+      lines.push(`  ${name} — ${coreNote}, feeling: ${m.feeling || "none yet"}, ${m.revealCount || 0} reveal(s), ${lastActiveNote}`);
     });
   }
 
@@ -2496,7 +2525,23 @@ function seedMindIfKnown(name) {
   const card = storyCards.find(c => c.title && isSameCardEntity(c.title, name));
   const loaded = card ? loadMindFromCard(card) : null;
   if (loaded) {
-    loaded.lastTurn = state.unsaid.turn - 1000;
+    // A mind loaded from an existing card's saved JSON never has a
+    // lastTurn field (that JSON blob doesn't track it — see
+    // loadMindFromCard above), so this always needed *some* value to
+    // make the newly-adopted character immediately eligible rather than
+    // waiting through a full cooldown as if they'd just been revealed.
+    // Backdating to turn-1000 worked for that one arithmetic check, but
+    // leaked straight into two other places that also read lastTurn:
+    // `/unsaid status` printed the raw negative number as their actual
+    // "last active turn" (confirmed directly from a real player's status
+    // report showing "-680" — alarming and clearly wrong-looking even
+    // though nothing was actually broken), and pickBySilence uses
+    // `currentTurn - lastTurn` as a *weight*, so a fake 1000-turn gap
+    // gave a freshly-adopted character a wildly outsized chance of
+    // winning every reveal roll versus anyone genuinely tracked, until
+    // their own first reveal fixed it. Leaving lastTurn unset instead,
+    // with the two read sites below now checking for that explicitly,
+    // gets the same "eligible right away" behavior honestly.
     state.unsaid.minds[name] = loaded;
   }
 }
@@ -2511,7 +2556,14 @@ function pushCapped(arr, value, limit) {
 function pickBySilence(names, currentTurn) {
   const weights = names.map(name => {
     const mind = state.unsaid.minds[name];
-    return mind ? Math.max(1, currentTurn - mind.lastTurn) : 999;
+    // No mind at all, or a mind with no real lastTurn yet (freshly
+    // adopted from an existing card's data, which never carries one) —
+    // both get the same fixed high-priority weight rather than a
+    // computed one, so a freshly-adopted character gets a fair (high)
+    // shot at the next reveal without a fabricated turn gap dwarfing
+    // everyone else's actual weight the way turn-1000 backdating did.
+    if (!mind || !mind.lastTurn) return 999;
+    return Math.max(1, currentTurn - mind.lastTurn);
   });
   const total = weights.reduce((a, b) => a + b, 0);
   let roll = Math.random() * total;
