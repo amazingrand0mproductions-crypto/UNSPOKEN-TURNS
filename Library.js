@@ -469,6 +469,8 @@ var COMMON_CAPITALIZED_STOPWORDS = [
   "Your", "My", "His", "Her", "Its", "Our", "Their", "These", "Those",
   "Some", "Any", "All", "Each", "Every", "Nothing", "Something", "Anything", "Someone", "Everyone",
   "Which", "People", "Outside", "Got", "Like", "Yeah", "To", "Very",
+  "Inside", "Others", "Sounds", "Absolutely", "Especially", "Downstairs",
+  "Bodies", "Honesty", "Accepted",
   "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten",
   "One", "Turn", "Chapter", "Part", "Scene", "Day", "Night", "Morning",
   "Evening", "Afternoon", "Time", "Silence", "Darkness", "Light",
@@ -2017,7 +2019,19 @@ function trackMentions(text) {
     // proper name actually written that way — so skip tracking it rather
     // than let it compete with real names for Codex's attention.
     if (words.length === 1 && name.length <= 5 && name === name.toUpperCase() && /[A-Z]{2,}/.test(name)) return;
-    state.unsaid.codex.mentionCounts[name] = (state.unsaid.codex.mentionCounts[name] || 0) + 1;
+    // A longer all-caps word (a name written in full-caps for emphasis,
+    // or shouted dialogue) falls outside the acronym check above by
+    // length alone, but is still very plainly a capitalization variant of
+    // whatever name it's shouting, not a second distinct person —
+    // confirmed directly from a real player's status report tracking
+    // "JESSICA" and "Jessica" as two entirely separate candidates with
+    // their own mention counts (8x and 47x) for what was obviously one
+    // character. Folding any existing case-insensitive match onto the
+    // same counter, rather than keying purely on exact text, closes this
+    // for every casing variant at once, not just this one.
+    const existingKey = Object.keys(state.unsaid.codex.mentionCounts).find(k => k.toLowerCase() === name.toLowerCase());
+    const key = existingKey || name;
+    state.unsaid.codex.mentionCounts[key] = (state.unsaid.codex.mentionCounts[key] || 0) + 1;
   });
   pruneMentionCounts();
 }
