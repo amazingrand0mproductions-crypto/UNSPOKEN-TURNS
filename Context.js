@@ -1,23 +1,15 @@
 try {
   initUnsaid();
   checkCacheEfficientWarning();
-} catch (e) {
-  utLog("Context init", e);
-}
+} catch (e) {}
 
 var twistsModifier = (text) => {
   try {
     const { c, cfg } = Library.initState();
     if (!state.memory) state.memory = {};
-    c.scriptTurnCount += 1;
 
     Library.applyEntryConfig(cfg);
-
-    if (typeof info !== "undefined" && info && typeof info.actionCount === "number") {
-      c.turn = info.actionCount;
-    } else {
-      c.turn += 1;
-    }
+    const twistStoryAdvanced = Library.beginContextTurn(c, text);
 
     const cacheEfficient = !!(typeof info !== "undefined" && info && info.useCacheEfficient);
     Library.updateCacheEfficiencyWarning(cacheEfficient);
@@ -27,9 +19,20 @@ var twistsModifier = (text) => {
     }
 
     if (!cfg.enabled) {
+      syncTwistFrontMemoryHint("");
+      c.hintActive = false;
       Library.updateConfigCard(cfg, c);
       Library.updateTwistLogCard(c, cfg);
       Library.updateNudgeCard(cacheEfficient, "", []);
+      return { text };
+    }
+
+    // Retries/regenerations of the same action should not seed, pay off, or
+    // advance pacing twice. Keep the already-delivered managed hint in place
+    // and leave pending Output work untouched.
+    if (!twistStoryAdvanced && !c.forcePlant && !c.forceEntity) {
+      Library.updateConfigCard(cfg, c);
+      Library.updateTwistLogCard(c, cfg);
       return { text };
     }
 
@@ -148,19 +151,16 @@ var twistsModifier = (text) => {
       }
     }
 
-    if (hint) {
-      state.memory.frontMemory = hint;
-      c.hintActive = true;
-    } else if (c.hintActive) {
-      state.memory.frontMemory = "";
-      c.hintActive = false;
-    }
+    syncTwistFrontMemoryHint(hint || "");
+    c.hintActive = !!hint;
     } catch (e) {}
 
     Library.updateNudgeCard(cacheEfficient, hint, hintEntities);
     Library.updateConfigCard(cfg, c);
     Library.updateTwistLogCard(c, cfg);
-  } catch (e) {}
+  } catch (e) {
+    if (typeof log === "function") log("Context/Twists error: " + (e && e.message));
+  }
 
   return { text };
 };
@@ -187,30 +187,25 @@ var unsaidModifier = (text) => {
 
     if (!cfg.enabled) {
       state.unsaid.pending = null;
+      state.unsaid.pendingCoreShiftAllowed = false;
+      state.unsaid.pendingCoreCheck = false;
       state.unsaid.codex.pendingNames = [];
+      syncFrontMemoryHint(false);
       updateUnsaidBackupCard(cacheEfficient, "");
       return { text };
     }
 
-    const storyAdvanced = isNewStoryTurn();
-    const skipStoryAdvance = !!state.unsaid.skipStoryAdvance;
-    state.unsaid.skipStoryAdvance = false;
-
+    const storyAdvanced = isNewStoryTurn(text);
     if (!storyAdvanced && !forcedPeek && !forcedCodex) {
       state.unsaid.pending = null;
+      state.unsaid.pendingCoreShiftAllowed = false;
+      state.unsaid.pendingCoreCheck = false;
       state.unsaid.codex.pendingNames = [];
       updateUnsaidBackupCard(cacheEfficient, "");
       return { text };
     }
 
-    if (storyAdvanced && !skipStoryAdvance) state.unsaid.turn++;
-
-    if (skipStoryAdvance && !forcedPeek && !forcedCodex) {
-      state.unsaid.pending = null;
-      state.unsaid.codex.pendingNames = [];
-      updateUnsaidBackupCard(cacheEfficient, "");
-      return { text };
-    }
+    state.unsaid.turn++;
 
     const recent = recentTurnsText(text, cfg.recentTurnsWindow);
     const active = cfg.cast.filter(name => nameAppears(name, recent));
@@ -221,6 +216,8 @@ var unsaidModifier = (text) => {
     if (forcedPeek && forcedPeekCore && !cfg.allowCoreShift) {
       pushMessage(`🌗 Core-shift checks are off — turn on "Allow major events to rewrite a core truth" in the config card first.`);
       state.unsaid.pending = null;
+      state.unsaid.pendingCoreShiftAllowed = false;
+      state.unsaid.pendingCoreCheck = false;
       state.unsaid.codex.pendingNames = [];
       updateUnsaidBackupCard(cacheEfficient, "");
       return { text };
@@ -231,6 +228,8 @@ var unsaidModifier = (text) => {
       const fitted = fitInstructionToBudget(text, instruction);
       if (fitted) {
         state.unsaid.pending = forcedPeek;
+        state.unsaid.pendingCoreShiftAllowed = true;
+        state.unsaid.pendingCoreCheck = true;
         state.unsaid.codex.pendingNames = [];
         updateUnsaidBackupCard(cacheEfficient, fitted);
         return { text: text + fitted };
@@ -240,6 +239,8 @@ var unsaidModifier = (text) => {
       const fitted = buildAndFitThoughtInstruction(forcedPeek, active, text, cfg.allowCoreShift);
       if (fitted) {
         state.unsaid.pending = forcedPeek;
+        state.unsaid.pendingCoreShiftAllowed = naturalCoreShiftEligible(state.unsaid.minds[forcedPeek], cfg.allowCoreShift);
+        state.unsaid.pendingCoreCheck = false;
         state.unsaid.codex.pendingNames = [];
         updateUnsaidBackupCard(cacheEfficient, fitted);
         return { text: text + fitted };
@@ -250,8 +251,7 @@ var unsaidModifier = (text) => {
     if (forcedCodex) {
       const type = classifyCodexEntry(forcedCodex, text);
       const priorFailures = state.unsaid.codex.attempts[forcedCodex] || 0;
-      const instruction = buildCodexInstruction([forcedCodex], text, true, priorFailures, true);
-      const fitted = fitInstructionToBudget(text, instruction);
+      const fitted = buildAndFitCodexInstruction([forcedCodex], text, true, priorFailures, true);
       if (fitted) {
         state.unsaid.codex.attempts[forcedCodex] = (state.unsaid.codex.attempts[forcedCodex] || 0) + 1;
         state.unsaid.codex.lastAttemptTurn[forcedCodex] = state.unsaid.turn;
@@ -259,6 +259,8 @@ var unsaidModifier = (text) => {
         state.unsaid.codex.pendingTypes = { [forcedCodex]: type };
         state.unsaid.codex.lastTriggerTurn = state.unsaid.turn;
         state.unsaid.pending = null;
+        state.unsaid.pendingCoreShiftAllowed = false;
+        state.unsaid.pendingCoreCheck = false;
         updateUnsaidBackupCard(cacheEfficient, fitted);
         return { text: text + fitted };
       }
@@ -304,6 +306,9 @@ var unsaidModifier = (text) => {
             // too early.
             state.unsaid.codex.introducedTurn[name] = state.unsaid.turn;
           }
+          if (codexAppearanceCount(name) === 0) {
+            recordCodexEvidence(name, codexRecent, true);
+          }
         } else if (hadLegacyFlag && !hasIntroTurn) {
           delete state.unsaid.codex.likelyCharacters[name];
           state.unsaid.codex.observedTypes[name] = state.unsaid.codex.observedTypes[name] || "character";
@@ -317,27 +322,45 @@ var unsaidModifier = (text) => {
       ).filter(name => (state.unsaid.codex.lastAttemptTurn[name] || -999999) < state.unsaid.turn);
 
       const minObserve = Math.max(0, cfg.codexCharacterMinTurns || 0);
+      const minAppearances = Math.max(1, cfg.codexCharacterMinAppearances || 1);
       const deadline = Math.max(minObserve, cfg.codexCharacterDeadline || 5);
-      const evidenceNeeded = Math.max(1, cfg.codexCharacterEvidenceThreshold || 6);
 
-      const matureCharacters = available.filter(name => {
-        if (!state.unsaid.codex.likelyCharacters[name]) return false;
-        const introduced = state.unsaid.codex.introducedTurn[name];
-        if (typeof introduced !== "number") return false;
-        const age = state.unsaid.turn - introduced;
-        if (age < minObserve) return false;
-        return codexEvidenceScore(name) >= evidenceNeeded || age >= deadline;
+      const characterCandidates = available.filter(name =>
+        !!state.unsaid.codex.likelyCharacters[name] &&
+        typeof state.unsaid.codex.introducedTurn[name] === "number"
+      );
+
+      // The normal path needs BOTH enough elapsed story time and enough
+      // distinct on-screen appearances. The hard deadline is deliberately
+      // time-only so a recurring character cannot get stranded forever
+      // because they stepped out of the scene after a strong introduction.
+      const deadlineCharacters = characterCandidates.filter(name => {
+        const age = state.unsaid.turn - state.unsaid.codex.introducedTurn[name];
+        return age >= deadline;
+      });
+      const matureCharacters = characterCandidates.filter(name => {
+        const age = state.unsaid.turn - state.unsaid.codex.introducedTurn[name];
+        return age >= minObserve && codexAppearanceCount(name) >= minAppearances;
       });
 
       const nonCharacters = available.filter(name => !state.unsaid.codex.likelyCharacters[name]);
-      const batchSize = Math.max(1, Math.min(CODEX_MAX_CANDIDATES_PER_TURN, cfg.codexAutoBatchSize || 1));
 
-      // Introduced characters wait for both the observation floor and useful
-      // evidence unless the hard deadline is reached. One profile per turn by
-      // default keeps Codex from dumping several new cards into a fresh scene.
-      const candidates = matureCharacters.length > 0
-        ? matureCharacters.slice(0, batchSize)
-        : (sinceLastCodex >= cfg.codexCooldown ? nonCharacters.slice(0, batchSize) : []);
+      // Automatic character generation is intentionally one profile at a
+      // time. Models comply much more reliably with one structured card than
+      // a batch, and it gives each profile more room to use accumulated
+      // evidence. Deadline characters go first; otherwise use a normally
+      // mature character. Non-character entities keep the ordinary global
+      // Codex cooldown and may still be batched.
+      let candidates = [];
+      let hardDeadline = false;
+      if (deadlineCharacters.length > 0) {
+        candidates = deadlineCharacters.slice(0, 1);
+        hardDeadline = true;
+      } else if (matureCharacters.length > 0) {
+        candidates = matureCharacters.slice(0, 1);
+      } else if (sinceLastCodex >= cfg.codexCooldown) {
+        candidates = nonCharacters;
+      }
 
       if (candidates.length > 0) {
         const priorFailures = candidates.reduce(
@@ -345,21 +368,13 @@ var unsaidModifier = (text) => {
           0
         );
 
-        const hardDeadline = candidates.some(name => {
-          if (!state.unsaid.codex.likelyCharacters[name]) return false;
-          const introduced = state.unsaid.codex.introducedTurn[name];
-          if (typeof introduced !== "number") return false;
-          return (state.unsaid.turn - introduced) >= deadline;
-        });
-
-        const instruction = buildCodexInstruction(
+        const fitted = buildAndFitCodexInstruction(
           candidates,
           text,
           false,
           priorFailures,
           hardDeadline
         );
-        const fitted = fitInstructionToBudget(text, instruction);
 
         if (fitted) {
           const types = {};
@@ -372,6 +387,8 @@ var unsaidModifier = (text) => {
           state.unsaid.codex.pendingTypes = types;
           state.unsaid.codex.lastTriggerTurn = state.unsaid.turn;
           state.unsaid.pending = null;
+          state.unsaid.pendingCoreShiftAllowed = false;
+          state.unsaid.pendingCoreCheck = false;
           updateUnsaidBackupCard(cacheEfficient, fitted);
           return { text: text + fitted };
         }
@@ -384,9 +401,10 @@ var unsaidModifier = (text) => {
         } right now — Codex will retry automatically later.`);
       }
     }
+
     state.unsaid.codex.pendingNames = [];
 
-    if (cfg.cast.length > 0 && !skipStoryAdvance) {
+    if (cfg.cast.length > 0) {
       const eligible = active.filter(name => {
         const mind = state.unsaid.minds[name];
         return !mind || !mind.lastTurn || (state.unsaid.turn - mind.lastTurn) >= cfg.cooldown;
@@ -406,6 +424,8 @@ var unsaidModifier = (text) => {
         const fitted = buildAndFitThoughtInstruction(chosen, active, text, cfg.allowCoreShift);
         if (fitted) {
           state.unsaid.pending = chosen;
+          state.unsaid.pendingCoreShiftAllowed = naturalCoreShiftEligible(state.unsaid.minds[chosen], cfg.allowCoreShift);
+          state.unsaid.pendingCoreCheck = false;
           updateUnsaidBackupCard(cacheEfficient, fitted);
           return { text: text + fitted };
         }
@@ -413,10 +433,12 @@ var unsaidModifier = (text) => {
     }
 
     state.unsaid.pending = null;
+    state.unsaid.pendingCoreShiftAllowed = false;
+    state.unsaid.pendingCoreCheck = false;
     updateUnsaidBackupCard(cacheEfficient, "");
     return { text };
   } catch (e) {
-    utLog("UNSAID Context", e);
+    if (typeof log === "function") log("UNSAID Context error: " + (e && e.message));
     return { text: originalText };
   }
 };

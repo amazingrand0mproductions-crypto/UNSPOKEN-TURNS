@@ -1,4 +1,4 @@
-var CP_VERSION = "1.0";
+var CP_VERSION = "1.1";
 
 // Shared by both systems' name/entity detection (TWISTS AND TURNS'
 // findEntityInSentence and UNSAID's CODEX_NAME_TOKEN below) — the set of
@@ -10,45 +10,6 @@ var CP_VERSION = "1.0";
 // the letter and the digit, so it silently failed to match at all). One
 // shared definition means a future gap only needs finding and fixing once.
 var NAME_ALPHANUM = "a-zA-Z0-9";
-
-var UNSPOKEN_TURNS_VERSION = "2.1.0";
-
-function utText(value) {
-  return typeof value === "string" ? value : (value == null ? "" : String(value));
-}
-
-function utCards() {
-  return (typeof storyCards !== "undefined" && Array.isArray(storyCards)) ? storyCards : [];
-}
-
-function utLog(scope, error) {
-  try {
-    if (typeof log === "function") {
-      const message = error && error.message ? error.message : utText(error);
-      log(`[UNSPOKEN TURNS] ${scope}: ${message}`);
-    }
-  } catch (e) {}
-}
-
-function utActionKey() {
-  if (typeof info !== "undefined" && info && typeof info.actionCount === "number") {
-    return `action:${info.actionCount}`;
-  }
-  return `turn:${state && state.unsaid ? state.unsaid.turn : 0}`;
-}
-
-function utUniqueNames(values) {
-  const out = [];
-  (Array.isArray(values) ? values : []).forEach(value => {
-    const name = utText(value).trim();
-    if (!name) return;
-    if (!out.some(existing => {
-      try { return isSameCardEntity(existing, name); } catch (e) { return existing.toLowerCase() === name.toLowerCase(); }
-    })) out.push(name);
-  });
-  return out;
-}
-
 
 var CP_DEFAULTS = {
   enabled: true,
@@ -731,35 +692,50 @@ var COMMON_CAPITALIZED_STOPWORDS = [
   "Laughs", "Sigh", "Sighs", "Pause", "Pauses", "Continue", "Continues",
   "Slowly", "Quickly", "Softly", "Quietly", "Gently", "Carefully",
   "Immediately", "Abruptly", "Briefly", "Slightly", "Barely", "Nearly",
-  "Simply", "Moment", "Voice", "Eyes", "Hand", "Hands", "Face", "Head"
+  "Simply", "Moment", "Voice", "Eyes", "Hand", "Hands", "Face", "Head",
+
+  // More high-frequency sentence openers, temporal words, stage directions,
+  // and generic actions. These are useful prose but terrible autonomous
+  // entity candidates, especially at the beginning of generated sentences.
+  "Suddenly", "Finally", "Meanwhile", "Later", "Earlier", "Soon", "Still",
+  "Even", "Perhaps", "Maybe", "Actually", "Instead", "Together", "Apart",
+  "Nearby", "Ahead", "Behind", "Inside", "Outside", "Upstairs", "Downstairs",
+  "Today", "Tonight", "Tomorrow", "Yesterday", "Morning", "Afternoon",
+  "Evening", "Night", "Day", "Dawn", "Dusk", "Midnight", "Noon",
+  "Yes", "No", "Okay", "Alright", "Fine", "Sure", "Well", "Right",
+  "Someone", "Somebody", "Something", "Anyone", "Anybody", "Anything",
+  "Everyone", "Everybody", "Everything", "Nobody", "Nothing",
+  "Grab", "Grabs", "Grabbed", "Take", "Takes", "Took", "Taking",
+  "Place", "Places", "Placed", "Move", "Moves", "Moved", "Moving",
+  "Run", "Runs", "Ran", "Running", "Raise", "Raises", "Raised", "Raising",
+  "Lower", "Lowers", "Lowered", "Open", "Opens", "Opened", "Opening",
+  "Close", "Closes", "Closed", "Closing", "Hold", "Holds", "Held",
+  "Keep", "Keeps", "Kept", "Feel", "Feels", "Felt", "Feeling",
+  "Seem", "Seems", "Seemed", "Appear", "Appears", "Appeared",
+  "Remain", "Remains", "Remained", "Begin", "Begins", "Began",
+  "Start", "Starts", "Started", "Stop", "Stops", "Stopped",
+  "Leave", "Leaves", "Left", "Return", "Returns", "Returned",
+  "Enter", "Enters", "Entered", "Arrive", "Arrives", "Arrived",
+  "Come", "Comes", "Came", "Go", "Goes", "Went", "Sit", "Sits", "Sat",
+  "Stand", "Stands", "Stood", "Lean", "Leans", "Leaned",
+  "Pull", "Pulls", "Pulled", "Push", "Pushes", "Pushed",
+  "Swallow", "Swallows", "Swallowed", "Tilt", "Tilts", "Tilted",
+  "Shift", "Shifts", "Shifted", "Wince", "Winces", "Winced",
+  "Flinch", "Flinches", "Flinched", "Exhale", "Exhales", "Exhaled",
+  "Inhale", "Inhales", "Inhaled",
+  "Narrator", "Narration", "Response", "Continue", "Continuation", "Dialogue",
+  "Conversation", "Setting", "Summary", "Memory", "Plot", "Essentials",
+  "Author", "Authors", "Scenario", "Adventure", "Quest", "Chapter", "Section",
+  "Current", "Previous", "Following", "Opening", "Ending", "Example", "Examples",
+  "Important", "Note", "Reminder", "Format", "Formatting", "Marker", "Markers",
+  "Required", "Optional", "Default", "Defaults", "Config", "Configuration",
+  "Enabled", "Disabled", "True", "False", "None", "Unknown", "TBD",
+  "Said", "Spoke", "Speaking", "Tell", "Tells", "Think", "Thinks", "Thought",
+  "Wonder", "Wonders", "Notice", "Notices", "Hear", "Hears", "Saw", "Seeing",
+  "Watch", "Watches", "Approach", "Approaches", "Approached", "Cross",
+  "Crosses", "Crossed", "Pass", "Passes", "Passed", "Waits", "Waited",
+  "Sudden", "Soft", "Low", "High", "Deep", "Faint", "Brief", "Slow", "Fast"
 ];
-// Extra high-frequency prose/UI words that routinely appear capitalized only
-// because they start a sentence. Keeping them out of both scanners prevents
-// junk names from burning Codex retries or becoming twist entities.
-COMMON_CAPITALIZED_STOPWORDS.push(
-  "Opened", "Opening", "Closed", "Closing", "Lifted", "Lowered", "Raised",
-  "Took", "Taking", "Gave", "Giving", "Pulled", "Pulling", "Pushed", "Pushing",
-  "Held", "Holding", "Leaned", "Leaning", "Sat", "Sitting", "Stood", "Standing",
-  "Entered", "Entering", "Arrived", "Arriving", "Left", "Leaving", "Returned",
-  "Reached", "Reaching", "Turned", "Turning", "Walked", "Walking", "Ran",
-  "Running", "Stepped", "Stepping", "Followed", "Following", "Noticed",
-  "Noticing", "Felt", "Feeling", "Thought", "Thinking", "Knew", "Knowing",
-  "Remembered", "Remembering", "Heard", "Hearing", "Saw", "Seeing", "Found",
-  "Finding", "Realized", "Realizing", "Wondered", "Wondering", "Decided",
-  "Trying", "Started", "Starting", "Began", "Beginning", "Waited", "Waiting",
-  "Spoke", "Speaking", "Said", "Asked", "Replied", "Answered", "Whispered",
-  "Murmured", "Shouted", "Smiled", "Frowned", "Nodded", "Shrugged",
-  "Man", "Woman", "Girl", "Boy", "Child", "Stranger", "Traveler", "Traveller",
-  "Guard", "Soldier", "Crowd", "Room", "Door", "Table", "Chair", "Road", "Path",
-  "Street", "Forest", "Tree", "Trees", "House", "Building", "Bar", "Inn",
-  "Tavern", "City", "Town", "Village", "Sky", "Air", "Ground", "Floor", "Wall",
-  "Window", "Fire", "Water", "Blood", "Sound", "Shadow", "Distance", "Footsteps",
-  "Breath", "Heart", "Words", "Plot", "Details", "Memory", "Author", "Authors",
-  "Scenario", "Adventure", "Retry", "Regenerate", "Response", "Prompt", "Settings",
-  "Config", "Configuration", "Enabled", "Disabled", "True", "False", "Private",
-  "Thoughts", "Core", "Truth", "Mentions", "Cooldown", "Retries", "Status",
-  "Commands", "Command", "Create", "Created", "Generated", "Automatic"
-);
 
 // TWISTS AND TURNS' own additions on top of the shared base — narrative-
 // hedging/rumor vocabulary that matters specifically for how loose-thread
@@ -770,6 +746,36 @@ var CP_STOPWORDS = new Set([
   "Rumored", "Legend", "Legends", "According", "Reportedly", "Allegedly",
   "Apparently", "Eventually", "Recently", "Long"
 ].map(w => w.toLowerCase()));
+
+// Managed front-memory segments. Each subsystem owns only its own marked
+// line, so enabling/disabling one feature can never wipe user-authored front
+// memory or the other subsystem's hint.
+var FRONT_MEMORY_MARKER = "[UNSAID hint]";
+var TWIST_FRONT_MEMORY_MARKER = "[TWISTS hint]";
+
+function setManagedFrontMemorySegment(marker, body) {
+  if (typeof state === "undefined") return;
+  if (!state.memory || typeof state.memory !== "object") state.memory = {};
+
+  const current = typeof state.memory.frontMemory === "string"
+    ? state.memory.frontMemory
+    : "";
+  const kept = current
+    .split("\n")
+    .filter(line => line.trim().indexOf(marker) !== 0)
+    .join("\n")
+    .replace(/^\n+|\n+$/g, "");
+
+  const compactBody = body == null ? "" : String(body).replace(/\s+/g, " ").trim();
+  const segment = compactBody ? `${marker} ${compactBody}` : "";
+  state.memory.frontMemory = kept && segment
+    ? `${kept}\n\n${segment}`
+    : (kept || segment);
+}
+
+function syncTwistFrontMemoryHint(hint) {
+  setManagedFrontMemorySegment(TWIST_FRONT_MEMORY_MARKER, hint || "");
+}
 
 var Library = (() => {
   function initState() {
@@ -788,6 +794,8 @@ var Library = (() => {
         lastAuthorsNoteSignature: null,
         pendingPayoffId2: null,
         scriptTurnCount: 0,
+        lastHookActionCount: null,
+        lastHookSignature: null,
 
         multiplayerNames: []
       };
@@ -805,6 +813,8 @@ var Library = (() => {
     if (typeof state.contingency.lastAuthorsNoteSignature === "undefined") state.contingency.lastAuthorsNoteSignature = null;
     if (typeof state.contingency.pendingPayoffId2 === "undefined") state.contingency.pendingPayoffId2 = null;
     if (typeof state.contingency.scriptTurnCount !== "number") state.contingency.scriptTurnCount = 0;
+    if (typeof state.contingency.lastHookActionCount !== "number") state.contingency.lastHookActionCount = null;
+    if (typeof state.contingency.lastHookSignature !== "string") state.contingency.lastHookSignature = null;
     if (!Array.isArray(state.contingency.multiplayerNames)) state.contingency.multiplayerNames = [];
     if (!state.contingencyConfig) {
       state.contingencyConfig = Object.assign({}, CP_DEFAULTS);
@@ -835,6 +845,33 @@ var Library = (() => {
     let h = 0;
     for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
     return h + ":" + s.length;
+  }
+
+  function beginContextTurn(c, rawText) {
+    if (!c) return true;
+
+    if (typeof info !== "undefined" && info && Number.isInteger(info.actionCount)) {
+      const current = Math.abs(info.actionCount);
+      const isNew = c.lastHookActionCount !== current;
+      c.turn = current;
+      if (isNew) {
+        c.lastHookActionCount = current;
+        c.scriptTurnCount += 1;
+      }
+      return isNew;
+    }
+
+    // Fallback for runtimes that do not expose actionCount. A stable suffix
+    // signature prevents retries/regenerations of the same context from aging
+    // every thread or triggering pacing a second time.
+    const source = typeof rawText === "string" ? rawText.slice(-6000) : "";
+    const historyStamp = (typeof history !== "undefined" && Array.isArray(history)) ? history.length : 0;
+    const sig = textSignature(source + "|h:" + historyStamp);
+    if (c.lastHookSignature === sig) return false;
+    c.lastHookSignature = sig;
+    c.turn += 1;
+    c.scriptTurnCount += 1;
+    return true;
   }
 
   function extractCommand(raw) {
@@ -989,10 +1026,19 @@ var Library = (() => {
       seedTouches: 1,
       status: "brewing",
       tier: CP_TIER_MINOR,
+      lastSeedTurn: typeof c.turn === "number" ? c.turn : originTurn,
 
       priorTwistCount: priorTwistCountFor(c, entity)
     };
     c.threads.push(thread);
+    if (c.threads.length > MAX_ACTIVE_TWIST_THREADS) {
+      c.threads.sort((a, b) => {
+        const ar = a.status === "ready" ? 1 : 0;
+        const br = b.status === "ready" ? 1 : 0;
+        return br - ar || b.originTurn - a.originTurn;
+      });
+      c.threads = c.threads.slice(0, MAX_ACTIVE_TWIST_THREADS);
+    }
     return thread;
   }
 
@@ -1021,6 +1067,7 @@ var Library = (() => {
     if (existing) {
       if (existing.status === "brewing") {
         existing.seedTouches += 1;
+        existing.lastSeedTurn = c.turn;
         existing.tier = tierFor(existing.seedTouches);
         if (isEligible(existing, c, cfg)) existing.status = "ready";
       }
@@ -1078,8 +1125,9 @@ var Library = (() => {
         if (alreadyResolvedCombo(c, entity, cat)) continue;
         const existing = findThread(c, entity, cat);
         if (existing) {
-          if (existing.status === "brewing") {
+          if (existing.status === "brewing" && existing.lastSeedTurn !== c.turn) {
             existing.seedTouches += 1;
+            existing.lastSeedTurn = c.turn;
             existing.tier = tierFor(existing.seedTouches);
             if (isEligible(existing, c, cfg)) existing.status = "ready";
           }
@@ -1514,7 +1562,7 @@ var Library = (() => {
   return {
     CP_VERSION, CP_DEFAULTS, CP_CATEGORIES, CP_CATEGORY_KEYS, CP_TIER_MINOR, CP_TIER_MODERATE, CP_TIER_MAJOR, CP_TIER_CATACLYSMIC,
     CP_COMPOUND_CHANCE, CP_WILDCARD_CHANCE, CP_CLUSTER_NAMES, CP_CATEGORY_CLUSTERS, CP_CATEGORY_TO_CLUSTER,
-    initState, getConfig, pacingFor, effectivePacing, extractCommand, nextId, findEntityInSentence, findKnownEntityInSentence, eligibleCardTitles,
+    initState, getConfig, pacingFor, effectivePacing, beginContextTurn, extractCommand, nextId, findEntityInSentence, findKnownEntityInSentence, eligibleCardTitles,
     splitSentences, findThread, findThreadFuzzy, createThread, tierFor, isEligible, priorTwistCountFor, scanForLooseThreads, scanStoryCardsForScenarioThreads,
     scanPlotEssentialsForThreads, scanAuthorsNoteForThreads, pickForeshadowThread, pickMostBuiltUpBrewingThread, pickPayoffThread, pickCompoundPayoffThreads, pickWildcardEntity,
     foreshadowHint, payoffHint, compoundPayoffHint, safeSetCard, createTwistStoryCard, safeLog, applyEntryConfig,
@@ -1540,9 +1588,8 @@ var UNSAID_DEFAULTS = {
   // Automatic character cards wait for actual story evidence instead of
   // canonizing guesses immediately after a name appears.
   codexCharacterMinTurns: 3,
+  codexCharacterMinAppearances: 2,
   codexCharacterDeadline: 5,
-  codexCharacterEvidenceThreshold: 6,
-  codexAutoBatchSize: 1,
   playerName: ""
 };
 
@@ -1566,14 +1613,15 @@ var MIND_NOTES_MARKER = "💭 Inner Life — private, not visible to other chara
 var CAST_LIST_MARKER = "===";
 var CODEX_MAX_ATTEMPTS = 5;
 var CODEX_MAX_CANDIDATES_PER_TURN = 3;
-var CODEX_EVIDENCE_SNIPPET_LIMIT = 3;
-var CODEX_FIELD_VALUE_LIMIT = 420;
 // Once a name is confidently identified as a character, failed card
 // generations retry on the next real story turn instead of waiting for the
 // global Codex cooldown. This is what lets a newly introduced character
 // actually finish inside the configured deadline rather than merely getting
 // its first attempt near that deadline.
 var CODEX_CHARACTER_RETRY_INTERVAL = 1;
+var CODEX_EVIDENCE_PER_NAME = 6;
+var CODEX_EVIDENCE_SNIPPET_LENGTH = 260;
+var MAX_ACTIVE_TWIST_THREADS = 120;
 
 // Built from the same COMMON_CAPITALIZED_STOPWORDS base TWISTS AND TURNS'
 // CP_STOPWORDS uses (defined near the top of this file, alongside
@@ -1634,7 +1682,9 @@ var CODEX_TITLE_WORDS = new Set([
   // ended up written under the *other* candidate's bare-surname title
   // entirely, a genuine cross-assignment, not just wasted budget. One
   // shared set, used for both jobs everywhere, closes both at once.
-  "Mr", "Mrs", "Ms", "Miss", "Dr", "Madam", "Mx"
+  "Mr", "Mrs", "Ms", "Miss", "Dr", "Madam", "Mx",
+  "Prof", "Capt", "Gen", "Col", "Lt", "Sgt", "Cmdr", "Maj", "Adm", "Rev",
+  "Hon", "Gov", "Sen", "Rep", "Det", "Insp"
 ].map(w => w.toLowerCase()));
 
 var SENTENCE_ABBREVIATIONS = new Set([
@@ -1753,47 +1803,84 @@ function checkCacheEfficientWarning() {
 }
 
 function initUnsaid() {
-  if (typeof state === "undefined" || !state) return;
-
-  if (!state.unsaid || typeof state.unsaid !== "object" || Array.isArray(state.unsaid)) {
-    state.unsaid = {};
+  if (!state.unsaid) {
+    state.unsaid = {
+      minds: {},
+      turn: 0,
+      pending: null,
+      forcedPeek: null,
+      forcedPeekCore: null,
+      forcedCodex: null,
+      consecutiveRevealMisses: 0,
+      lastActionCount: -1,
+      lastStorySignature: null,
+      pendingCoreShiftAllowed: false,
+      pendingCoreCheck: false,
+      codex: {
+        mentionCounts: {},
+        attempts: {},
+        firstSeenTurn: {},
+        introducedTurn: {},
+        likelyCharacters: {},
+        observedTypes: {},
+        appearanceTurns: {},
+        evidence: {},
+        lastMentionTurn: {},
+        lastAttemptTurn: {},
+        pendingNames: [],
+        pendingTypes: {},
+        consecutiveFailedNames: [],
+        lastTriggerTurn: 0
+      }
+    };
   }
-  const u = state.unsaid;
-
-  if (!u.minds || typeof u.minds !== "object" || Array.isArray(u.minds)) u.minds = {};
-  if (!Number.isFinite(Number(u.turn))) u.turn = 0;
-  else u.turn = Math.max(0, Math.floor(Number(u.turn)));
-  if (typeof u.pending === "undefined") u.pending = null;
-  if (typeof u.forcedPeek === "undefined") u.forcedPeek = null;
-  if (typeof u.forcedPeekCore === "undefined") u.forcedPeekCore = null;
-  if (typeof u.forcedCodex === "undefined") u.forcedCodex = null;
-  if (typeof u.skipStoryAdvance !== "boolean") u.skipStoryAdvance = false;
-  if (!Number.isFinite(Number(u.consecutiveRevealMisses))) u.consecutiveRevealMisses = 0;
-  if (!Number.isFinite(Number(u.lastActionCount))) u.lastActionCount = -1;
-
-  if (!u.codex || typeof u.codex !== "object" || Array.isArray(u.codex)) u.codex = {};
-  const c = u.codex;
-  [
-    "mentionCounts", "attempts", "firstSeenTurn", "introducedTurn",
-    "likelyCharacters", "observedTypes", "lastAttemptTurn", "pendingTypes",
-    "evidence", "lastMentionAction", "lastEvidenceAction"
-  ].forEach(key => {
-    if (!c[key] || typeof c[key] !== "object" || Array.isArray(c[key])) c[key] = {};
-  });
-  if (!Array.isArray(c.pendingNames)) c.pendingNames = [];
-  if (!Array.isArray(c.consecutiveFailedNames)) c.consecutiveFailedNames = [];
-  if (!Number.isFinite(Number(c.lastTriggerTurn))) c.lastTriggerTurn = 0;
-
-  Object.keys(c.mentionCounts).forEach(name => {
-    const n = Number(c.mentionCounts[name]);
-    c.mentionCounts[name] = Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0;
-  });
-  Object.keys(c.attempts).forEach(name => {
-    const n = Number(c.attempts[name]);
-    c.attempts[name] = Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0;
-  });
-  c.pendingNames = utUniqueNames(c.pendingNames).slice(0, CODEX_MAX_CANDIDATES_PER_TURN);
-
+  // Backfill every field below individually, not just on first creation —
+  // if state.unsaid already exists (e.g. continuing an adventure across
+  // script versions) but is missing one of these, code that indexes
+  // straight into it (state.unsaid.codex.attempts[name] = ...) throws,
+  // which the caller's try/catch swallows silently, killing UNSAID for
+  // that whole turn. Same failure class as the contingency-state hardening.
+  if (!state.unsaid.minds || typeof state.unsaid.minds !== "object") state.unsaid.minds = {};
+  if (typeof state.unsaid.turn !== "number") state.unsaid.turn = 0;
+  if (typeof state.unsaid.forcedPeekCore === "undefined") state.unsaid.forcedPeekCore = null;
+  if (typeof state.unsaid.forcedCodex === "undefined") state.unsaid.forcedCodex = null;
+  if (typeof state.unsaid.consecutiveRevealMisses !== "number") state.unsaid.consecutiveRevealMisses = 0;
+  if (typeof state.unsaid.lastStorySignature !== "string") state.unsaid.lastStorySignature = null;
+  if (typeof state.unsaid.pendingCoreShiftAllowed !== "boolean") state.unsaid.pendingCoreShiftAllowed = false;
+  if (typeof state.unsaid.pendingCoreCheck !== "boolean") state.unsaid.pendingCoreCheck = false;
+  if (!state.unsaid.codex || typeof state.unsaid.codex !== "object") {
+    state.unsaid.codex = {
+      mentionCounts: {},
+      attempts: {},
+      firstSeenTurn: {},
+      introducedTurn: {},
+      likelyCharacters: {},
+      observedTypes: {},
+      appearanceTurns: {},
+      evidence: {},
+      lastMentionTurn: {},
+      lastAttemptTurn: {},
+      pendingNames: [],
+      pendingTypes: {},
+      consecutiveFailedNames: [],
+      lastTriggerTurn: 0
+    };
+  }
+  if (!state.unsaid.codex.mentionCounts || typeof state.unsaid.codex.mentionCounts !== "object") state.unsaid.codex.mentionCounts = {};
+  if (!state.unsaid.codex.attempts || typeof state.unsaid.codex.attempts !== "object") state.unsaid.codex.attempts = {};
+  if (!state.unsaid.codex.firstSeenTurn || typeof state.unsaid.codex.firstSeenTurn !== "object") state.unsaid.codex.firstSeenTurn = {};
+  if (!state.unsaid.codex.introducedTurn || typeof state.unsaid.codex.introducedTurn !== "object") state.unsaid.codex.introducedTurn = {};
+  if (!state.unsaid.codex.likelyCharacters || typeof state.unsaid.codex.likelyCharacters !== "object") state.unsaid.codex.likelyCharacters = {};
+  if (!state.unsaid.codex.observedTypes || typeof state.unsaid.codex.observedTypes !== "object") state.unsaid.codex.observedTypes = {};
+  if (!state.unsaid.codex.appearanceTurns || typeof state.unsaid.codex.appearanceTurns !== "object") state.unsaid.codex.appearanceTurns = {};
+  if (!state.unsaid.codex.evidence || typeof state.unsaid.codex.evidence !== "object") state.unsaid.codex.evidence = {};
+  if (!state.unsaid.codex.lastMentionTurn || typeof state.unsaid.codex.lastMentionTurn !== "object") state.unsaid.codex.lastMentionTurn = {};
+  if (!state.unsaid.codex.lastAttemptTurn || typeof state.unsaid.codex.lastAttemptTurn !== "object") state.unsaid.codex.lastAttemptTurn = {};
+  if (!Array.isArray(state.unsaid.codex.pendingNames)) state.unsaid.codex.pendingNames = [];
+  if (!state.unsaid.codex.pendingTypes || typeof state.unsaid.codex.pendingTypes !== "object") state.unsaid.codex.pendingTypes = {};
+  if (!Array.isArray(state.unsaid.codex.consecutiveFailedNames)) state.unsaid.codex.consecutiveFailedNames = [];
+  if (typeof state.unsaid.codex.lastTriggerTurn !== "number") state.unsaid.codex.lastTriggerTurn = 0;
+  if (typeof state.unsaid.lastActionCount !== "number") state.unsaid.lastActionCount = -1;
   ensureSharedConfigCard();
 }
 
@@ -1837,9 +1924,9 @@ function pushMessage(msg) {
 }
 
 function nameAppears(name, text) {
-  const n = utText(name).trim();
-  if (!n) return false;
-  return new RegExp(`(?:^|[^A-Za-z0-9])${escapeForRegex(n)}(?=$|[^A-Za-z0-9])`, "i").test(utText(text));
+  if (!name || !text) return false;
+  const n = escapeForRegex(String(name).trim());
+  return new RegExp(`(?:^|[^A-Za-z0-9])${n}(?=$|[^A-Za-z0-9])`, "i").test(String(text));
 }
 
 function createOrFindCard(keys, initialEntry, type) {
@@ -1965,9 +2052,8 @@ function renderUnsaidSection(cfg) {
     `> Minimum turns between Codex cards: ${cfg.codexCooldown}\n` +
     `> Codex retries before giving up on a name: ${cfg.codexMaxAttempts}\n` +
     `> Minimum story turns to observe a newly introduced character before carding: ${cfg.codexCharacterMinTurns}\n` +
+    `> Minimum on-screen appearances before normal character carding: ${cfg.codexCharacterMinAppearances}\n` +
     `> Maximum turns before a newly introduced character card is forced: ${cfg.codexCharacterDeadline}\n` +
-    `> Character evidence score needed after the minimum wait: ${cfg.codexCharacterEvidenceThreshold}\n` +
-    `> Automatic Codex cards per story turn: ${cfg.codexAutoBatchSize}\n` +
     `> Reset Codex tracking now: false\n` +
     `> Player character (skip when Codexing): ${cfg.playerName}\n`;
 }
@@ -1976,9 +2062,11 @@ var CONFIG_DEFAULT_UNSAID_NOTES_SECTION =
   CONFIG_SECTION_UNSAID + "\n" +
   "Commands (type as an action):\n" +
   "- /unsaid status — writes a live status report to a separate \"UNSAID — Status\" card. Not sent to the AI.\n" +
-  "- /peek <character name> — force a private thought from that character right now.\n" +
+  "- /unsaid help — shows the command list and refreshes access to this config card.\n" +
+  "- /unsaid resetcodex — clears Codex detection/retry timing without deleting any Story Cards.\n" +
+  "- /peek <character name> — force a private thought from that character right now. Quoted names are accepted.\n" +
   "- /peek <character name> core — force a check for whether this moment has changed that character's core truth.\n" +
-  "- /card <character name> — force Codex to write or refresh that character's Story Card right now, skipping the mention count and cooldown.\n\n" +
+  "- /card <character name> — force Codex to write or refresh that character's Story Card right now, skipping automatic observation/cooldown gates. Quoted names are accepted.\n\n" +
   "Pre-authoring a character's inner life: write \"💭 Inner Life — private, not visible to other characters\" followed by \"Core truth:\" and their established truth into a character's own Notes before their first reveal, and UNSAID will start from that instead of inventing one. Matches the same format this script writes when it syncs a reveal, so copying an existing character's Notes as a template works too.\n\n" +
   "- Enable UNSAID: master switch for private thoughts + Codex together. False turns both off.\n" +
   "- Enable Codex: auto-Story-Card generation on its own — turn off to keep private thoughts working on your existing hand-made cards without new ones appearing.\n" +
@@ -1994,10 +2082,9 @@ var CONFIG_DEFAULT_UNSAID_NOTES_SECTION =
   "- Minimum turns between Codex cards: cooldown between one Codex card and the next.\n" +
   "- Codex retries before giving up on a name: attempts before automatic background retries stop on non-character names — introduced characters are retried instead of being abandoned. \"/card <name>\" still works directly any time regardless.\n" +
   "- Minimum story turns to observe a newly introduced character before carding: automatic character cards cannot be requested before this many full story turns have passed after the character actually appears on-screen. Default 3.\n" +
+  "- Minimum on-screen appearances before normal character carding: how many separate output turns should show the character before Codex normally writes them. Default 2. The hard deadline can still override this so a quiet character is not stuck forever.\n" +
   "- Maximum turns before a newly introduced character card is forced: after this many turns, Codex escalates the profile request. The deadline is never allowed below the observation minimum.\n" +
-  "- Character evidence score needed after the minimum wait: Codex prefers to see dialogue/actions/traits/relationships before carding early; the hard deadline still guarantees an introduced character is not forgotten.\n" +
-  "- Automatic Codex cards per story turn: limits how many background profiles Codex asks the model for at once. Default 1 keeps card creation from flooding a scene.\n" +
-  "- Reset Codex tracking now: set true to clear failed attempts/cooldowns, evidence, and introduction timing; flips back to false on its own.\n" +
+  "- Reset Codex tracking now: set true to clear failed attempts/cooldowns and introduction timing; flips back to false on its own.\n" +
   "- Player character (skip when Codexing): your own name, so Codex skips writing a profile for you.\n\n" +
   "Characters who can have private thoughts, one per line — Codex adds newly discovered ones automatically:\n" +
   CAST_LIST_MARKER;
@@ -2067,6 +2154,25 @@ function ensureSharedConfigCard() {
   return card;
 }
 
+function resetCodexTrackingState() {
+  if (!state.unsaid || !state.unsaid.codex) return;
+  const codex = state.unsaid.codex;
+  codex.attempts = {};
+  codex.mentionCounts = {};
+  codex.firstSeenTurn = {};
+  codex.introducedTurn = {};
+  codex.likelyCharacters = {};
+  codex.observedTypes = {};
+  codex.lastAttemptTurn = {};
+  codex.appearanceTurns = {};
+  codex.evidence = {};
+  codex.lastMentionTurn = {};
+  codex.pendingNames = [];
+  codex.pendingTypes = {};
+  codex.consecutiveFailedNames = [];
+  codex.lastTriggerTurn = 0;
+}
+
 function readUnsaidConfig() {
   const card = ensureSharedConfigCard();
   if (!card) return { ...UNSAID_DEFAULTS, cast: [] };
@@ -2120,7 +2226,7 @@ function readUnsaidConfig() {
   const cooldownMatch = entrySection.match(/think again:\s*(\d+)/i);
   if (cooldownMatch) {
     const parsedCooldown = parseInt(cooldownMatch[1], 10);
-    if (!isNaN(parsedCooldown)) cfg.cooldown = Math.max(0, Math.min(100, parsedCooldown));
+    if (!isNaN(parsedCooldown)) cfg.cooldown = Math.min(500, Math.max(0, parsedCooldown));
   }
 
   const reduceMatch = entrySection.match(/Ease off during your own Do\/Say actions:\s*(true|false)/i);
@@ -2129,79 +2235,69 @@ function readUnsaidConfig() {
   const recentTurnsMatch = entrySection.match(/Recent turns counted as "active":\s*(\d+)/i);
   if (recentTurnsMatch) {
     const parsedRecentTurns = parseInt(recentTurnsMatch[1], 10);
-    if (!isNaN(parsedRecentTurns)) cfg.recentTurnsWindow = Math.max(1, Math.min(20, parsedRecentTurns));
+    if (!isNaN(parsedRecentTurns)) cfg.recentTurnsWindow = Math.min(20, Math.max(1, parsedRecentTurns));
   }
 
   const mentionMatch = entrySection.match(/Mentions needed before Codex creates a card:\s*(\d+)/i);
   if (mentionMatch) {
     const parsedMentions = parseInt(mentionMatch[1], 10);
-    if (!isNaN(parsedMentions)) cfg.mentionThreshold = Math.max(1, Math.min(50, parsedMentions));
+    if (!isNaN(parsedMentions)) cfg.mentionThreshold = Math.min(50, Math.max(1, parsedMentions));
   }
 
   const codexCooldownMatch = entrySection.match(/Minimum turns between Codex cards:\s*(\d+)/i);
   if (codexCooldownMatch) {
     const parsedCodexCooldown = parseInt(codexCooldownMatch[1], 10);
-    if (!isNaN(parsedCodexCooldown)) cfg.codexCooldown = Math.max(0, Math.min(100, parsedCodexCooldown));
+    if (!isNaN(parsedCodexCooldown)) cfg.codexCooldown = Math.min(500, Math.max(0, parsedCodexCooldown));
   }
 
   const codexAttemptsMatch = entrySection.match(/Codex retries before giving up on a name:\s*(\d+)/i);
   if (codexAttemptsMatch) {
     const parsedAttempts = parseInt(codexAttemptsMatch[1], 10);
-    if (!isNaN(parsedAttempts)) cfg.codexMaxAttempts = Math.max(1, Math.min(20, parsedAttempts));
+    if (!isNaN(parsedAttempts)) cfg.codexMaxAttempts = Math.min(50, Math.max(1, parsedAttempts));
   }
 
   const codexMinObserveMatch = entrySection.match(/Minimum story turns to observe a newly introduced character before carding:\s*(\d+)/i);
   if (codexMinObserveMatch) {
     const parsedMinObserve = parseInt(codexMinObserveMatch[1], 10);
-    if (!isNaN(parsedMinObserve)) cfg.codexCharacterMinTurns = Math.max(0, Math.min(20, parsedMinObserve));
+    if (!isNaN(parsedMinObserve)) cfg.codexCharacterMinTurns = Math.max(0, parsedMinObserve);
+  }
+
+  const codexAppearanceMatch = entrySection.match(/Minimum on-screen appearances before normal character carding:\s*(\d+)/i);
+  if (codexAppearanceMatch) {
+    const parsedAppearances = parseInt(codexAppearanceMatch[1], 10);
+    if (!isNaN(parsedAppearances)) cfg.codexCharacterMinAppearances = Math.max(1, Math.min(20, parsedAppearances));
   }
 
   const codexDeadlineMatch = entrySection.match(/Maximum turns before a newly introduced character card is forced:\s*(\d+)/i);
   if (codexDeadlineMatch) {
     const parsedDeadline = parseInt(codexDeadlineMatch[1], 10);
-    if (!isNaN(parsedDeadline)) cfg.codexCharacterDeadline = Math.max(1, Math.min(50, parsedDeadline));
+    if (!isNaN(parsedDeadline)) cfg.codexCharacterDeadline = Math.max(1, parsedDeadline);
   }
-  cfg.codexCharacterDeadline = Math.max(cfg.codexCharacterMinTurns, cfg.codexCharacterDeadline);
-
-  const evidenceMatch = entrySection.match(/Character evidence score needed after the minimum wait:\s*(\d+)/i);
-  if (evidenceMatch) {
-    const n = parseInt(evidenceMatch[1], 10);
-    if (!isNaN(n)) cfg.codexCharacterEvidenceThreshold = Math.max(1, Math.min(30, n));
-  }
-
-  const batchMatch = entrySection.match(/Automatic Codex cards per story turn:\s*(\d+)/i);
-  if (batchMatch) {
-    const n = parseInt(batchMatch[1], 10);
-    if (!isNaN(n)) cfg.codexAutoBatchSize = Math.max(1, Math.min(CODEX_MAX_CANDIDATES_PER_TURN, n));
-  }
+  cfg.codexCharacterMinTurns = Math.min(100, Math.max(0, cfg.codexCharacterMinTurns));
+  cfg.codexCharacterDeadline = Math.min(200, Math.max(cfg.codexCharacterMinTurns, cfg.codexCharacterDeadline));
 
   const resetMatch = entrySection.match(/Reset Codex tracking now:\s*(true|false)/i);
   if (resetMatch && resetMatch[1].toLowerCase() === "true") {
-    state.unsaid.codex.attempts = {};
-    state.unsaid.codex.mentionCounts = {};
-    state.unsaid.codex.firstSeenTurn = {};
-    state.unsaid.codex.introducedTurn = {};
-    state.unsaid.codex.likelyCharacters = {};
-    state.unsaid.codex.observedTypes = {};
-    state.unsaid.codex.lastAttemptTurn = {};
-    state.unsaid.codex.evidence = {};
-    state.unsaid.codex.lastMentionAction = {};
-    state.unsaid.codex.lastEvidenceAction = {};
-    state.unsaid.codex.lastTriggerTurn = 0;
+    resetCodexTrackingState();
   }
 
   const playerMatch = entrySection.match(/Player character \(skip when Codexing\):[ \t]*(.*)/i);
-  if (playerMatch) cfg.playerName = playerMatch[1].trim();
+  if (playerMatch) cfg.playerName = playerMatch[1].trim().slice(0, 80);
 
   // If nothing was typed into the config card, fall back to a name-like
   // scenario placeholder answer (e.g. a Character Creator's "What is your
   // character's name?" prompt) — saves a manual setup step, and a value
   // typed into the config card always overrides this.
   if (!cfg.playerName && typeof state !== "undefined" && Array.isArray(state.placeholders)) {
-    const nameAnswer = state.placeholders.find(p =>
-      p && typeof p.question === "string" && /\bname\b/i.test(p.question) &&
-      typeof p.answer === "string" && p.answer.trim()
-    );
+    const nameAnswer = state.placeholders.find(p => {
+      if (!p || typeof p.question !== "string" || typeof p.answer !== "string" || !p.answer.trim()) return false;
+      const q = p.question;
+      if (!/\bname\b/i.test(q)) return false;
+      // Avoid treating world-building prompts such as "What is your
+      // kingdom's name?" as the player's identity.
+      if (/\b(?:kingdom|realm|city|town|village|country|nation|planet|world|ship|starship|faction|guild|clan|company|organization|organisation|pet|companion|weapon|item)\b/i.test(q)) return false;
+      return /\b(?:your|character|player|protagonist|hero)\b/i.test(q);
+    });
     if (nameAnswer) cfg.playerName = nameAnswer.answer.trim();
   }
 
@@ -2210,8 +2306,11 @@ function readUnsaidConfig() {
 
   cfg.cast = castSection
     .split("\n")
-    .map(line => line.trim().replace(/^[-•*]\s*/, ""))
-    .filter(Boolean);
+    .map(line => line.trim().replace(/^[-•*]\s*/, "").slice(0, 80))
+    .filter(Boolean)
+    .filter((name, index, arr) =>
+      arr.findIndex(other => isSameCardEntity(other, name)) === index
+    );
 
   const knownLower = cfg.cast.map(n => n.toLowerCase());
   let adopted = false;
@@ -2309,11 +2408,21 @@ function stripConfigNoise(text) {
 function fitInstructionToBudget(baseText, instruction) {
   const hasBudget = typeof info !== "undefined" && info && typeof info.maxChars === "number";
   if (!hasBudget) return instruction;
-  const budget = info.maxChars - CONTEXT_SAFETY_MARGIN;
-  if ((baseText.length + instruction.length) <= budget) return instruction;
-  const room = budget - baseText.length;
-  if (room > 40) return instruction.slice(0, room - 4) + "...]\n";
-  return null;
+
+  const budget = Math.max(0, info.maxChars - CONTEXT_SAFETY_MARGIN);
+  const baseLength = typeof baseText === "string" ? baseText.length : 0;
+  if ((baseLength + instruction.length) <= budget) return instruction;
+
+  const room = budget - baseLength;
+  if (room <= 40) return null;
+
+  // Never chop a structured request through its closing marker. A truncated
+  // CARD or private-thought template is worse than waiting a turn because it
+  // virtually guarantees an unusable response and burns retry budget.
+  const structured = /【CARD】|【\/CARD】|《|》/.test(instruction);
+  if (structured) return null;
+
+  return instruction.slice(0, Math.max(0, room - 4)).replace(/\s+$/, "") + "...]\n";
 }
 
 
@@ -2326,263 +2435,168 @@ function fitInstructionToBudget(baseText, instruction) {
 // the normal mention-threshold path.
 function isLikelyCharacterIntroduction(name, text) {
   const source = typeof text === "string" ? text : "";
-  if (!source || classifyCodexEntry(name, source) !== "character") return false;
+  if (!source || !name) return false;
 
   const n = escapeForRegex(name);
 
-  // "Introduced" deliberately means present in the active scene, not merely
-  // mentioned in somebody else's backstory or dialogue. This distinction is
-  // what prevents a line such as "Mirelle said you'd be coming" from starting
-  // an automatic character-card countdown before Mirelle has actually shown
-  // up. Strong cues only: a self/explicit introduction, being directly seen
-  // or met, a body-language cue, or an on-screen physical action.
+  // Presence cues are intentionally stronger than a plain mention. This is
+  // what separates "Mirelle said you'd be coming" from Mirelle actually
+  // entering, speaking, moving, or being physically described in the scene.
   const directCues = [
     new RegExp(`\\b(?:I\\s*(?:am|'m|’m)|my\\s+name\\s+is|name\\s*(?:is|'s|’s)|call\\s+me|this\\s+is|meet|known\\s+as|go\\s+by)\\s+["“”'‘’]?${n}\\b`, "i"),
-    new RegExp(`\\b(?:you|he|she|they|we)\\s+(?:see|spot|notice|meet|find|face|approach)\\s+(?:the\\s+|a\\s+|an\\s+)?${n}\\b`, "i"),
-    new RegExp(`\\b${n}(?:'s|’s)\\s+(?:eyes?|voice|hands?|face|expression|smile|gaze|shoulders?|breath|hair|fingers?|arms?|feet|heart|cheeks?|lips?|posture|jaw)\\b`, "i"),
-    new RegExp(`\\b${n}\\b[^\\n.!?]{0,50}\\b(?:steps?|stepped|walks?|walked|approaches?|approached|enters?|entered|arrives?|arrived|comes?|came|sits?|sat|stands?|stood|leans?|leaned|reaches?|reached|turns?|turned|looks?|looked|glances?|glanced|stares?|stared|smiles?|smiled|frowns?|frowned|nods?|nodded|shrugs?|shrugged|runs?|ran|follows?|followed|kneels?|knelt|rises?|rose|flinches?|flinched|grabs?|grabbed|takes?|took|places?|placed|pushes?|pushed|pulls?|pulled|moves?|moved)\\b`, "i"),
-    new RegExp(`\\b(?:a|an|the)\\s+(?:young\\s+|old\\s+|elderly\\s+)?(?:girl|boy|woman|man|lady|gentleman|teenager|teen|child|youth|guard|soldier|knight|mage|wizard|witch|priest|priestess|captain|doctor|merchant|stranger|traveler|traveller)\\s+(?:named|called)\\s+${n}\\b[^\\n.!?]{0,70}\\b(?:steps?|stands?|sits?|approaches?|walks?|looks?|turns?|enters?|arrives?)\\b`, "i"),
-
-    // Direct dialogue attribution is accepted only when the attribution is
-    // attached to quoted speech in this same passage. A bare historical
-    // report such as "Mirelle said you'd be coming" has no quote after the
-    // attribution and therefore does not count as an introduction.
-    new RegExp(`\\b${n}\\b\\s+(?:says?|asks?|replies?|answers?|whispers?|murmurs?|shouts?)\\s*,?\\s*["“]`, "i"),
-    new RegExp(`["”][^\\n]{0,28}\\b${n}\\b\\s+(?:says?|asks?|replies?|answers?|whispers?|murmurs?|shouts?)\\b`, "i")
+    new RegExp(`\\b(?:you|he|she|they|we)\\s+(?:see|spot|notice|meet|find|face|approach|watch|hear)\\s+(?:the\\s+|a\\s+|an\\s+)?${n}\\b`, "i"),
+    new RegExp(`\\b${n}(?:'s|’s)\\s+(?:eyes?|voice|hands?|face|expression|smile|gaze|shoulders?|breath|hair|fingers?|arms?|feet|heart|cheeks?|lips?|posture|jaw|stance|grip|step|footsteps?)\\b`, "i"),
+    new RegExp(`\\b${n}\\b[^\\n.!?]{0,64}\\b(?:steps?|stepped|walks?|walked|approaches?|approached|enters?|entered|arrives?|arrived|comes?|came|sits?|sat|stands?|stood|leans?|leaned|reaches?|reached|turns?|turned|looks?|looked|glances?|glanced|stares?|stared|smiles?|smiled|frowns?|frowned|nods?|nodded|shrugs?|shrugged|runs?|ran|follows?|followed|kneels?|knelt|rises?|rose|flinches?|flinched|grabs?|grabbed|takes?|took|places?|placed|pushes?|pushed|pulls?|pulled|moves?|moved|laughs?|laughed|sighs?|sighed|winces?|winced|swallows?|swallowed|gestures?|gestured|speaks?|spoke)\\b`, "i"),
+    new RegExp(`\\b(?:a|an|the)\\s+(?:young\\s+|old\\s+|elderly\\s+)?(?:girl|boy|woman|man|lady|gentleman|teenager|teen|child|youth|guard|soldier|knight|mage|wizard|witch|priest|priestess|captain|doctor|merchant|stranger|traveler|traveller|officer|detective|pilot|engineer|nurse|bartender)\\s+(?:named|called)\\s+${n}\\b`, "i"),
+    new RegExp(`\\b${n}\\b\\s+(?:says?|asks?|replies?|answers?|whispers?|murmurs?|shouts?|calls?|adds?|admits?|explains?|insists?|snaps?|growls?|mutters?|laughs?|sighs?)\\s*[,.:!?-]?\\s*["“]`, "i"),
+    new RegExp(`["”][^\\n]{0,40}\\b${n}\\b\\s+(?:says?|asks?|replies?|answers?|whispers?|murmurs?|shouts?|adds?|admits?|explains?|insists?|snaps?|growls?|mutters?)\\b`, "i")
   ];
+
   return directCues.some(re => re.test(source));
 }
 
-function promoteCodexTrackingKey(oldKey, newKey) {
-  if (!oldKey || !newKey || oldKey === newKey) return oldKey || newKey;
-  const c = state.unsaid.codex;
-  const oldWords = oldKey.trim().split(/\s+/);
-  const newWords = newKey.trim().split(/\s+/);
+function codexEvidenceSentences(name, source) {
+  if (!name || !source) return [];
+  const chunks = String(source).match(/[^.!?\n]+(?:[.!?]+|$)/g) || [String(source)];
+  const results = [];
+  for (const raw of chunks) {
+    const line = raw.replace(/\s+/g, " ").trim();
+    if (!line || !nameAppears(name, line)) continue;
+    const clipped = line.length > CODEX_EVIDENCE_SNIPPET_LENGTH
+      ? line.slice(0, CODEX_EVIDENCE_SNIPPET_LENGTH - 1).trimEnd() + "…"
+      : line;
+    if (!results.includes(clipped)) results.push(clipped);
+    if (results.length >= 2) break;
+  }
+  return results;
+}
 
-  // Only promote toward a more specific alias; never collapse a full name
-  // back down to a bare surname/first name seen later.
-  if (newWords.length <= oldWords.length) return oldKey;
-
-  const maps = [
-    "mentionCounts", "attempts", "firstSeenTurn", "introducedTurn",
-    "likelyCharacters", "observedTypes", "lastAttemptTurn", "evidence",
-    "lastMentionAction", "lastEvidenceAction"
-  ];
-  maps.forEach(key => {
-    const map = c[key];
-    if (!map || typeof map !== "object" || !(oldKey in map)) return;
-    if (!(newKey in map)) map[newKey] = map[oldKey];
-    else if (key === "mentionCounts" || key === "attempts") {
-      map[newKey] = Math.max(Number(map[newKey]) || 0, Number(map[oldKey]) || 0);
-    } else if (key === "firstSeenTurn" || key === "introducedTurn") {
-      map[newKey] = Math.min(Number(map[newKey]) || Infinity, Number(map[oldKey]) || Infinity);
-      if (!Number.isFinite(map[newKey])) map[newKey] = map[oldKey];
-    }
-    delete map[oldKey];
+function recordCodexEvidence(name, source, countsAsAppearance) {
+  const codex = state.unsaid.codex;
+  if (!codex.evidence[name]) codex.evidence[name] = [];
+  const snippets = codexEvidenceSentences(name, source);
+  snippets.forEach(snippet => {
+    const duplicate = codex.evidence[name].some(item =>
+      item && typeof item.text === "string" && item.text.toLowerCase() === snippet.toLowerCase()
+    );
+    if (!duplicate) codex.evidence[name].push({ turn: state.unsaid.turn, text: snippet });
   });
-  if (Array.isArray(c.pendingNames)) {
-    c.pendingNames = utUniqueNames(c.pendingNames.map(n => n === oldKey ? newKey : n));
+  if (codex.evidence[name].length > CODEX_EVIDENCE_PER_NAME) {
+    codex.evidence[name] = codex.evidence[name].slice(-CODEX_EVIDENCE_PER_NAME);
   }
-  return newKey;
+
+  if (countsAsAppearance) {
+    if (!Array.isArray(codex.appearanceTurns[name])) codex.appearanceTurns[name] = [];
+    if (!codex.appearanceTurns[name].includes(state.unsaid.turn)) {
+      codex.appearanceTurns[name].push(state.unsaid.turn);
+      if (codex.appearanceTurns[name].length > 30) {
+        codex.appearanceTurns[name] = codex.appearanceTurns[name].slice(-30);
+      }
+    }
+  }
 }
 
-function ensureCodexEvidence(name) {
-  const c = state.unsaid.codex;
-  if (!c.evidence[name] || typeof c.evidence[name] !== "object") {
-    c.evidence[name] = {
-      presenceTurns: 0,
-      dialogueTurns: 0,
-      actionTurns: 0,
-      traitTurns: 0,
-      relationTurns: 0,
-      snippets: []
-    };
-  }
-  return c.evidence[name];
-}
-
-function updateCharacterEvidence(name, text) {
-  if (!name || !state.unsaid || !state.unsaid.codex) return;
-  const source = utText(text);
-  if (!source || !nameAppears(name, source)) return;
-
-  const c = state.unsaid.codex;
-  const actionKey = utActionKey();
-  if (c.lastEvidenceAction[name] === actionKey) return;
-  c.lastEvidenceAction[name] = actionKey;
-
-  const evidence = ensureCodexEvidence(name);
-  const n = escapeForRegex(name);
-
-  evidence.presenceTurns = (evidence.presenceTurns || 0) + 1;
-  if (new RegExp(`(?:["“][^\\n]{0,160}["”]\\s*,?\\s*${n}\\s+(?:says?|asks?|replies?|answers?|whispers?|murmurs?)|${n}\\s+(?:says?|asks?|replies?|answers?|whispers?|murmurs?)\\s*,?\\s*["“])`, "i").test(source)) {
-    evidence.dialogueTurns = (evidence.dialogueTurns || 0) + 1;
-  }
-  if (new RegExp(`\\b${n}\\b[^\\n.!?]{0,70}\\b(?:steps?|walks?|runs?|turns?|looks?|glances?|smiles?|frowns?|nods?|shrugs?|reaches?|grabs?|takes?|pushes?|pulls?|fights?|attacks?|helps?|follows?|kneels?|sits?|stands?|enters?|leaves?|moves?)\\b`, "i").test(source)) {
-    evidence.actionTurns = (evidence.actionTurns || 0) + 1;
-  }
-  if (new RegExp(`\\b${n}(?:'s|’s)?\\b[^\\n.!?]{0,90}\\b(?:eyes?|hair|face|voice|build|clothes?|wears?|scar|tall|short|young|old|calm|nervous|angry|kind|cold|confident|afraid|skilled|strong|weak)\\b`, "i").test(source)) {
-    evidence.traitTurns = (evidence.traitTurns || 0) + 1;
-  }
-  if (new RegExp(`\\b${n}\\b[^\\n.!?]{0,100}\\b(?:brother|sister|mother|father|friend|ally|enemy|boss|partner|lover|wife|husband|daughter|son|owes|trusts?|hates?|loves?|fears?)\\b`, "i").test(source)) {
-    evidence.relationTurns = (evidence.relationTurns || 0) + 1;
-  }
-
-  const snippets = source
-    .split(/[\n]+|(?=[.!?]\s)/)
-    .map(x => x.trim())
-    .filter(x => x && nameAppears(name, x))
-    .slice(-2)
-    .map(x => x.length > 220 ? x.slice(0, 217) + "..." : x);
-  evidence.snippets = (Array.isArray(evidence.snippets) ? evidence.snippets : []).concat(snippets).slice(-CODEX_EVIDENCE_SNIPPET_LIMIT);
-}
-
-function codexEvidenceScore(name) {
-  const e = state.unsaid && state.unsaid.codex && state.unsaid.codex.evidence
-    ? state.unsaid.codex.evidence[name]
-    : null;
-  if (!e) return 0;
-  return Math.min(50,
-    (e.presenceTurns || 0) * 2 +
-    (e.dialogueTurns || 0) * 2 +
-    (e.actionTurns || 0) +
-    (e.traitTurns || 0) +
-    (e.relationTurns || 0)
-  );
-}
-
-function codexEvidenceSummary(name) {
-  const e = state.unsaid && state.unsaid.codex && state.unsaid.codex.evidence
-    ? state.unsaid.codex.evidence[name]
-    : null;
-  if (!e) return "";
-  const bits = [];
-  if (e.dialogueTurns) bits.push(`${e.dialogueTurns} dialogue turn${e.dialogueTurns === 1 ? "" : "s"}`);
-  if (e.actionTurns) bits.push(`${e.actionTurns} action turn${e.actionTurns === 1 ? "" : "s"}`);
-  if (e.traitTurns) bits.push(`${e.traitTurns} trait/detail turn${e.traitTurns === 1 ? "" : "s"}`);
-  if (e.relationTurns) bits.push(`${e.relationTurns} relationship turn${e.relationTurns === 1 ? "" : "s"}`);
-  const snippets = Array.isArray(e.snippets) && e.snippets.length
-    ? ` Recent evidence: ${e.snippets.join(" | ")}`
-    : "";
-  return `${bits.length ? bits.join(", ") : "limited explicit detail so far"}.${snippets}`;
+function codexAppearanceCount(name) {
+  const turns = state.unsaid.codex.appearanceTurns && state.unsaid.codex.appearanceTurns[name];
+  return Array.isArray(turns) ? turns.length : 0;
 }
 
 function trackMentions(text, observeIntroductions) {
   if (!state.unsaid || !state.unsaid.codex) return;
-  const source = utText(text);
+  const source = typeof text === "string" ? text : "";
   if (!source) return;
 
   const canConfirmIntroductions = observeIntroductions !== false;
   const matches = source.match(CODEX_TITLE_ABBREV_REGEX) || [];
-  const actionKey = utActionKey();
+  const seenThisPass = new Set();
+  const actionEpoch = (typeof info !== "undefined" && info && Number.isInteger(info.actionCount))
+    ? info.actionCount
+    : state.unsaid.turn;
 
   matches.forEach(raw => {
     let name = stripPossessive(raw.trim());
     let words = name.split(/\s+/).filter(Boolean);
-    const stopKey = w => utText(w).toLowerCase()
+    const stopKey = (w) => w.toLowerCase()
       .replace(/\u2019/g, "'")
       .replace(/\.$/, "")
       .replace(/'s$/i, "");
 
-    while (words.length > 1 && (CODEX_STOPWORDS.has(stopKey(words[0])) || CODEX_TITLE_WORDS.has(stopKey(words[0])))) {
-      words.shift();
+    while (words.length > 1 &&
+      (CODEX_STOPWORDS.has(stopKey(words[0])) || CODEX_TITLE_WORDS.has(stopKey(words[0])))) {
+      words = words.slice(1);
+      name = words.join(" ");
     }
-    name = words.join(" ").trim();
-    if (!name) return;
-    if (words.length === 1 && CODEX_STOPWORDS.has(stopKey(name))) return;
+
+    if (!name || name.length > 80) return;
+    if (words.length === 1 && CODEX_STOPWORDS.has(stopKey(words[0]))) return;
     if (words.length === 1 && CODEX_TITLE_WORDS.has(stopKey(name))) return;
     if (words.length === 1 && name.length <= 1) return;
     if (words.length === 1 && name.length <= 5 && name === name.toUpperCase() && /[A-Z]{2,}/.test(name)) return;
-    if (/^\d+$/.test(name)) return;
 
     const keys = Object.keys(state.unsaid.codex.mentionCounts);
-    let existingKey = keys.find(k => k.toLowerCase() === name.toLowerCase());
-    if (!existingKey) {
-      existingKey = keys.find(k => isSameCardEntity(k, name));
-    }
-    let key = existingKey || name;
-    if (existingKey && name.split(/\s+/).length > existingKey.split(/\s+/).length) {
-      key = promoteCodexTrackingKey(existingKey, name);
-    }
+    const exactKey = keys.find(k => k.toLowerCase() === name.toLowerCase());
+    const fuzzyKey = exactKey || keys.find(k => isSameCardEntity(k, name));
+    const key = fuzzyKey || name;
+    if (seenThisPass.has(key)) return;
+    seenThisPass.add(key);
 
-    // Count narrative actions, not raw repetitions. "Harlan" appearing six
-    // times in one response is useful evidence, but it is still one turn of
-    // development and should not instantly satisfy a mention threshold.
-    if (state.unsaid.codex.lastMentionAction[key] !== actionKey) {
+    // Count at most once per action epoch. Repeating a name five times in one
+    // paragraph should not make it look five turns more established.
+    if (state.unsaid.codex.lastMentionTurn[key] !== actionEpoch) {
       state.unsaid.codex.mentionCounts[key] = (state.unsaid.codex.mentionCounts[key] || 0) + 1;
-      state.unsaid.codex.lastMentionAction[key] = actionKey;
+      state.unsaid.codex.lastMentionTurn[key] = actionEpoch;
     }
-
     if (typeof state.unsaid.codex.firstSeenTurn[key] !== "number") {
       state.unsaid.codex.firstSeenTurn[key] = state.unsaid.turn;
     }
 
-    const observedType = classifyCodexEntry(key, source);
+    const presence = canConfirmIntroductions && isLikelyCharacterIntroduction(key, source);
+    const observedType = presence ? "character" : classifyCodexEntry(key, source);
     if (!state.unsaid.codex.observedTypes[key] || observedType !== "character") {
       state.unsaid.codex.observedTypes[key] = observedType;
     }
 
-    if (canConfirmIntroductions && isLikelyCharacterIntroduction(key, source)) {
+    if (presence) {
       if (!state.unsaid.codex.likelyCharacters[key]) {
         state.unsaid.codex.likelyCharacters[key] = true;
-        state.unsaid.codex.observedTypes[key] = "character";
         state.unsaid.codex.introducedTurn[key] = state.unsaid.turn;
       }
-    }
-
-    if (canConfirmIntroductions && state.unsaid.codex.likelyCharacters[key]) {
-      updateCharacterEvidence(key, source);
+      state.unsaid.codex.observedTypes[key] = "character";
+      recordCodexEvidence(key, source, true);
+    } else if (canConfirmIntroductions && state.unsaid.codex.likelyCharacters[key]) {
+      // Once a person has genuinely appeared, later references are still
+      // useful evidence even if this specific sentence is off-screen.
+      recordCodexEvidence(key, source, false);
     }
   });
 
   pruneMentionCounts();
 }
 
+
 function pruneMentionCounts() {
   const counts = state.unsaid.codex.mentionCounts;
-  // A name that already has a matching Story Card will never be
-  // reconsidered by Codex again regardless of its count (findCodexCandidates
-  // excludes it directly) — but nothing ever stopped its count from
-  // climbing forever as an established character keeps getting mentioned.
-  // Since pruning below keeps the highest counts and drops the lowest, an
-  // already-carded character's ever-growing, now-pointless count would
-  // permanently occupy a slot immune to pruning, at the direct expense of
-  // genuinely new, not-yet-carded names still trying to reach the mention
-  // threshold — confirmed directly: a long-running game with one carded
-  // character mentioned constantly could starve out new candidates
-  // entirely. Clearing these every pass keeps every slot meaningful.
   Object.keys(counts).forEach(name => {
     if (storyCards.some(c => c.title && isSameCardEntity(c.title, name))) {
-      delete counts[name];
-      delete state.unsaid.codex.attempts[name];
-      delete state.unsaid.codex.firstSeenTurn[name];
-      delete state.unsaid.codex.introducedTurn[name];
-      delete state.unsaid.codex.likelyCharacters[name];
-      delete state.unsaid.codex.observedTypes[name];
-      delete state.unsaid.codex.lastAttemptTurn[name];
-      delete state.unsaid.codex.evidence[name];
-      delete state.unsaid.codex.lastMentionAction[name];
-      delete state.unsaid.codex.lastEvidenceAction[name];
+      forgetMentionTracking(name);
     }
   });
+
   const keys = Object.keys(counts);
   if (keys.length > MENTION_TRACKING_CAP + 50) {
     keys
-      .sort((a, b) => counts[a] - counts[b])
+      .sort((a, b) => {
+        const aProtected = state.unsaid.codex.likelyCharacters[a] ? 1 : 0;
+        const bProtected = state.unsaid.codex.likelyCharacters[b] ? 1 : 0;
+        if (aProtected !== bProtected) return aProtected - bProtected;
+        const countDiff = (counts[a] || 0) - (counts[b] || 0);
+        if (countDiff !== 0) return countDiff;
+        return (state.unsaid.codex.firstSeenTurn[a] || 0) - (state.unsaid.codex.firstSeenTurn[b] || 0);
+      })
       .slice(0, keys.length - MENTION_TRACKING_CAP)
-      .forEach(k => {
-        delete counts[k];
-        delete state.unsaid.codex.attempts[k];
-        delete state.unsaid.codex.firstSeenTurn[k];
-        delete state.unsaid.codex.introducedTurn[k];
-        delete state.unsaid.codex.likelyCharacters[k];
-        delete state.unsaid.codex.observedTypes[k];
-        delete state.unsaid.codex.lastAttemptTurn[k];
-        delete state.unsaid.codex.evidence[k];
-        delete state.unsaid.codex.lastMentionAction[k];
-        delete state.unsaid.codex.lastEvidenceAction[k];
-      });
+      .forEach(forgetMentionTracking);
   }
+
   const attempts = state.unsaid.codex.attempts;
   Object.keys(attempts).forEach(name => {
     if (!(name in counts)) delete attempts[name];
@@ -2590,6 +2604,9 @@ function pruneMentionCounts() {
 }
 
 function classifyCodexEntry(name, text) {
+  // Strong on-screen person evidence outranks a misleading noun-shaped name.
+  // A character can genuinely be named River, Castle, Angel, etc.
+  if (isLikelyCharacterIntroduction(name, text)) return "character";
   if (CODEX_LOCATION_HINTS.test(name)) return "location";
   if (CODEX_LOCATION_SUFFIX_HINTS.test(name)) return "location";
   if (CODEX_FACTION_HINTS.test(name)) return "faction";
@@ -2647,48 +2664,60 @@ function stripCourtesyTitle(words) {
 }
 
 function isSameCardEntity(cardTitle, candidateName) {
-  if (isOwnCard(cardTitle)) return false;
+  if (!cardTitle || !candidateName || isOwnCard(cardTitle)) return false;
 
-  const normalize = value => stripCourtesyTitle(
-    utText(value)
+  const normalizeWords = (value) => {
+    const cleaned = String(value)
       .toLowerCase()
-      .replace(/[“”"'‘’.,!?()[\]{}:;]/g, " ")
+      .replace(/[“”"'‘’.,:;!?()[\]{}]/g, " ")
       .replace(/\s+/g, " ")
-      .trim()
-      .split(" ")
-      .filter(Boolean)
-  );
+      .trim();
+    return stripCourtesyTitle(cleaned.split(" ").filter(Boolean));
+  };
 
-  const a = normalize(cardTitle);
-  const b = normalize(candidateName);
-  if (!a.length || !b.length) return false;
-  if (a.join(" ") === b.join(" ")) return true;
+  const titleWords = normalizeWords(cardTitle);
+  const nameWords = normalizeWords(candidateName);
+  if (!titleWords.length || !nameWords.length) return false;
+  if (titleWords.join(" ") === nameWords.join(" ")) return true;
 
-  const shorter = a.length <= b.length ? a : b;
-  const longer = a.length <= b.length ? b : a;
+  const shorter = titleWords.length <= nameWords.length ? titleWords : nameWords;
+  const longer = titleWords.length <= nameWords.length ? nameWords : titleWords;
 
-  // A bare first/last name may resolve to a full name, but not to an
-  // arbitrary interior word. This keeps convenient "Elara" ↔ "Elara Voss"
-  // matching without turning every shared word into the same entity.
-  if (shorter.length === 1) {
-    return shorter[0] === longer[0] || shorter[0] === longer[longer.length - 1];
-  }
-
-  // Multi-word aliases must appear contiguously and in order.
+  // Require the shorter alias to appear contiguously. This keeps useful
+  // "Harlan" <-> "Harlan Voss" matching while avoiding arbitrary word-set
+  // matches such as reversed or interleaved names.
   for (let i = 0; i <= longer.length - shorter.length; i++) {
-    let matches = true;
+    let allMatch = true;
     for (let j = 0; j < shorter.length; j++) {
-      if (longer[i + j] !== shorter[j]) {
-        matches = false;
-        break;
-      }
+      if (longer[i + j] !== shorter[j]) { allMatch = false; break; }
     }
-    if (matches) return true;
+    if (allMatch) return shorter.length > 1 || shorter[0].length >= 3;
   }
   return false;
 }
 
 var CARD_TYPE_DISPLAY = { character: "Character", location: "Location", item: "Item", faction: "Faction" };
+function findStoryCardForEntity(name) {
+  if (!name || typeof storyCards === "undefined" || !Array.isArray(storyCards)) return null;
+
+  const clean = (value) => String(value || "")
+    .toLowerCase()
+    .replace(/[“”"'‘’.,:;!?()[\]{}]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const exact = storyCards.filter(card =>
+    card && card.title && !isOwnCard(card.title) && clean(card.title) === clean(name)
+  );
+  if (exact.length === 1) return exact[0];
+  if (exact.length > 1) return exact[0];
+
+  const fuzzy = storyCards.filter(card =>
+    card && card.title && isSameCardEntity(card.title, name)
+  );
+  return fuzzy.length === 1 ? fuzzy[0] : null;
+}
+
 function platformType(kind) {
   return CARD_TYPE_DISPLAY[kind] || kind;
 }
@@ -2766,11 +2795,14 @@ function findCodexCandidates(threshold, excludeNames, maxAttempts, maxCount) {
 }
 
 
-function buildCodexInstruction(names, text, forced, priorFailures, hardDeadline) {
+function buildCodexInstruction(names, text, forced, priorFailures, hardDeadline, compact) {
   const failures = typeof priorFailures === "number" ? priorFailures : 0;
 
   const blocks = names.map((name, i) => {
-    const type = classifyCodexEntry(name, text);
+    const trackedType = state.unsaid.codex.likelyCharacters[name]
+      ? "character"
+      : (state.unsaid.codex.observedTypes[name] || null);
+    const type = trackedType || classifyCodexEntry(name, text);
     const fields = CARD_TEMPLATES[type] || CHARACTER_CARD_FIELDS;
     const body = fields.map(f => `${f}: ${f === "Name" ? name : "..."}`).join("\n");
     const mind = type === "character" ? state.unsaid.minds[name] : null;
@@ -2780,16 +2812,27 @@ function buildCodexInstruction(names, text, forced, priorFailures, hardDeadline)
     const correctionNote = type === "character"
       ? ` If "${name}" is genuinely a location, item, or faction instead, switch to that matching template rather than pretending it is a person.`
       : "";
+
     const introTurn = state.unsaid.codex.introducedTurn && state.unsaid.codex.introducedTurn[name];
     const observedTurns = type === "character" && typeof introTurn === "number"
       ? Math.max(0, state.unsaid.turn - introTurn)
       : null;
+    const appearances = type === "character" ? codexAppearanceCount(name) : 0;
     const observationNote = observedTurns !== null
-      ? ` The character has had ${observedTurns} full story turn${observedTurns === 1 ? "" : "s"} of on-screen development since introduction; prioritize details actually demonstrated during those turns.`
+      ? ` Observed for ${observedTurns} full story turn${observedTurns === 1 ? "" : "s"} across ${appearances} on-screen appearance${appearances === 1 ? "" : "s"}.`
       : "";
-    const evidenceNote = type === "character"
-      ? ` Evidence score ${codexEvidenceScore(name)}. ${codexEvidenceSummary(name)}`
+
+    const evidenceItems = (state.unsaid.codex.evidence && state.unsaid.codex.evidence[name]) || [];
+    const evidenceLimit = compact ? 1 : 3;
+    const evidenceClip = compact ? 140 : 190;
+    const evidenceText = evidenceItems.slice(-evidenceLimit)
+      .map(item => item && item.text ? item.text.replace(/\s+/g, " ").trim().slice(0, evidenceClip) : "")
+      .filter(Boolean)
+      .join(" | ");
+    const evidenceNote = evidenceText
+      ? ` Story evidence to weigh before inferring anything: ${evidenceText}`
       : "";
+
     return `Profile ${i + 1} — "${name}":${knownNote}${correctionNote}${observationNote}${evidenceNote}\n【CARD】\n${body}\n【/CARD】`;
   }).join("\n\n");
 
@@ -2812,18 +2855,32 @@ function buildCodexInstruction(names, text, forced, priorFailures, hardDeadline)
       `The script removes ${names.length > 1 ? "these blocks" : "this block"} before the player sees the response, so the story can continue normally afterward.`;
   }
 
-  return `\n[UNSAID CODEX — mandatory script task. ${priorityLine}
-${blocks}
-Rules:
+  const rules = compact
+    ? `Rules: keep the CARD markers exactly; one short concrete line per field; no blanks, "...", Unknown, N/A or TBD. Use established evidence first and infer missing details conservatively without contradicting the story. Do not mention this task outside the hidden block.${forced || hardDeadline ? " Visible story prose is optional after the block." : " Continue the visible story after the block."}`
+    : `Rules:
 - Keep the 【CARD】 and 【/CARD】 markers exactly.
 - Output exactly one short line per listed field.
 - Replace every "..." with a concrete, specific value. Never leave "...", "unknown", "N/A", "TBD", or a blank field.
-- Analyze the character/entity across the story context before filling fields. Prefer repeated behavior, dialogue, relationships, appearance, demonstrated competence, and explicit lore over first-impression guesses.
-- Use established facts first. Only infer fields the story still has not established, using the tone, setting, relationships, and likely direction of the story. Inferences become canon, so keep them specific, conservative, and compatible with everything already shown.
-- A character being mentioned by someone else is not proof they are physically present; do not invent an on-screen encounter that has not happened.
+- Analyze all supplied story evidence before filling fields. Repeated behavior and explicit facts outrank first impressions.
+- Use established facts first. Infer only what is still missing, and keep those inferences conservative, specific, and compatible with the story.
+- Do not turn hearsay into an on-screen event, invent a relationship that contradicts the text, or overstate abilities that have not been demonstrated.
+- For Background/Personality/Relationships, connect details to what the character has actually said, done, feared, wanted, or been described as.
 - Do not explain the profile or mention this task outside the hidden card block.
-${forced || hardDeadline ? "- Once the card block is complete, visible story prose is optional this turn." : "- After the card block is complete, continue the visible story normally."}]
+${forced || hardDeadline ? "- Once the card block is complete, visible story prose is optional this turn." : "- After the card block is complete, continue the visible story normally."}`;
+
+  return `\n[UNSAID CODEX — mandatory script task. ${priorityLine}
+${blocks}
+${rules}]
 `;
+}
+
+function buildAndFitCodexInstruction(names, baseText, forced, priorFailures, hardDeadline) {
+  const full = buildCodexInstruction(names, baseText, forced, priorFailures, hardDeadline, false);
+  return fitInstructionToBudget(baseText, full) ||
+    fitInstructionToBudget(
+      baseText,
+      buildCodexInstruction(names, baseText, forced, priorFailures, hardDeadline, true)
+    );
 }
 
 function codexLogTitle(type) {
@@ -2833,50 +2890,48 @@ function codexLogTitle(type) {
 
 function buildStatusReport(cfg) {
   const lines = [];
-  lines.push(`UNSPOKEN TURNS v${UNSPOKEN_TURNS_VERSION}`);
   lines.push(`UNSAID: ${cfg.enabled ? "enabled" : "DISABLED"}  |  Codex: ${cfg.codexEnabled ? "enabled" : "disabled"}  |  Turn: ${state.unsaid.turn}`);
 
   const cacheCard = storyCards.find(c => c.title === "UNSAID — Important, Read This ⚠️");
   if (cacheCard && cacheCard.entry && cacheCard.entry.indexOf("no longer detected") === -1) {
-    lines.push(`⚠️ Cache-efficient mode is currently detected — private thoughts and Codex cannot function right now, see that card for details.`);
+    lines.push(`⚠️ Cache-efficient mode is currently detected — private thoughts and Codex cannot function normally right now; see the warning card.`);
   }
 
   const mindNames = Object.keys(state.unsaid.minds);
   lines.push(`\nTracked minds (${mindNames.length}):`);
   if (mindNames.length === 0) {
-    lines.push(`  none yet`);
+    lines.push("  none yet");
   } else {
     mindNames.forEach(name => {
-      const m = state.unsaid.minds[name];
+      const m = state.unsaid.minds[name] || {};
       const coreNote = m.core ? "has a core truth" : "no standalone thought yet";
       const lastActiveNote = m.lastTurn ? `last active turn ${m.lastTurn}` : "not yet revealed under tracking";
       lines.push(`  ${name} — ${coreNote}, feeling: ${m.feeling || "none yet"}, ${m.revealCount || 0} reveal(s), ${lastActiveNote}`);
     });
   }
 
-  const counts = state.unsaid.codex.mentionCounts;
-  const attempts = state.unsaid.codex.attempts;
+  const codex = state.unsaid.codex;
+  const counts = codex.mentionCounts || {};
+  const attempts = codex.attempts || {};
   const tracked = Object.keys(counts);
-  const likelyCharacters = state.unsaid.codex.likelyCharacters || {};
-  const introducedTurn = state.unsaid.codex.introducedTurn || {};
-  const observedTypes = state.unsaid.codex.observedTypes || {};
-  const alreadyCarded = tracked.filter(n => storyCards.some(c => isSameCardEntity(c.title, n)));
+  const likelyCharacters = codex.likelyCharacters || {};
+  const introducedTurn = codex.introducedTurn || {};
+  const observedTypes = codex.observedTypes || {};
+  const alreadyCarded = tracked.filter(n => storyCards.some(c => c.title && isSameCardEntity(c.title, n)));
   const minObserve = Math.max(0, cfg.codexCharacterMinTurns || 0);
+  const minAppearances = Math.max(1, cfg.codexCharacterMinAppearances || 1);
+  const deadline = Math.max(minObserve, cfg.codexCharacterDeadline || 5);
 
   const introduced = tracked.filter(n =>
-    likelyCharacters[n] && !alreadyCarded.includes(n) &&
+    likelyCharacters[n] &&
+    !alreadyCarded.includes(n) &&
     typeof introducedTurn[n] === "number"
   );
-  const evidenceNeeded = Math.max(1, cfg.codexCharacterEvidenceThreshold || 6);
-  const deadline = Math.max(minObserve, cfg.codexCharacterDeadline || 5);
-  const waitingCharacters = introduced.filter(n => {
+  const readyCharacters = introduced.filter(n => {
     const age = state.unsaid.turn - introducedTurn[n];
-    return age < minObserve || (age < deadline && codexEvidenceScore(n) < evidenceNeeded);
+    return age >= deadline || (age >= minObserve && codexAppearanceCount(n) >= minAppearances);
   });
-  const matureCharacters = introduced.filter(n => {
-    const age = state.unsaid.turn - introducedTurn[n];
-    return age >= minObserve && (codexEvidenceScore(n) >= evidenceNeeded || age >= deadline);
-  });
+  const waitingCharacters = introduced.filter(n => !readyCharacters.includes(n));
   const hearsayCharacters = tracked.filter(n =>
     !likelyCharacters[n] &&
     !alreadyCarded.includes(n) &&
@@ -2894,54 +2949,59 @@ function buildStatusReport(cfg) {
     (attempts[n] || 0) >= cfg.codexMaxAttempts
   );
 
-  lines.push(`\nCodex mention-tracking: ${tracked.length} name(s) tracked`);
+  lines.push(`\nCodex tracking: ${tracked.length} name(s)`);
   if (waitingCharacters.length > 0) {
-    lines.push(`  observing introduced characters (minimum ${minObserve} full turn(s) before carding): ${waitingCharacters.slice(0, 10).map(n => {
-      const age = state.unsaid.turn - introducedTurn[n];
-      return `${n} (${age} turns, evidence ${codexEvidenceScore(n)}/${evidenceNeeded}, ${counts[n]} mention-turns)`;
+    lines.push(`  observing on-screen characters: ${waitingCharacters.slice(0, 10).map(n => {
+      const age = Math.max(0, state.unsaid.turn - introducedTurn[n]);
+      const appearances = codexAppearanceCount(n);
+      return `${n} (${age}/${minObserve} turns, ${appearances}/${minAppearances} appearances, ${counts[n]} mention(s))`;
     }).join(", ")}${waitingCharacters.length > 10 ? ", ..." : ""}`);
   }
-  if (matureCharacters.length > 0) {
-    lines.push(`  character card(s) ready: ${matureCharacters.slice(0, 10).map(n => `${n} (${state.unsaid.turn - introducedTurn[n]} turns, evidence ${codexEvidenceScore(n)}/${evidenceNeeded})`).join(", ")}${matureCharacters.length > 10 ? ", ..." : ""}`);
+  if (readyCharacters.length > 0) {
+    lines.push(`  ready for a character card: ${readyCharacters.slice(0, 10).map(n => {
+      const age = Math.max(0, state.unsaid.turn - introducedTurn[n]);
+      return `${n} (${age} turns, ${codexAppearanceCount(n)} appearance(s))`;
+    }).join(", ")}${readyCharacters.length > 10 ? ", ..." : ""}`);
   }
   if (hearsayCharacters.length > 0) {
-    lines.push(`  character-shaped names only mentioned/referenced so far, not introduced on-screen: ${hearsayCharacters.slice(0, 10).map(n => `${n} (${counts[n]}x)`).join(", ")}${hearsayCharacters.length > 10 ? ", ..." : ""}`);
+    lines.push(`  referenced but not introduced on-screen: ${hearsayCharacters.slice(0, 10).map(n => `${n} (${counts[n]} mention(s))`).join(", ")}${hearsayCharacters.length > 10 ? ", ..." : ""}`);
   }
   if (nonCharacterEligible.length > 0) {
-    lines.push(`  non-character candidate(s) above mention threshold: ${nonCharacterEligible.slice(0, 10).map(n => `${n} (${observedTypes[n]}, ${counts[n]}x)`).join(", ")}${nonCharacterEligible.length > 10 ? ", ..." : ""}`);
+    lines.push(`  eligible non-character entities: ${nonCharacterEligible.slice(0, 10).map(n => `${n} (${observedTypes[n]}, ${counts[n]} mention(s))`).join(", ")}${nonCharacterEligible.length > 10 ? ", ..." : ""}`);
   }
   if (introduced.length > 0) {
-    lines.push(`  character timing: observe at least ${minObserve} turn(s), prefer evidence ${evidenceNeeded}+, hard deadline ${deadline} turn(s), auto batch ${cfg.codexAutoBatchSize || 1}; introduced characters retry instead of being abandoned`);
+    lines.push(`  character gate: ${minObserve} full turn(s) + ${minAppearances} on-screen appearance(s); hard deadline ${deadline} turn(s)`);
   }
   if (alreadyCarded.length > 0) {
-    lines.push(`  already have a Story Card, correctly skipped: ${alreadyCarded.slice(0, 10).join(", ")}${alreadyCarded.length > 10 ? ", ..." : ""}`);
+    lines.push(`  already carded and skipped: ${alreadyCarded.slice(0, 10).join(", ")}${alreadyCarded.length > 10 ? ", ..." : ""}`);
   }
   if (exhausted.length > 0) {
-    lines.push(`  non-character candidates paused after ${cfg.codexMaxAttempts} failed attempts: ${exhausted.join(", ")} — "/card <name>" still works directly, or "Reset Codex tracking now" clears their retry state`);
+    lines.push(`  non-character candidates paused after ${cfg.codexMaxAttempts} failed attempts: ${exhausted.join(", ")} — "/card <name>" still works directly`);
   }
-  const turnsSinceCodex = state.unsaid.turn - (state.unsaid.codex.lastTriggerTurn || 0);
-  lines.push(`  ${turnsSinceCodex}/${cfg.codexCooldown} turns since Codex last triggered`);
-  const strugglingCount = (state.unsaid.codex.consecutiveFailedNames || []).length;
+
+  const turnsSinceCodex = state.unsaid.turn - (codex.lastTriggerTurn || 0);
+  lines.push(`  Codex cooldown: ${turnsSinceCodex}/${cfg.codexCooldown} turns`);
+  const strugglingCount = (codex.consecutiveFailedNames || []).length;
   if (strugglingCount > 0) {
-    lines.push(`  ${strugglingCount} different name(s) in a row with no successful card yet${strugglingCount >= 3 ? " — looks systemic, not just bad luck on a few names" : ""}`);
+    lines.push(`  unsuccessful-name streak: ${strugglingCount}${strugglingCount >= 3 ? " — likely a formatting/model-compliance issue" : ""}`);
   }
+
   const revealMisses = state.unsaid.consecutiveRevealMisses || 0;
   if (revealMisses > 0) {
-    lines.push(`\nReveal requests: ${revealMisses} in a row produced nothing usable${revealMisses >= 5 ? " — may indicate a model compliance issue, not a specific character" : ""}`);
+    lines.push(`\nReveal requests: ${revealMisses} in a row produced nothing usable${revealMisses >= 5 ? " — may indicate a model-compliance issue" : ""}`);
   }
 
   lines.push(`\nCast (${cfg.cast.length}): ${cfg.cast.join(", ") || "empty"}`);
-
   if (cfg.cast.length > 0) {
-    lines.push(`\nCast → Story Card resolution (what each name actually matches right now):`);
+    lines.push("\nCast → Story Card resolution:");
     cfg.cast.forEach(name => {
       const matches = storyCards.filter(c => c.title && isSameCardEntity(c.title, name));
       if (matches.length === 0) {
-        lines.push(`  ${name} → no matching Story Card found — thoughts have nowhere to be saved`);
+        lines.push(`  ${name} → no matching Story Card found`);
       } else if (matches.length === 1) {
         lines.push(`  ${name} → "${matches[0].title}" (type: "${matches[0].type || ""}")`);
       } else {
-        lines.push(`  ${name} → ${matches.length} cards match! Using the first: "${matches[0].title}" (type: "${matches[0].type || ""}") — others: ${matches.slice(1).map(c => `"${c.title}"`).join(", ")}`);
+        lines.push(`  ${name} → ${matches.length} matching cards; using "${matches[0].title}" first`);
       }
     });
   }
@@ -3003,7 +3063,7 @@ function syncMindToCard(name, allowCoreShift, useJson) {
   const mind = state.unsaid.minds[name];
   if (!mind) return false;
 
-  const card = storyCards.find(c => c.title && isSameCardEntity(c.title, name));
+  const card = findStoryCardForEntity(name);
   if (!card) return false;
 
   const stabilityNote = typeof mind.coreSetTurn === "number" && state.unsaid.turn > mind.coreSetTurn
@@ -3075,42 +3135,32 @@ function syncMindToCard(name, allowCoreShift, useJson) {
 }
 
 function splitThoughtSentences(thought) {
-  const source = utText(thought).trim();
-  if (!source) return { feelingSentence: "", wantSentence: null };
-
+  const rawSentences = thought.split(/(?<=[.!?])\s+/).filter(Boolean);
   const sentences = [];
-  let start = 0;
-  for (let i = 0; i < source.length; i++) {
-    const ch = source[i];
-    if (ch !== "." && ch !== "!" && ch !== "?") continue;
-    if (source[i + 1] && !/\s/.test(source[i + 1])) continue;
-
-    const candidate = source.slice(start, i + 1).trim();
-    const words = candidate.split(/\s+/);
-    const lastWord = (words[words.length - 1] || "").replace(/[.!?]+$/, "");
-    if (ch === "." && SENTENCE_ABBREVIATIONS.has(lastWord)) continue;
-
-    if (candidate) sentences.push(candidate);
-    start = i + 1;
+  for (let i = 0; i < rawSentences.length; i++) {
+    const s = rawSentences[i];
+    const words = s.trim().split(/\s+/);
+    const lastWord = (words[words.length - 1] || "").replace(/\.$/, "");
+    if (SENTENCE_ABBREVIATIONS.has(lastWord) && i + 1 < rawSentences.length) {
+      rawSentences[i + 1] = s + " " + rawSentences[i + 1];
+      continue;
+    }
+    sentences.push(s);
   }
-  const tail = source.slice(start).trim();
-  if (tail) sentences.push(tail);
-  if (!sentences.length) sentences.push(source);
-
-  return {
-    feelingSentence: sentences[0] || source,
-    wantSentence: sentences[1] || null
-  };
+  return { feelingSentence: sentences[0] || thought, wantSentence: sentences[1] || null };
 }
 
 function forgetMentionTracking(name) {
-  [
-    "mentionCounts", "attempts", "firstSeenTurn", "introducedTurn",
-    "likelyCharacters", "observedTypes", "lastAttemptTurn", "evidence",
-    "lastMentionAction", "lastEvidenceAction"
-  ].forEach(key => {
-    if (state.unsaid.codex[key]) delete state.unsaid.codex[key][name];
-  });
+  delete state.unsaid.codex.mentionCounts[name];
+  delete state.unsaid.codex.attempts[name];
+  delete state.unsaid.codex.firstSeenTurn[name];
+  delete state.unsaid.codex.introducedTurn[name];
+  delete state.unsaid.codex.likelyCharacters[name];
+  delete state.unsaid.codex.observedTypes[name];
+  delete state.unsaid.codex.appearanceTurns[name];
+  delete state.unsaid.codex.evidence[name];
+  delete state.unsaid.codex.lastMentionTurn[name];
+  delete state.unsaid.codex.lastAttemptTurn[name];
 }
 
 function createMind() {
@@ -3238,7 +3288,7 @@ function loadMindFromCard(card) {
 
 function seedMindIfKnown(name) {
   if (!name || state.unsaid.minds[name]) return;
-  const card = storyCards.find(c => c.title && isSameCardEntity(c.title, name));
+  const card = findStoryCardForEntity(name);
   const loaded = card ? loadMindFromCard(card) : null;
   if (loaded) {
     // A mind loaded from an existing card's saved JSON never has a
@@ -3270,16 +3320,11 @@ function pushCapped(arr, value, limit) {
 }
 
 function pickBySilence(names, currentTurn) {
+  if (!Array.isArray(names) || names.length === 0) return null;
   const weights = names.map(name => {
     const mind = state.unsaid.minds[name];
-    // No mind at all, or a mind with no real lastTurn yet (freshly
-    // adopted from an existing card's data, which never carries one) —
-    // both get the same fixed high-priority weight rather than a
-    // computed one, so a freshly-adopted character gets a fair (high)
-    // shot at the next reveal without a fabricated turn gap dwarfing
-    // everyone else's actual weight the way turn-1000 backdating did.
-    if (!mind || !mind.lastTurn) return 999;
-    return Math.max(1, currentTurn - mind.lastTurn);
+    if (!mind || !mind.lastTurn) return 24;
+    return Math.max(1, Math.min(20, currentTurn - mind.lastTurn));
   });
   const total = weights.reduce((a, b) => a + b, 0);
   let roll = Math.random() * total;
@@ -3290,6 +3335,15 @@ function pickBySilence(names, currentTurn) {
   return names[names.length - 1];
 }
 
+function naturalCoreShiftEligible(mind, allowCoreShift) {
+  if (!allowCoreShift || !mind) return false;
+  const tension = typeof mind.tensionLevel === "number" ? mind.tensionLevel : 0;
+  const atThreshold = tension >= TENSION_THRESHOLD;
+  const atDrasticTier = tension >= TENSION_THRESHOLD * DRASTIC_TENSION_MULTIPLIER;
+  const naturallyEligible = (mind.revealCount || 0) >= REVEALS_BEFORE_SHIFT_ELIGIBLE;
+  return atDrasticTier || (atThreshold && naturallyEligible);
+}
+
 function buildCoreCheckInstruction(chosen, mind) {
   const coreNote = mind && mind.core ? ` Their current anchor: "${mind.core}".` : "";
   const tensionNote = mind && typeof mind.tensionLevel === "number"
@@ -3297,7 +3351,7 @@ function buildCoreCheckInstruction(chosen, mind) {
       ? " Their feelings have been genuinely unsettled for a while now — this may well be the moment."
       : " Their feelings have been fairly steady lately, for what that's worth.")
     : "";
-  return `\n[Consider whether recent events have genuinely, permanently changed how ${chosen} sees themselves — not just a passing mood.${coreNote}${tensionNote} If yes, reveal it (keep the 《 》 characters exactly as shown, they're required, not decorative — no asterisks or other markdown, the 《 》 pair is the only formatting needed) as "《${chosen}, [one-word-emotion], core-shift: new lasting truth.》" (replace [one-word-emotion] with an actual word, not the literal placeholder) (2 italicized sentences). If nothing that significant has happened, don't force it — continue the story normally with no reveal at all.]\n`;
+  return `\n[Consider whether recent events have genuinely, permanently changed how ${chosen} sees themselves — not just a passing mood.${coreNote}${tensionNote} If yes, reveal it (keep the 《 》 characters exactly as shown, they're required, not decorative — no asterisks or other markdown, the 《 》 pair is the only formatting needed) as "《${chosen}, [one-word-emotion], core-shift: new lasting truth.》" (replace [one-word-emotion] with an actual word, not the literal placeholder) (1–2 concise sentences inside the required 《 》 marker). If nothing that significant has happened, don't force it — continue the story normally with no reveal at all.]\n`;
 }
 
 function buildAndFitThoughtInstruction(chosen, active, baseText, allowCoreShift) {
@@ -3338,22 +3392,22 @@ function buildAndFitThoughtInstruction(chosen, active, baseText, allowCoreShift)
       : (mind && mind.relations && mind.relations[target]
         ? ` Feels ${mind.relations[target]} toward ${target} unless this scene shifts it.`
         : "");
-    instruction = `\n[${chosen}'s unspoken reaction to ${target} — 2 italicized sentences: how they really feel about ${target} right now, and what they secretly want from this moment. ${target} can't perceive it.${coreNote}${relationNote}${historyNote}${wantNote}${varietyNote} Replace [one-word-emotion] with an actual single word (e.g. wary, hopeful) — do not write the words "feeling" or "emotion" literally. Format (keep the 《 》 characters exactly as shown, they're required, not decorative — no asterisks or other markdown, the 《 》 pair is the only formatting needed): "《${chosen}, [one-word-emotion], about ${target}: thought.》"]\n`;
+    instruction = `\n[${chosen}'s unspoken reaction to ${target} — 1–2 concise sentences inside the required 《 》 marker: how they really feel about ${target} right now, and what they secretly want from this moment. ${target} can't perceive it.${coreNote}${relationNote}${historyNote}${wantNote}${varietyNote} Replace [one-word-emotion] with an actual single word (e.g. wary, hopeful) — do not write the words "feeling" or "emotion" literally. Format (keep the 《 》 characters exactly as shown, they're required, not decorative — no asterisks or other markdown, the 《 》 pair is the only formatting needed): "《${chosen}, [one-word-emotion], about ${target}: thought.》"]\n`;
   } else if (mind && mind.core) {
     const atThreshold = allowCoreShift && typeof mind.tensionLevel === "number" &&
       mind.tensionLevel >= TENSION_THRESHOLD;
     const atDrasticTier = allowCoreShift && typeof mind.tensionLevel === "number" &&
       mind.tensionLevel >= TENSION_THRESHOLD * DRASTIC_TENSION_MULTIPLIER;
     const naturallyEligible = (mind.revealCount || 0) >= REVEALS_BEFORE_SHIFT_ELIGIBLE;
-    const shiftEligible = atDrasticTier || (atThreshold && naturallyEligible);
+    const shiftEligible = naturalCoreShiftEligible(mind, allowCoreShift);
     const shiftNote = shiftEligible
       ? (atDrasticTier && !naturallyEligible
         ? ` Their feelings have been unraveling for a long time now, unresolved — something this significant would happen regardless. If it's truly earned, you may format this instead as "《${chosen}, [one-word-emotion], core-shift: new lasting truth.》" to replace their old anchor.`
         : ` Their feelings have been genuinely shifting for a while now, not settling back — if this moment plays into that and something has truly changed how they see themselves, you may format this instead as "《${chosen}, [one-word-emotion], core-shift: new lasting truth.》" to replace their old anchor. Only do this if it's really earned.`)
       : "";
-    instruction = `\n[${chosen}'s private thought — 2 italicized sentences: how they really feel right now, and what they secretly want. Consistent with "${mind.core}" and their feeling of ${mind.feeling} unless this scene shifts it.${historyNote}${wantNote}${varietyNote}${shiftNote} Replace [one-word-emotion] with an actual single word (e.g. wary, hopeful) — do not write the words "feeling" or "emotion" literally. Format (keep the 《 》 characters exactly as shown, they're required, not decorative — no asterisks or other markdown, the 《 》 pair is the only formatting needed): "《${chosen}, [one-word-emotion]: thought.》" No one else perceives it.]\n`;
+    instruction = `\n[${chosen}'s private thought — 1–2 concise sentences inside the required 《 》 marker: how they really feel right now, and what they secretly want. Consistent with "${mind.core}" and their feeling of ${mind.feeling} unless this scene shifts it.${historyNote}${wantNote}${varietyNote}${shiftNote} Replace [one-word-emotion] with an actual single word (e.g. wary, hopeful) — do not write the words "feeling" or "emotion" literally. Format (keep the 《 》 characters exactly as shown, they're required, not decorative — no asterisks or other markdown, the 《 》 pair is the only formatting needed): "《${chosen}, [one-word-emotion]: thought.》" No one else perceives it.]\n`;
   } else {
-    instruction = `\n[This is ${chosen}'s very first private thought — once revealed, it becomes a lasting truth about who they fundamentally are, something real and significant enough to define them going forward, not a fleeting reaction to this moment. 2 italicized sentences: what this deep truth is, and what they secretly want because of it. Replace [one-word-emotion] with an actual single word (e.g. wary, hopeful) — do not write the words "feeling" or "emotion" literally. Format (keep the 《 》 characters exactly as shown, they're required, not decorative — no asterisks or other markdown, the 《 》 pair is the only formatting needed): "《${chosen}, [one-word-emotion]: thought.》" No one else perceives it.]\n`;
+    instruction = `\n[This is ${chosen}'s very first private thought — once revealed, it becomes a lasting truth about who they fundamentally are, something real and significant enough to define them going forward, not a fleeting reaction to this moment. Use 1–2 concise sentences inside the required 《 》 marker: what this deep truth is, and what they secretly want because of it. Replace [one-word-emotion] with an actual single word (e.g. wary, hopeful) — do not write the words "feeling" or "emotion" literally. Format (keep the 《 》 characters exactly as shown, they're required, not decorative — no asterisks or other markdown, the 《 》 pair is the only formatting needed): "《${chosen}, [one-word-emotion]: thought.》" No one else perceives it.]\n`;
   }
 
   return fitInstructionToBudget(baseText, instruction);
@@ -3366,41 +3420,64 @@ function getLastActionType() {
   return null;
 }
 
-function isNewStoryTurn() {
-  if (typeof info === "undefined" || !info || !Number.isInteger(info.actionCount)) {
-    return true;
+function isNewStoryTurn(rawText) {
+  if (typeof info !== "undefined" && info && Number.isInteger(info.actionCount)) {
+    const current = Math.abs(info.actionCount);
+    const isNew = state.unsaid.lastActionCount !== current;
+    state.unsaid.lastActionCount = current;
+    return isNew;
   }
-  const current = Math.abs(info.actionCount);
-  const isNew = state.unsaid.lastActionCount !== current;
-  state.unsaid.lastActionCount = current;
+
+  // Some models/runtimes omit actionCount. In that case, use a lightweight
+  // context signature so a retry/regeneration of the same turn does not age
+  // UNSAID/Codex twice.
+  let source = typeof rawText === "string" ? rawText : "";
+  if (!source && typeof history !== "undefined" && Array.isArray(history) && history.length) {
+    const last = history[history.length - 1];
+    source = last && typeof last.text === "string" ? last.text : "";
+  }
+  source = source.slice(-6000);
+  const historyStamp = (typeof history !== "undefined" && Array.isArray(history)) ? history.length : 0;
+  const stampedSource = source + "|h:" + historyStamp;
+  let hash = 0;
+  for (let i = 0; i < stampedSource.length; i++) hash = (hash * 31 + stampedSource.charCodeAt(i)) | 0;
+  const sig = hash + ":" + stampedSource.length;
+  const isNew = state.unsaid.lastStorySignature !== sig;
+  state.unsaid.lastStorySignature = sig;
   return isNew;
 }
 
 var ESTIMATED_CHARS_PER_TURN = 900;
 function recentTurnsText(text, turnCount) {
-  const n = typeof turnCount === "number" && turnCount > 0 ? turnCount : 3;
-  const base = text.slice(-(n * ESTIMATED_CHARS_PER_TURN));
-  let supplement = "";
+  const n = typeof turnCount === "number" && turnCount > 0 ? Math.min(20, Math.floor(turnCount)) : 3;
+  const maxChars = Math.max(ESTIMATED_CHARS_PER_TURN * n, 1200);
+  const parts = [];
+
   if (typeof history !== "undefined" && Array.isArray(history) && history.length > 0) {
-    const last = history[history.length - 1];
-    if (last && typeof last.text === "string" && last.text.length > 0) {
-      supplement = last.text;
+    const start = Math.max(0, history.length - n);
+    for (let i = start; i < history.length; i++) {
+      const item = history[i];
+      if (item && typeof item.text === "string" && item.text.trim()) {
+        parts.push(item.text.trim());
+      }
     }
   }
-  return supplement ? base + "\n" + supplement : base;
+
+  if (typeof text === "string" && text.trim()) {
+    const current = text.trim();
+    if (parts.length === 0 || parts[parts.length - 1] !== current) parts.push(current);
+  }
+
+  return parts.join("\n").slice(-maxChars);
 }
 
-var FRONT_MEMORY_MARKER = "[UNSAID hint]";
-
 function syncFrontMemoryHint(subtleHints) {
-  if (!state.memory || typeof state.memory !== "object") return;
-  const existing = (state.memory.frontMemory || "").split(FRONT_MEMORY_MARKER)[0].replace(/\s+$/, "");
-  if (!subtleHints) {
-    state.memory.frontMemory = existing;
-    return;
-  }
-  const hint = `${FRONT_MEMORY_MARKER} Let each character's private feelings subtly color their actions and tone right now, without ever stating them outright.`;
-  state.memory.frontMemory = existing ? `${existing}\n\n${hint}` : hint;
+  setManagedFrontMemorySegment(
+    FRONT_MEMORY_MARKER,
+    subtleHints
+      ? "Let each character's private feelings subtly color their actions and tone right now, without ever stating them outright."
+      : ""
+  );
 }
 
 // Shared by both the automatic twist->reveal link and the manual /peek
@@ -3411,7 +3488,7 @@ function syncFrontMemoryHint(subtleHints) {
 // force a private thought onto something that was never a person.
 function isCharacterLikeCard(name) {
   if (typeof storyCards === "undefined" || !storyCards) return true;
-  const existingCard = storyCards.find(c => c.title && isSameCardEntity(c.title, name));
+  const existingCard = findStoryCardForEntity(name);
   if (!existingCard) return true;
   const cardType = (existingCard.type || "").trim().toLowerCase();
   return !cardType || cardType === "character";

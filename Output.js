@@ -1,8 +1,6 @@
 try {
   initUnsaid();
-} catch (e) {
-  utLog("Output init", e);
-}
+} catch (e) {}
 
 if (!state.memory) state.memory = {};
 
@@ -76,7 +74,9 @@ var twistsModifier = (text) => {
 
     Library.updateConfigCard(cfg, c);
     Library.updateTwistLogCard(c, cfg);
-  } catch (e) {}
+  } catch (e) {
+    if (typeof log === "function") log("Output/Twists error: " + (e && e.message));
+  }
 
   return { text };
 };
@@ -93,11 +93,17 @@ var unsaidModifier = (text) => {
     const cardOpenSource = "(?:【CARD】|〖CARD〗|\\[CARD\\]|<CARD>)";
     const cardCloseSource = "(?:【\\/CARD】|〖\\/CARD〗|\\[\\/CARD\\]|<\\/CARD>)";
     const blockPattern = new RegExp(cardOpenSource + "([\\s\\S]*?)" + cardCloseSource, "gi");
-    const expectedNames = utUniqueNames(state.unsaid.codex.pendingNames || []);
+    const expectedNames = Array.isArray(state.unsaid.codex.pendingNames)
+      ? state.unsaid.codex.pendingNames.slice()
+      : [];
     const expectedTypes = state.unsaid.codex.pendingTypes || {};
+    const maxFieldLength = 420;
+    // Never strip arbitrary CARD-looking prose unless this turn actually
+    // requested Codex output. This keeps user-authored bracketed text safe.
     const blockMatches = expectedNames.length > 0 ? [...text.matchAll(blockPattern)] : [];
     const succeededNames = new Set();
     const cardWasNew = {};
+    const builtTypes = {};
 
     // Tolerant of the markdown a real model very commonly wraps structured
     // "field: value" output in — bullets, numbering, headers, bold/italic
@@ -115,7 +121,7 @@ var unsaidModifier = (text) => {
     // listing clean, legitimate names — Silas, Rielle, Kyle, Thornhaven —
     // still exhausting every retry with zero cards created).
     function matchFieldLine(line) {
-      return line.match(/^\s*(?:#{1,6}\s*|[-*•+]\s*|\d+[.)]\s*)?[*_]{0,3}\s*([A-Za-z ]+?)\s*[*_]{0,3}\s*:\s*[*_]{0,3}\s*(.+?)\s*[*_]{0,3}\s*$/);
+      return line.match(/^\s*(?:#{1,6}\s*|[-*•+]\s*|\d+[.)]\s*)?[*_]{0,3}\s*["'“”]?([A-Za-z][A-Za-z ]+?)["'“”]?\s*[*_]{0,3}\s*[:=]\s*[*_]{0,3}\s*(.+?)\s*[*_]{0,3}\s*$/);
     }
 
     // A quick, non-committal peek at just the Name field of a raw block —
@@ -149,37 +155,71 @@ var unsaidModifier = (text) => {
         ];
         const fieldAliases = {
           "strength": "Strength Level",
+          "power": "Strength Level",
           "power level": "Strength Level",
+          "combat level": "Strength Level",
           "bio": "Background",
           "biography": "Background",
           "backstory": "Background",
+          "history": "Background",
+          "traits": "Personality",
+          "temperament": "Personality",
           "looks": "Appearance",
+          "look": "Appearance",
           "skills": "Abilities",
+          "skill": "Abilities",
           "powers": "Abilities",
+          "talents": "Abilities",
           "flaws": "Weaknesses",
-          "relations": "Relationships"
+          "weak points": "Weaknesses",
+          "relations": "Relationships",
+          "connections": "Relationships",
+          "where": "Location",
+          "key places": "Key Locations",
+          "history events": "Historical Events",
+          "kind": "Type",
+          "features": "Properties",
+          "importance": "Significance",
+          "role": "Significance"
         };
+
+        function cleanFieldValue(value) {
+          return String(value || "")
+            .replace(/^["“”'‘’]+|["“”'‘’]+$/g, "")
+            .replace(/^[*_]{1,3}\s*/, "")
+            .replace(/\s*[*_]{1,3}$/, "")
+            .replace(/\s+/g, " ")
+            .trim()
+            .slice(0, maxFieldLength);
+        }
 
         // A model occasionally compresses the template onto one line with
         // pipes/semicolons. Expand only when a separator is followed by
         // another label-shaped "Field:" token, so punctuation inside a
         // normal value is left alone.
         const expandedBlock = blockContent.replace(
-          /\s*[|;]\s*(?=[A-Za-z][A-Za-z ]{1,28}\s*:)/g,
+          /\s*[|;]\s*(?=["'“”]?[A-Za-z][A-Za-z ]{1,28}["'“”]?\s*[:=])/g,
           "\n"
         );
 
+        let lastCanonical = null;
         expandedBlock.split("\n").forEach(line => {
           const fieldMatch = matchFieldLine(line);
-          if (!fieldMatch) return;
-          const rawLabel = fieldMatch[1].trim();
-          const lower = rawLabel.toLowerCase();
-          const canonical = allCanonicalFields.find(f => f.toLowerCase() === lower) || fieldAliases[lower];
-          if (canonical) {
-            const cleanValue = fieldMatch[2].trim().replace(/\s{2,}/g, " ");
-            fields[canonical] = cleanValue.length > CODEX_FIELD_VALUE_LIMIT
-              ? cleanValue.slice(0, CODEX_FIELD_VALUE_LIMIT - 3) + "..."
-              : cleanValue;
+          if (fieldMatch) {
+            const rawLabel = fieldMatch[1].trim();
+            const lower = rawLabel.toLowerCase();
+            const canonical = allCanonicalFields.find(f => f.toLowerCase() === lower) || fieldAliases[lower];
+            if (canonical) {
+              fields[canonical] = cleanFieldValue(fieldMatch[2]);
+              lastCanonical = canonical;
+              return;
+            }
+          }
+
+          // If a model wraps a long field onto an indented continuation line,
+          // fold it back into that field instead of failing the whole card.
+          if (lastCanonical && /^\s{2,}\S/.test(line) && !/【|〖|\[\/?CARD\]|<\/?CARD>/i.test(line)) {
+            fields[lastCanonical] = cleanFieldValue(`${fields[lastCanonical]} ${line.trim()}`);
           }
         });
 
@@ -237,13 +277,6 @@ var unsaidModifier = (text) => {
           item: itemFieldCount + nameItemHint,
           faction: factionShapeScore + nameFactionHint
         };
-        // Context has already classified the candidate using the story that
-        // actually triggered it. Give that prior a small vote so one incidental
-        // field cannot flip a well-established character into a location, while
-        // still allowing several strong fields to correct a genuinely bad guess.
-        if (upfrontType && Object.prototype.hasOwnProperty.call(scores, upfrontType)) {
-          scores[upfrontType] += 2;
-        }
         const best = Object.keys(scores).reduce((a, b) => (scores[b] > scores[a] ? b : a));
         if (scores[best] > 0) type = best;
 
@@ -255,12 +288,12 @@ var unsaidModifier = (text) => {
         const placeholderValue = (value) => {
           if (!value || !value.trim()) return true;
           const v = value.trim();
-          return /^(?:\.{2,}|unknown|n\/?a|tbd|none given|not specified|<[^>]+>|\[[^\]]+\])$/i.test(v);
+          return /^(?:\.{2,}|\?|[-—]+|unknown|not known|not yet known|unspecified|unclear|n\/?a|tbd|none|none given|not specified|<[^>]+>|\[[^\]]+\])$/i.test(v);
         };
         const missingRequired = requiredOrder.filter(f => f !== "Name" && placeholderValue(fields[f]));
         if (missingRequired.length > 0) return false;
 
-        let card = storyCards.find(c => c.title && isSameCardEntity(c.title, name));
+        let card = findStoryCardForEntity(name);
         const isNewCard = !card;
         if (isNewCard) {
           card = createOrFindCard(name.toLowerCase(), " ", type);
@@ -278,6 +311,7 @@ var unsaidModifier = (text) => {
           card.type = platformType(type);
         }
         cardWasNew[name] = isNewCard;
+        builtTypes[name] = type;
         succeededNames.add(name);
 
         const order = CARD_TEMPLATES[type] || CHARACTER_CARD_FIELDS;
@@ -342,9 +376,14 @@ var unsaidModifier = (text) => {
         const idx = remainingExpected.findIndex(n =>
           n.toLowerCase() === claimed.toLowerCase() || isSameCardEntity(n, claimed)
         );
-        if (idx !== -1) return remainingExpected.splice(idx, 1)[0];
+        // A block that explicitly names an unexpected entity must never be
+        // assigned positionally to somebody else. That was a source of
+        // cross-wired cards when a model hallucinated or reordered profiles.
+        if (idx === -1) return null;
+        return remainingExpected.splice(idx, 1)[0];
       }
-      return remainingExpected.shift();
+      // Positional fallback is safe only when the model omitted Name.
+      return remainingExpected.shift() || null;
     }
 
     blockMatches.forEach((match) => {
@@ -366,10 +405,10 @@ var unsaidModifier = (text) => {
       text = text.replace(remainingOpenPattern, "").replace(/\n{3,}/g, "\n\n").trimEnd();
     }
 
-    // If markers were bolded on their own lines, stripping the marker can
-    // leave a bare markdown fence behind. Remove only content-less fence
-    // lines; ordinary emphasis in the story is untouched.
-    text = text.replace(/^\s*[*_]{2,}\s*$/gm, "").replace(/\n{3,}/g, "\n\n").trimEnd();
+    // Only clean possible marker-adjacent markdown when Codex actually ran.
+    if (expectedNames.length > 0) {
+      text = text.replace(/^\s*[*_]{2,}\s*$/gm, "").replace(/\n{3,}/g, "\n\n").trimEnd();
+    }
 
     const messageParts = [];
     if (succeededNames.size > 0) {
@@ -378,16 +417,16 @@ var unsaidModifier = (text) => {
       const allExisting = names.every(n => !cardWasNew[n]);
       if (names.length === 1) {
         messageParts.push(cardWasNew[names[0]]
-          ? `📇 Codex created a ${expectedTypes[names[0]]} card for ${names[0]}.`
-          : `📇 Codex synced notes onto ${names[0]}'s existing Story Card (their written entry was left untouched).`);
+          ? `📇 Codex created a ${builtTypes[names[0]] || expectedTypes[names[0]] || "Story"} card for ${names[0]}.`
+          : `📇 Codex matched ${names[0]}'s existing Story Card; its written entry was left untouched.`);
       } else if (allNew) {
         messageParts.push(`📇 Codex created ${names.length} cards: ${names.join(", ")}.`);
       } else if (allExisting) {
-        messageParts.push(`📇 Codex synced notes onto ${names.length} existing Story Cards: ${names.join(", ")} (entries left untouched).`);
+        messageParts.push(`📇 Codex matched ${names.length} existing Story Cards: ${names.join(", ")} (written entries left untouched).`);
       } else {
         const created = names.filter(n => cardWasNew[n]);
         const existing = names.filter(n => !cardWasNew[n]);
-        messageParts.push(`📇 Codex created ${created.length} card(s) (${created.join(", ")}) and synced notes onto ${existing.length} existing card(s) (${existing.join(", ")}).`);
+        messageParts.push(`📇 Codex created ${created.length} card(s) (${created.join(", ")}) and matched ${existing.length} existing card(s) (${existing.join(", ")}), leaving their written entries untouched.`);
       }
     }
 
@@ -435,14 +474,13 @@ var unsaidModifier = (text) => {
     state.unsaid.codex.pendingNames = [];
     state.unsaid.codex.pendingTypes = {};
 
-    const visibleTrackingText = text.replace(/《[^》]*》?/g, " ");
-    trackMentions(visibleTrackingText, true);
+    trackMentions(text, true);
 
     const revealWasRequested = !!state.unsaid.pending;
     if (state.unsaid.pending) {
       const name = state.unsaid.pending;
       const strictPattern = new RegExp(
-        `《${escapeForRegex(name)},\\s*([a-zA-Z]+)(?:,\\s*(about\\s+[^:》]+|core-shift))?:\\s*([^》]*)》`,
+        `《${escapeForRegex(name)},\\s*([a-zA-Z][a-zA-Z-]*)(?:,\\s*(about\\s+[^:》]+|core-shift))?:\\s*([^》]*)》`,
         "i"
       );
       let matchedPattern = strictPattern;
@@ -462,26 +500,22 @@ var unsaidModifier = (text) => {
           thought = looseMatch[1].trim().replace(/^feeling\s+/i, "");
           usedFallback = true;
         } else {
-          const anyBracketPattern = /《([^》]+)》/;
-          const anyMatch = text.match(anyBracketPattern);
-          if (anyMatch) {
-            matchedPattern = anyBracketPattern;
-            thought = anyMatch[1].trim().replace(/^feeling\s+/i, "");
+          // Final fallback still requires the expected character's name.
+          // Do not consume an arbitrary unrelated 《...》 block just because
+          // a reveal happened to be pending.
+          const barePattern = new RegExp(
+            `(^|\\n)\\s*${escapeForRegex(name)},\\s*([a-zA-Z][a-zA-Z-]*)(?:,\\s*(about\\s+[^:\\n]+|core-shift))?:\\s*([^\\n]+)`,
+            "i"
+          );
+          const bareMatch = text.match(barePattern);
+          if (bareMatch) {
+            const matchedText = bareMatch[0].replace(/^\n/, "");
+            matchedPattern = new RegExp(escapeForRegex(matchedText));
+            feeling = bareMatch[2].trim().toLowerCase();
+            if (feeling === "feeling" || feeling === "emotion" || feeling === "thought") feeling = null;
+            modifier2 = bareMatch[3] ? bareMatch[3].trim() : null;
+            thought = bareMatch[4].trim();
             usedFallback = true;
-          } else {
-            const barePattern = new RegExp(
-              `(?:^|\\n)\\s*${escapeForRegex(name)},\\s*([a-zA-Z]+)(?:,\\s*(about\\s+[^:\\n]+|core-shift))?:\\s*([^\\n]+)`,
-              "i"
-            );
-            const bareMatch = text.match(barePattern);
-            if (bareMatch) {
-              matchedPattern = new RegExp(escapeForRegex(bareMatch[0]));
-              feeling = bareMatch[1].trim().toLowerCase();
-              if (feeling === "feeling" || feeling === "emotion" || feeling === "thought") feeling = null;
-              modifier2 = bareMatch[2] ? bareMatch[2].trim() : null;
-              thought = bareMatch[3].trim();
-              usedFallback = true;
-            }
           }
         }
       }
@@ -501,6 +535,16 @@ var unsaidModifier = (text) => {
           isCoreShift = true;
           thought = thought.replace(/^core-shift\s*[:,]?\s*/i, "");
         }
+
+        // The model is not allowed to rewrite a core truth merely because it
+        // emitted the words "core-shift". Context explicitly records whether
+        // this particular reveal was authorized to shift the anchor.
+        const coreShiftAuthorized = !!state.unsaid.pendingCoreShiftAllowed && !!cfg.allowCoreShift;
+        if (isCoreShift && !coreShiftAuthorized) {
+          isCoreShift = false;
+          about = null;
+        }
+
         const { wantSentence } = splitThoughtSentences(thought);
 
         // Replace by exact match position rather than a plain regex
@@ -601,13 +645,20 @@ var unsaidModifier = (text) => {
         }
       }
       state.unsaid.pending = null;
+      state.unsaid.pendingCoreShiftAllowed = false;
+      state.unsaid.pendingCoreCheck = false;
     }
 
     if (revealWasRequested && text.indexOf("《") !== -1) {
       text = text.replace(/《[^》]*》?/g, "").replace(/ {2,}/g, " ").replace(/\n{3,}/g, "\n\n").trimEnd();
     }
 
-    syncFrontMemoryHint(cfg.subtleHints);
+    if (!revealWasRequested) {
+      state.unsaid.pendingCoreShiftAllowed = false;
+      state.unsaid.pendingCoreCheck = false;
+    }
+
+    syncFrontMemoryHint(cfg.enabled && cfg.subtleHints && cfg.cast.length > 0);
 
     if (!text || !text.trim()) {
       text = "*(A quiet moment passes.)*";
@@ -615,7 +666,7 @@ var unsaidModifier = (text) => {
 
     return { text };
   } catch (e) {
-    utLog("UNSAID Output", e);
+    if (typeof log === "function") log("UNSAID Output error: " + (e && e.message));
     return { text: originalText };
   }
 };
