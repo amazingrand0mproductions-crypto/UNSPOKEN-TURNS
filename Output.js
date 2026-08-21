@@ -276,9 +276,34 @@ var unsaidModifier = (text) => {
           }
         });
 
-        // The expected name is authoritative. If the model lowercases it,
-        // omits the Name line, or accidentally echoes a nearby candidate,
-        // do not throw away otherwise valid semantic details.
+        // For automatic Codex, require the model to identify the exact entity
+        // it is profiling. Positional fallback is not enough for non-character
+        // entities: if a prompt is about one dish/item and the model writes
+        // details for another nearby thing, silently forcing Name back to the
+        // expected value creates a convincing but wrong Story Card.
+        const modelClaimedName = fields["Name"] ? cleanFieldValue(fields["Name"]) : "";
+        const comparableName = (value) => String(value || "")
+          .toLowerCase()
+          .replace(/[“”"'‘’.,:;!?()[\]{}]/g, " ")
+          .replace(/\s+/g, " ")
+          .trim()
+          .replace(/^(?:the|a|an)\s+/, "");
+        const expectedKind = upfrontType || expectedTypes[name] || "character";
+        const exactNameMatch = modelClaimedName &&
+          comparableName(modelClaimedName) === comparableName(name);
+        const safeCharacterAliasMatch = expectedKind === "character" &&
+          modelClaimedName && isSameCardEntity(name, modelClaimedName);
+
+        if (!pendingForcedCodex) {
+          if (!modelClaimedName) return false;
+          if (!exactNameMatch && !safeCharacterAliasMatch) return false;
+        } else if (modelClaimedName && !exactNameMatch && !safeCharacterAliasMatch) {
+          // Even a manual /card request should not silently save a block that
+          // explicitly says it belongs to a different entity.
+          return false;
+        }
+
+        // The requested entity remains canonical after identity validation.
         fields["Name"] = name;
 
         // Weigh the actual evidence with a proper scoring comparison rather

@@ -2548,6 +2548,157 @@ var CODEX_STOPWORDS = new Set([
   ...CODEX_EXTRA_STOPWORDS
 ].map(w => w.toLowerCase()));
 
+
+// Automatic Codex discovery should prefer durable *named* entities over
+// ordinary scene nouns. A capitalized common noun at the start of a sentence
+// ("Food", "Dinner", "Coffee", "Table") can otherwise look exactly like a
+// one-word proper name to the tokenizer, and ordinary narration verbs such as
+// "takes" or "moves" can then accidentally promote it to a character.
+//
+// Keep this separate from CODEX_STOPWORDS: words such as "Chicken", "Cafe",
+// "Library", "King", or "Spoon" can legitimately occur inside a real proper
+// name ("Dragon's Breath Fried Chicken", "Moonlight Cafe", "The Golden
+// Spoon"). The generic-noun guard rejects them only when the whole candidate
+// is still just an ordinary concept, while explicit naming/business cues can
+// rescue a genuinely named entity.
+var CODEX_GENERIC_FOOD_WORDS = new Set([
+  "food","foods","meal","meals","breakfast","brunch","lunch","dinner","supper","snack","snacks",
+  "appetizer","appetizers","starter","starters","entree","entrees","entrée","entrées","main","course","courses",
+  "dessert","desserts","dish","dishes","plate","plates","bowl","bowls","serving","servings","portion","portions",
+  "recipe","recipes","ingredient","ingredients","menu","menus","special","specials","buffet","feast","banquet",
+  "drink","drinks","beverage","beverages","water","coffee","tea","juice","soda","pop","cola","lemonade",
+  "milk","milkshake","shake","smoothie","smoothies","cocoa","chocolate","beer","ale","lager","wine","cider",
+  "cocktail","cocktails","mocktail","mocktails","liquor","spirits","whiskey","whisky","vodka","gin","rum",
+  "tequila","champagne","espresso","latte","cappuccino","mocha",
+  "bread","toast","roll","rolls","bun","buns","bagel","bagels","croissant","croissants","muffin","muffins",
+  "cereal","oatmeal","porridge","pancake","pancakes","waffle","waffles","egg","eggs","omelet","omelette",
+  "bacon","sausage","sausages","ham","chicken","turkey","beef","pork","lamb","mutton","duck","goose",
+  "steak","steaks","meat","meats","fish","seafood","salmon","tuna","shrimp","prawn","prawns","crab","lobster",
+  "burger","burgers","hamburger","hamburgers","sandwich","sandwiches","wrap","wraps","pizza","pizzas",
+  "pasta","spaghetti","lasagna","lasagne","macaroni","noodle","noodles","ramen","rice","risotto",
+  "soup","soups","stew","stews","chili","curry","curries","salad","salads","fries","chips","crisps",
+  "potato","potatoes","vegetable","vegetables","veggie","veggies","fruit","fruits","apple","apples",
+  "banana","bananas","orange","oranges","berry","berries","grape","grapes","melon","peach","peaches",
+  "pear","pears","pineapple","mango","mangoes","lemon","lemons","lime","limes","tomato","tomatoes",
+  "onion","onions","garlic","pepper","peppers","carrot","carrots","corn","bean","beans","peas","mushroom","mushrooms",
+  "cheese","butter","cream","yogurt","yoghurt","sauce","sauces","gravy","dressing","dip","dips","jam","jelly",
+  "salt","sugar","flour","oil","vinegar","spice","spices","herb","herbs","seasoning","seasonings",
+  "cake","cakes","pie","pies","cookie","cookies","biscuit","biscuits","brownie","brownies","donut","donuts",
+  "doughnut","doughnuts","pastry","pastries","candy","candies","sweet","sweets","icecream","ice","gelato",
+  "pudding","custard","cheesecake","cupcake","cupcakes","tart","tarts",
+  "fried","grilled","roasted","baked","boiled","steamed","smoked","toasted","spicy","sweet","savory","savoury",
+  "sour","salty","fresh","frozen","hot","cold","warm","raw","cooked","crispy","creamy","cheesy","garlicky"
+].map(w => w.toLowerCase()));
+
+var CODEX_GENERIC_SCENE_NOUNS = new Set([
+  "thing","things","stuff","object","objects","item","items","belonging","belongings","possession","possessions",
+  "place","places","area","areas","spot","spots","location","locations","site","sites","scene","scenes",
+  "room","rooms","bedroom","bedrooms","bathroom","bathrooms","kitchen","kitchens","hallway","hallways",
+  "corridor","corridors","livingroom","basement","attic","garage","garden","yard","porch","balcony",
+  "door","doors","window","windows","wall","walls","floor","floors","ceiling","ceilings","roof","roofs",
+  "table","tables","chair","chairs","desk","desks","bed","beds","couch","couches","sofa","sofas","shelf","shelves",
+  "cabinet","cabinets","drawer","drawers","counter","counters","lamp","lamps","light","lights","mirror","mirrors",
+  "box","boxes","bag","bags","bottle","bottles","cup","cups","glass","glasses","mug","mugs","fork","forks",
+  "knife","knives","spoon","spoons","napkin","napkins","towel","towels","blanket","blankets","pillow","pillows",
+  "clothes","clothing","shirt","shirts","pants","trousers","dress","dresses","jacket","jackets","coat","coats",
+  "shoe","shoes","boot","boots","hat","hats","glove","gloves","scarf","scarves",
+  "phone","phones","computer","computers","laptop","laptops","tablet","tablets","screen","screens","television","tv",
+  "book","books","paper","papers","page","pages","letter","letters","note","notes","photo","photos","picture","pictures",
+  "car","cars","truck","trucks","vehicle","vehicles","bike","bikes","bicycle","bicycles","bus","buses","train","trains",
+  "road","roads","street","streets","path","paths","trail","trails","bridge","bridges","building","buildings",
+  "store","stores","shop","shops","market","markets","school","schools","hospital","hospitals","office","offices",
+  "park","parks","library","libraries","restaurant","restaurants","cafe","cafes","diner","diners","bar","bars",
+  "tree","trees","forest","forests","river","rivers","lake","lakes","mountain","mountains","hill","hills","field","fields",
+  "sky","cloud","clouds","rain","snow","wind","weather","sun","moon","star","stars",
+  "hand","hands","arm","arms","leg","legs","foot","feet","head","face","eyes","eye","hair","mouth","lips","voice",
+  "body","bodies","heart","hearts","blood","breath","breathing","smile","smiles","gaze","expression","expressions",
+  "sound","sounds","noise","noises","music","song","songs","silence","air","smell","scent","taste","feeling","feelings",
+  "time","times","moment","moments","minute","minutes","hour","hours","day","days","week","weeks","month","months",
+  "year","years","morning","afternoon","evening","night","today","tomorrow","yesterday",
+  "work","job","jobs","money","cash","home","family","friend","friends","people","person","someone","somebody",
+  "problem","problems","question","questions","answer","answers","idea","ideas","plan","plans","choice","choices",
+  "conversation","conversations","message","messages","text","texts","call","calls","story","stories","memory","memories",
+  "dream","dreams","thought","thoughts","secret","secrets","truth","truths","lie","lies","news","information"
+].map(w => w.toLowerCase()));
+
+var CODEX_GENERIC_DESCRIPTORS = new Set([
+  "big","small","little","large","tiny","huge","old","new","young","ancient","modern","good","bad","best","worst",
+  "first","last","next","other","another","same","different","normal","ordinary","simple","plain","special",
+  "red","blue","green","yellow","black","white","brown","gray","grey","gold","golden","silver","dark","light",
+  "bright","pale","deep","soft","hard","rough","smooth","clean","dirty","wet","dry","heavy","lightweight",
+  "hot","cold","warm","cool","fast","slow","quick","quiet","loud","sweet","bitter","sour","salty","spicy",
+  "fresh","stale","fried","grilled","roasted","baked","boiled","steamed","smoked","raw","cooked","crispy","creamy"
+].map(w => w.toLowerCase()));
+
+var CODEX_GENERIC_COMMON_NOUNS = new Set([
+  ...CODEX_GENERIC_FOOD_WORDS,
+  ...CODEX_GENERIC_SCENE_NOUNS
+]);
+
+function codexGenericWords(name) {
+  return String(name || "")
+    .toLowerCase()
+    .replace(/\u2019/g, "'")
+    .replace(/[^a-z0-9' -]+/g, " ")
+    .split(/\s+/)
+    .map(w => w.replace(/^['-]+|['-]+$/g, "").replace(/'s$/i, ""))
+    .filter(Boolean);
+}
+
+function hasStrongCodexBusinessOrNamedContext(name, text) {
+  const source = typeof text === "string" ? text : "";
+  const cleanName = String(name || "").trim();
+  if (!source || !cleanName) return false;
+  const n = escapeForRegex(cleanName);
+  const businessKinds = "restaurant|diner|bistro|caf[eé]|coffee\\s+shop|bakery|pizzeria|steakhouse|deli|bar|pub|store|shop|market|company|corporation|brand|hotel|inn|tavern";
+  const patterns = [
+    new RegExp(`\\b(?:${businessKinds})\\s+(?:called|named|known\\s+as)\\s+["“”'‘’]?${n}\\b`, "i"),
+    new RegExp(`\\b${n}\\b\\s+(?:${businessKinds})\\b`, "i"),
+    new RegExp(`\\b(?:ordered\\s+from|ate\\s+at|dined\\s+at|works?\\s+at|worked\\s+at|employed\\s+by|shops?\\s+at)\\s+["“”'‘’]?${n}\\b`, "i")
+  ];
+  return patterns.some(re => re.test(source));
+}
+
+function isGenericCodexCommonNounCandidate(name, source) {
+  const cleanName = String(name || "").trim();
+  if (!cleanName) return true;
+
+  // Explicit identity language always wins. This keeps intentionally unusual
+  // names valid: "I'm Coffee", "the dish called Moonfire Stew", "the
+  // restaurant named The Golden Spoon", etc.
+  if (hasExplicitCodexNamingCue(cleanName, source) ||
+      hasStrongCodexBusinessOrNamedContext(cleanName, source)) {
+    return false;
+  }
+
+  const words = codexGenericWords(cleanName);
+  if (!words.length) return true;
+
+  const content = words.filter(w => !["the","a","an","of","and","or","with","in","on","at","for","from","to"].includes(w));
+  if (!content.length) return true;
+
+  // Food and drink are especially noisy in normal prose. Do not auto-card a
+  // meal/ingredient/dish just because it was capitalized or repeated. A
+  // genuinely *named* dish/brand/business can still pass through the explicit
+  // naming/context exceptions above.
+  if (content.some(w => CODEX_GENERIC_FOOD_WORDS.has(w))) {
+    return true;
+  }
+
+  const genericCount = content.filter(w =>
+    CODEX_GENERIC_COMMON_NOUNS.has(w) ||
+    CODEX_GENERIC_DESCRIPTORS.has(w) ||
+    CODEX_STOPWORDS.has(w) ||
+    CODEX_TITLE_WORDS.has(w)
+  ).length;
+
+  if (content.length === 1 && genericCount === 1) return true;
+  if (genericCount === content.length) return true;
+  if (content.length >= 2 && genericCount / content.length >= 0.75) return true;
+
+  return false;
+}
+
 var CODEX_LOCATION_HINTS = /\b(city|state|street|road|lane|avenue|boulevard|canyon|terminal|park|building|tower|island|country|nation|kingdom|realm|district|region|planet|world|base|facility|academy|university|school|campus|bridge|river|mountain|forest|desert|battleground|warzone|hall|tavern|inn|hotel|motel|castle|fortress|temple|church|mosque|shrine|level|sector|wing|chamber|vault|bay|deck|outpost|colony|settlement|village|town|hamlet|station|harbor|harbour|wharf|apartment|house|home|office|warehouse|factory|farm|ranch|arena|stadium|courtroom|courthouse|prison|jail|laboratory|lab|theater|theatre|cinema|museum|library|mall|market|beach|cave|mine|ruins?|cemetery|graveyard|neighborhood|neighbourhood|suburb|block)\b/i;
 var CODEX_LOCATION_SUFFIX_HINTS = /(tower|keep|hold|spire|haven|hollow|reach|scraper)/i;
 
@@ -2668,6 +2819,9 @@ function hasExplicitCodexNamingCue(name, text) {
     "building", "street", "road", "river", "mountain", "forest", "island",
     "company", "corporation", "agency", "organization", "organisation", "group",
     "guild", "order", "clan", "faction", "team", "club", "band", "crew",
+    "restaurant", "diner", "bistro", "cafe", "café", "bakery", "pizzeria",
+    "steakhouse", "deli", "bar", "pub", "store", "shop", "brand",
+    "dish", "meal", "food", "drink", "beverage", "cocktail", "dessert", "recipe", "menu item",
     "ship", "starship", "vehicle", "car", "train", "boat", "weapon", "sword",
     "gun", "device", "artifact", "relic", "book", "document", "app", "network"
   ].join("|");
@@ -2727,6 +2881,13 @@ function normalizeCodexCandidate(raw, source) {
   const keys = words.map(codexStopKey).filter(Boolean);
 
   if (!keys.length) return null;
+
+  // Reject ordinary common nouns before movement/dialogue heuristics get a
+  // chance to reinterpret them as people. This is the main protection
+  // against cards for Food, Dinner, Coffee, Table, etc.
+  if (!explicit && isGenericCodexCommonNounCandidate(name, source)) {
+    return null;
+  }
 
   if (!explicit) {
     if (keys.length === 1 &&
@@ -2795,6 +2956,8 @@ function isClearlyJunkCodexName(name) {
   if (!raw) return true;
   const evidenceText = codexEvidenceTextFor(raw);
   if (hasExplicitCodexNamingCue(raw, evidenceText)) return false;
+
+  if (isGenericCodexCommonNounCandidate(raw, evidenceText)) return true;
 
   const words = raw.split(/\s+/).filter(Boolean);
   const keys = words.map(codexStopKey).filter(Boolean);
@@ -3697,6 +3860,12 @@ function trackMentions(text, observeIntroductions) {
       // Once a person has genuinely appeared, later references are still
       // useful evidence even if this specific sentence is off-screen.
       recordCodexEvidence(key, source, false);
+    } else if (canConfirmIntroductions && observedType !== "character") {
+      // Non-character entities need their own evidence too. Without this,
+      // an automatically detected item/location/faction could reach the
+      // mention threshold with no targeted context saved for the card prompt,
+      // making nearby objects or foods much easier for the model to confuse.
+      recordCodexEvidence(key, source, false);
     }
   });
 
@@ -3759,6 +3928,18 @@ function classifyCodexEntry(name, text) {
   const nearItem = new RegExp(`(wields?|holds?|wearing|wears|wore|donned|dressed\\s+in|put\\s+on|slipped\\s+into|using|uses|draws?|grips?|picks?\\s+up|holsters?|drove|drives|driving|parked|rode|riding|climbed\\s+into|hopped\\s+into|flew|flying|piloted|piloting|boarded|boarding|launched|launching|docked|docking)\\s+(the\\s+|a\\s+|an\\s+|his\\s+|her\\s+|their\\s+)?${n}\\b`, "i");
   const describedAsItem = new RegExp(`\\b(?:sword|blade|gun|rifle|pistol|staff|wand|amulet|ring|artifact|device|weapon|tool|key|book|tome|relic|ship|starship|vehicle|car|truck|motorcycle|bicycle|train|boat|robot|android|mech|phone|computer|laptop|camera|instrument|guitar|document|letter|contract|map|medicine|medication|serum)\\s+(?:called|named)\\s+${n}\\b|\\b${n}\\b\\s+(?:is|was)\\s+(?:an?\\s+|the\\s+)?(?:sword|blade|gun|rifle|pistol|staff|wand|amulet|ring|artifact|device|weapon|tool|key|book|tome|relic|ship|starship|vehicle|car|truck|motorcycle|bicycle|train|boat|robot|android|mech|phone|computer|laptop|camera|instrument|guitar|document|letter|contract|map|medicine|medication|serum)\\b`, "i");
   if (nearItem.test(text) || describedAsItem.test(text)) return "item";
+
+  // Ordinary food words are filtered from automatic discovery, but a
+  // deliberately named/signature consumable can still be a legitimate item
+  // card when the story explicitly presents it as one.
+  const describedAsConsumable = new RegExp(
+    `\\b(?:dish|meal|food|drink|beverage|cocktail|mocktail|dessert|recipe|menu\\s+item|special)\\s+` +
+    `(?:called|named|known\\s+as|dubbed)\\s+["“”'‘’]?${n}\\b|` +
+    `\\b${n}\\b\\s+(?:is|was)\\s+(?:an?\\s+|the\\s+)?` +
+    `(?:dish|meal|food|drink|beverage|cocktail|mocktail|dessert|recipe|menu\\s+item|special)\\b`,
+    "i"
+  );
+  if (describedAsConsumable.test(text)) return "item";
 
   // A name with no recognizable keyword in itself ("Dragon's Breath Fried
   // Chicken" contains no obvious business word) can still be caught from
@@ -3981,7 +4162,7 @@ function buildCodexInstruction(names, text, forced, priorFailures, hardDeadline,
       ? ` Story evidence to weigh before inferring anything: ${evidenceText}`
       : "";
 
-    return `Profile ${i + 1} — "${name}":${knownNote}${correctionNote}${observationNote}${evidenceNote}\n【CARD】\n${body}\n【/CARD】`;
+    return `Profile ${i + 1} — "${name}":${knownNote}${correctionNote}${observationNote}${evidenceNote}\nIdentity lock: this block is ONLY for "${name}". Do not substitute a nearby person, food, object, place, brand, or similarly named entity. The Name field must stay "${name}".\n【CARD】\n${body}\n【/CARD】`;
   }).join("\n\n");
 
   let priorityLine;
@@ -4004,11 +4185,12 @@ function buildCodexInstruction(names, text, forced, priorFailures, hardDeadline,
   }
 
   const rules = compact
-    ? `Rules: keep the CARD markers exactly; one short concrete line per field; no blanks, "...", Unknown, N/A or TBD. Use established evidence first and infer missing details conservatively without contradicting the story. Fit every field to the actual scenario: Race means species/nature/kind; Strength Level means relevant capability, not automatically combat; Abilities may be skills/expertise/powers/resources; Relationships must be evidence-based. Do not mention this task outside the hidden block.${forced || hardDeadline ? " Visible story prose is optional after the block." : " Continue the visible story after the block."}`
+    ? `Rules: keep the CARD markers exactly; one short concrete line per field; no blanks, "...", Unknown, N/A or TBD. The Name field must stay the exact requested entity; never substitute a nearby food/object/person/place/business. Use established evidence first and infer missing details conservatively without contradicting the story. Fit every field to the actual scenario: Race means species/nature/kind; Strength Level means relevant capability, not automatically combat; Abilities may be skills/expertise/powers/resources; Relationships must be evidence-based. Do not mention this task outside the hidden block.${forced || hardDeadline ? " Visible story prose is optional after the block." : " Continue the visible story after the block."}`
     : `Rules:
 - Keep the 【CARD】 and 【/CARD】 markers exactly.
 - Output exactly one short line per listed field.
 - Replace every "..." with a concrete, specific value. Never leave "...", "unknown", "N/A", "TBD", or a blank field.
+- The Name field must identify exactly the requested entity. Never substitute a nearby food, object, person, place, business, or similarly named thing.
 - Analyze all supplied story evidence before filling fields. Repeated behavior and explicit facts outrank first impressions.
 - Use established facts first. Infer only what is still missing, and keep those inferences conservative, specific, and compatible with the story.
 - Do not turn hearsay into an on-screen event, invent a relationship that contradicts the text, or overstate abilities that have not been demonstrated.
