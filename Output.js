@@ -1,6 +1,8 @@
 try {
   initUnsaid();
-} catch (e) {}
+} catch (e) {
+  if (typeof log === "function") log("UNSAID init/Output error: " + (e && e.message));
+}
 
 if (!state.memory) state.memory = {};
 
@@ -8,55 +10,77 @@ var twistsModifier = (text) => {
   try {
     const { c, cfg } = Library.initState();
 
+    // Twist/seed hints now ask the model for a tiny hidden confirmation
+    // marker. The marker is stripped here before the player sees anything.
+    // This prevents a missed AI instruction from being logged as settled
+    // canon just because the request was sent.
+    const markerPattern = /(?:【|〖|\[|<)\s*UT-(TWIST|SEED)\s*:\s*([A-Za-z0-9_-]+)\s*(?:】|〗|\]|>)/gi;
+    const confirmedTwists = new Set();
+    const confirmedSeeds = new Set();
+    let markerMatch;
+    while ((markerMatch = markerPattern.exec(text || ""))) {
+      const kind = (markerMatch[1] || "").toUpperCase();
+      const id = markerMatch[2];
+      if (kind === "TWIST") confirmedTwists.add(id);
+      if (kind === "SEED") confirmedSeeds.add(id);
+    }
+    text = String(text || "").replace(markerPattern, "").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n");
+
+    function resolveThread(thread, partnerName) {
+      if (!thread) return;
+      thread.status = "resolved";
+      thread.resolvedTurn = c.turn;
+      thread.confirmMisses = 0;
+      c.twistLog.push({
+        entity: thread.entity,
+        category: thread.category,
+        tier: thread.tier,
+        resolvedTurn: c.turn,
+        wildcard: !!thread.wildcard,
+        mature: !!thread.mature || Library.isMatureCategory(thread.category),
+        source: thread.source || "live",
+        compoundWith: partnerName || null
+      });
+      Library.createTwistStoryCard(c, cfg, thread, partnerName || null);
+    }
+
     if (c.pendingPayoffId) {
       const thread = c.threads.find(t => t.id === c.pendingPayoffId);
       const partner = c.pendingPayoffId2 ? c.threads.find(t => t.id === c.pendingPayoffId2) : null;
+      const firstConfirmed = !!thread && confirmedTwists.has(thread.id);
+      const secondConfirmed = !c.pendingPayoffId2 || (!!partner && confirmedTwists.has(partner.id));
+      const confirmed = firstConfirmed && secondConfirmed;
 
-      if (thread) {
-        thread.status = "resolved";
-        thread.resolvedTurn = c.turn;
-        c.twistLog.push({
-          entity: thread.entity,
-          category: thread.category,
-          tier: thread.tier,
-          resolvedTurn: c.turn,
-          wildcard: !!thread.wildcard,
-          source: thread.source || "live",
-          compoundWith: partner ? partner.entity : null
-        });
-        Library.createTwistStoryCard(c, cfg, thread, partner ? partner.entity : null);
-      }
-      if (partner) {
-        partner.status = "resolved";
-        partner.resolvedTurn = c.turn;
-        c.twistLog.push({
-          entity: partner.entity,
-          category: partner.category,
-          tier: partner.tier,
-          resolvedTurn: c.turn,
-          wildcard: !!partner.wildcard,
-          source: partner.source || "live",
-          compoundWith: thread ? thread.entity : null
-        });
-        Library.createTwistStoryCard(c, cfg, partner, thread ? thread.entity : null);
-      }
+      if (confirmed) {
+        resolveThread(thread, partner ? partner.entity : null);
+        resolveThread(partner, thread ? thread.entity : null);
+        c.lastPayoffTurn = c.turn;
+        c.lastPayoffAttemptTurn = c.turn;
 
-      // Prime a private-thought check for whichever character just had a
-      // twist land on them. For a compound twist (both resolve together),
-      // pick one at random rather than always favoring `thread` — forcedPeek
-      // only has room for one character next turn, so a fixed preference
-      // would mean the partner entity never benefits from this.
-      if (typeof linkTwistPayoffToReveal === "function") {
-        const linkCandidates = [thread, partner].filter(Boolean);
-        if (linkCandidates.length > 0) {
-          const chosen = linkCandidates[Math.floor(Math.random() * linkCandidates.length)];
-          linkTwistPayoffToReveal(chosen.entity, chosen.tier);
+        // Prime a private-thought check only after the twist was actually
+        // confirmed in the generated response.
+        if (typeof linkTwistPayoffToReveal === "function") {
+          const linkCandidates = [thread, partner].filter(Boolean);
+          if (linkCandidates.length > 0) {
+            const chosen = linkCandidates[Math.floor(Math.random() * linkCandidates.length)];
+            linkTwistPayoffToReveal(chosen.entity, chosen.tier);
+          }
+        }
+
+        c.threads = c.threads.filter(t => t.status !== "resolved");
+        if (c.twistLog.length > 2000) c.twistLog = c.twistLog.slice(-2000);
+      } else {
+        const missed = [thread, partner].filter(Boolean);
+        missed.forEach(t => {
+          if (t.status !== "resolved") t.status = "ready";
+          t.confirmMisses = (t.confirmMisses || 0) + 1;
+        });
+        const worstMiss = missed.reduce((n, t) => Math.max(n, t.confirmMisses || 0), 0);
+        if (worstMiss === 2 || (worstMiss > 2 && worstMiss % 3 === 0)) {
+          const names = missed.map(t => t.entity).filter(Boolean).join(" + ");
+          pushMessage(`🌀 The model skipped the requested twist${names ? " for " + names : ""} ${worstMiss} times. It was NOT logged as canon and stays ready to retry.`);
         }
       }
-
-      c.threads = c.threads.filter(t => t.status !== "resolved");
-
-      if (c.twistLog.length > 2000) c.twistLog = c.twistLog.slice(-2000);
 
       c.pendingPayoffId = null;
       c.pendingPayoffId2 = null;
@@ -65,9 +89,15 @@ var twistsModifier = (text) => {
     if (c.pendingSeedId) {
       const thread = c.threads.find(t => t.id === c.pendingSeedId);
       if (thread && thread.status === "brewing") {
-        thread.seedTouches += 1;
-        thread.tier = Library.tierFor(thread.seedTouches);
-        if (Library.isEligible(thread, c, cfg)) thread.status = "ready";
+        if (confirmedSeeds.has(thread.id)) {
+          thread.seedTouches += 1;
+          thread.seedConfirmMisses = 0;
+          thread.lastSeedTurn = c.turn;
+          thread.tier = Library.tierFor(thread.seedTouches);
+          if (Library.isEligible(thread, c, cfg)) thread.status = "ready";
+        } else {
+          thread.seedConfirmMisses = (thread.seedConfirmMisses || 0) + 1;
+        }
       }
       c.pendingSeedId = null;
     }
@@ -158,6 +188,13 @@ var unsaidModifier = (text) => {
           "power": "Strength Level",
           "power level": "Strength Level",
           "combat level": "Strength Level",
+          "capability": "Strength Level",
+          "capability level": "Strength Level",
+          "competence": "Strength Level",
+          "overall capability": "Strength Level",
+          "species": "Race",
+          "species / nature": "Race",
+          "nature": "Race",
           "bio": "Background",
           "biography": "Background",
           "backstory": "Background",
@@ -170,10 +207,18 @@ var unsaidModifier = (text) => {
           "skill": "Abilities",
           "powers": "Abilities",
           "talents": "Abilities",
+          "expertise": "Abilities",
+          "competencies": "Abilities",
+          "resources": "Abilities",
           "flaws": "Weaknesses",
           "weak points": "Weaknesses",
+          "limitations": "Weaknesses",
+          "vulnerabilities": "Weaknesses",
+          "constraints": "Weaknesses",
           "relations": "Relationships",
           "connections": "Relationships",
+          "affiliations": "Relationships",
+          "social ties": "Relationships",
           "where": "Location",
           "key places": "Key Locations",
           "history events": "Historical Events",
@@ -254,7 +299,7 @@ var unsaidModifier = (text) => {
         const locationFieldCount = ["Location", "Key Locations", "Historical Events"].filter(f => fields[f]).length;
         const itemFieldCount = ["Properties", "Origin"].filter(f => fields[f]).length;
         const factionShapeScore = (fields["Type"] && !fields["Race"] && !fields["Personality"] && !fields["Background"]) ? 1 : 0;
-        const personSignal = /\b(girl|boy|woman|man|lady|gentlemen|gentleman|teenager|teens?|child|kids?|elderly|toddler|infant|maiden|youth)\b|\byears?[\s-]old\b/i;
+        const personSignal = /\b(girl|boy|woman|man|person|lady|gentlemen|gentleman|teenager|teens?|child|kids?|elderly|toddler|infant|maiden|youth|android|robot|synthetic|alien|spirit|ghost|sapient|sentient)\b|\byears?[\s-]old\b/i;
         // A person mentioned via "led by a scarred man" or "founded by a
         // young woman" is describing someone associated with the entity,
         // not the entity itself — strip that kind of attribution before

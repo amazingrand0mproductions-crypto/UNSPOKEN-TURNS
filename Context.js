@@ -1,15 +1,31 @@
 try {
   initUnsaid();
   checkCacheEfficientWarning();
-} catch (e) {}
+} catch (e) {
+  if (typeof log === "function") log("UNSAID init/Context error: " + (e && e.message));
+}
 
 var twistsModifier = (text) => {
   try {
     const { c, cfg } = Library.initState();
     if (!state.memory) state.memory = {};
 
+    const matureWasEnabled = c.lastMatureEnabled;
     Library.applyEntryConfig(cfg);
+    if (matureWasEnabled === false && cfg.allowMatureTwists) {
+      // A manual config-card toggle should behave the same as /mature on:
+      // rescan lore that may previously have been skipped while adult
+      // categories were disabled.
+      c.importedCardSignatures = {};
+      c.lastContextSignature = null;
+      c.lastAuthorsNoteSignature = null;
+    }
+    c.lastMatureEnabled = !!cfg.allowMatureTwists;
     const twistStoryAdvanced = Library.beginContextTurn(c, text);
+    // Re-evaluate from live story + lore every context pass. The profile is
+    // advisory and may evolve as a scenario reveals that it is hybrid,
+    // grounded, speculative, historical, etc.
+    Library.updateScenarioProfile(c, cfg, text);
 
     const cacheEfficient = !!(typeof info !== "undefined" && info && info.useCacheEfficient);
     Library.updateCacheEfficiencyWarning(cacheEfficient);
@@ -70,13 +86,14 @@ var twistsModifier = (text) => {
         }
       } else {
         thread = c.threads.find(t => t.id === c.forceEntity);
+        if (thread && !Library.isThreadAllowed(thread, cfg)) thread = null;
       }
       if (thread) {
         hint = Library.payoffHint(thread);
         hintEntities = [thread.entity];
         c.pendingPayoffId = thread.id;
         c.pendingPayoffId2 = null;
-        c.lastPayoffTurn = c.turn;
+        c.lastPayoffAttemptTurn = c.turn;
         Library.safeLog("[Twists and Turns] /twist forced a payoff for " + thread.entity + " (" + thread.category + ")");
       } else {
         // The Input hook always shows "Forcing the next twist..." on
@@ -94,7 +111,8 @@ var twistsModifier = (text) => {
       c.forceEntity = null;
     }
 
-    if (!hint && (c.turn - c.lastPayoffTurn) >= cfg.payoffCooldown) {
+    if (!hint && (c.turn - c.lastPayoffTurn) >= cfg.payoffCooldown &&
+        (c.turn - c.lastPayoffAttemptTurn) >= cfg.twistRetryCooldown) {
       let compound = null;
       if (cfg.allowCompoundTwists && Math.random() < Library.CP_COMPOUND_CHANCE) {
         compound = Library.pickCompoundPayoffThreads(c, cfg);
@@ -104,7 +122,7 @@ var twistsModifier = (text) => {
         hintEntities = [compound[0].entity, compound[1].entity];
         c.pendingPayoffId = compound[0].id;
         c.pendingPayoffId2 = compound[1].id;
-        c.lastPayoffTurn = c.turn;
+        c.lastPayoffAttemptTurn = c.turn;
         Library.safeLog("[Twists and Turns] compound payoff: " + compound[0].entity + " + " + compound[1].entity);
       } else {
         const payoffThread = Library.pickPayoffThread(c, cfg);
@@ -113,7 +131,7 @@ var twistsModifier = (text) => {
           hintEntities = [payoffThread.entity];
           c.pendingPayoffId = payoffThread.id;
           c.pendingPayoffId2 = null;
-          c.lastPayoffTurn = c.turn;
+          c.lastPayoffAttemptTurn = c.turn;
           Library.safeLog("[Twists and Turns] payoff: " + payoffThread.entity + " (" + payoffThread.category + ", " + payoffThread.tier + ")");
         }
       }
@@ -135,25 +153,31 @@ var twistsModifier = (text) => {
     }
 
     if (!hint && !cfg.strictLogic && cfg.allowWildcard && pacingTurn &&
-        (c.turn - c.lastPayoffTurn) >= cfg.payoffCooldown && Math.random() < Library.CP_WILDCARD_CHANCE) {
+        (c.turn - c.lastPayoffTurn) >= cfg.payoffCooldown &&
+        (c.turn - c.lastPayoffAttemptTurn) >= cfg.twistRetryCooldown &&
+        Math.random() < Library.CP_WILDCARD_CHANCE) {
       const candidate = Library.pickWildcardEntity(scanText, c, cfg);
       if (candidate) {
-        const wildThread = Library.createThread(c, candidate, null, c.turn, cfg);
-        wildThread.seedTouches = cfg.minSeedsForPayoff;
-        wildThread.status = "ready";
-        wildThread.wildcard = true;
-        hint = Library.payoffHint(wildThread);
-        hintEntities = [wildThread.entity];
-        c.pendingPayoffId = wildThread.id;
-        c.pendingPayoffId2 = null;
-        c.lastPayoffTurn = c.turn;
-        Library.safeLog("[Twists and Turns] wildcard payoff: " + wildThread.entity);
+        const wildThread = Library.createThread(c, candidate, null, c.turn, cfg, scanText);
+        if (wildThread) {
+          wildThread.seedTouches = cfg.minSeedsForPayoff;
+          wildThread.status = "ready";
+          wildThread.wildcard = true;
+          hint = Library.payoffHint(wildThread);
+          hintEntities = [wildThread.entity];
+          c.pendingPayoffId = wildThread.id;
+          c.pendingPayoffId2 = null;
+          c.lastPayoffAttemptTurn = c.turn;
+          Library.safeLog("[Twists and Turns] wildcard payoff: " + wildThread.entity);
+        }
       }
     }
 
     syncTwistFrontMemoryHint(hint || "");
     c.hintActive = !!hint;
-    } catch (e) {}
+    } catch (e) {
+      if (typeof log === "function") log("Context/Twists inner error: " + (e && e.message));
+    }
 
     Library.updateNudgeCard(cacheEfficient, hint, hintEntities);
     Library.updateConfigCard(cfg, c);

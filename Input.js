@@ -2,7 +2,9 @@ state.message = "";
 
 try {
   initUnsaid();
-} catch (e) {}
+} catch (e) {
+  if (typeof log === "function") log("UNSAID init/Input error: " + (e && e.message));
+}
 
 var cleanCommandEntity = (raw, maxLen) => {
   let name = String(raw || "").trim();
@@ -29,16 +31,20 @@ var twistsModifier = (text) => {
         }
         const name = cleanCommandEntity(parts.slice(1).join(" "));
         if (name) {
-          let thread = c.threads.find(t => isSameCardEntity(t.entity, name));
+          let thread = c.threads.find(t => isSameCardEntity(t.entity, name) && Library.isThreadAllowed(t, cfg));
           if (!thread) {
             thread = Library.createThread(c, name, null, c.turn - cfg.minTurnsForPayoff, cfg);
           }
 
-          thread.seedTouches = Math.max(thread.seedTouches, cfg.minSeedsForPayoff);
-          thread.tier = Library.tierFor(thread.seedTouches);
-          thread.status = "ready";
-          c.forceEntity = thread.id;
-          pushMessage(`🌀 Forcing a twist around ${name}...`);
+          if (!thread) {
+            pushMessage(`🌀 I couldn't prepare another allowed twist thread for ${name}. They may already be at the per-entity thread cap, or only have disabled mature threads waiting.`);
+          } else {
+            thread.seedTouches = Math.max(thread.seedTouches, cfg.minSeedsForPayoff);
+            thread.tier = Library.tierFor(thread.seedTouches);
+            thread.status = "ready";
+            c.forceEntity = thread.id;
+            pushMessage(`🌀 Forcing a twist around ${name}...`);
+          }
         } else {
           c.forceEntity = "any";
           pushMessage("🌀 Forcing the next twist...");
@@ -59,13 +65,64 @@ var twistsModifier = (text) => {
         }
         const name = cleanCommandEntity(rest.join(" "));
         if (name) {
-          c.forcePlant = { entity: name, category: category };
-          pushMessage(category
-            ? `🌱 Planting a new thread on ${name} (${CP_CATEGORY_LABELS[category]})...`
-            : `🌱 Planting a new thread on ${name}...`);
+          if (category && Library.isMatureCategory(category) && !cfg.allowMatureTwists) {
+            pushMessage(`🔞 ${CP_CATEGORY_LABELS[category]} is an opt-in mature twist. Use "/mature on" first.`);
+          } else if (category && Library.isMatureCategory(category) && !Library.isEntityConfirmedAdult(name, "")) {
+            pushMessage(`🔞 Mature twists only attach to characters with clear adult evidence. Put an adult age/description on ${name}'s Character Story Card first.`);
+          } else {
+            c.forcePlant = { entity: name, category: category };
+            pushMessage(category
+              ? `🌱 Planting a new thread on ${name} (${CP_CATEGORY_LABELS[category]})...`
+              : `🌱 Planting a new thread on ${name}...`);
+          }
         } else {
           pushMessage("🌱 /plant needs a name — try \"/plant Kessler\" or \"/plant Kessler hiddenIdentity\".");
         }
+        text = "(A quiet moment passes.)";
+      } else if (head === "mature") {
+        const val = (parts[1] || "").toLowerCase();
+        if (["on", "true", "yes", "enable", "enabled"].includes(val)) {
+          cfg.allowMatureTwists = true;
+          c.importedCardSignatures = {};
+          c.lastContextSignature = null;
+          c.lastAuthorsNoteSignature = null;
+          pushMessage("🔞 Mature (18+) twist themes enabled for confirmed adult characters. Existing lore will be rescanned for eligible hooks.");
+        } else if (["off", "false", "no", "disable", "disabled"].includes(val)) {
+          cfg.allowMatureTwists = false;
+          pushMessage("🔞 Mature (18+) twist themes disabled. Existing mature threads are kept but will not seed or pay off while this is off.");
+        } else {
+          pushMessage(`🔞 Mature (18+) twists are currently ${cfg.allowMatureTwists ? "ON" : "OFF"}. Use "/mature on" or "/mature off".`);
+        }
+        Library.updateConfigCard(cfg, c);
+        text = "(A quiet moment passes.)";
+      } else if (head === "scenario") {
+        const raw = parts.slice(1).join(" ").trim();
+        const val = raw.toLowerCase();
+        if (!raw || val === "status") {
+          const profile = Library.updateScenarioProfile(c, cfg, text);
+          const tags = profile.tags && profile.tags.length ? profile.tags.join(", ") : "general";
+          pushMessage(`🎭 Scenario adaptation is ${cfg.scenarioAdaptation ? "ON" : "OFF"} — detected: ${tags}; era: ${profile.era}; reality: ${profile.reality}; stakes: ${profile.scale}${cfg.scenarioOverride ? `; override: "${cfg.scenarioOverride}"` : ""}.`);
+        } else if (["auto", "on", "true", "enable", "enabled"].includes(val)) {
+          cfg.scenarioAdaptation = true;
+          cfg.scenarioOverride = "";
+          const profile = Library.updateScenarioProfile(c, cfg, text);
+          pushMessage(`🎭 Automatic scenario adaptation enabled. Current read: ${(profile.tags || ["general"]).join(", ")}.`);
+        } else if (["off", "false", "disable", "disabled"].includes(val)) {
+          cfg.scenarioAdaptation = false;
+          cfg.scenarioOverride = "";
+          Library.updateScenarioProfile(c, cfg, text);
+          pushMessage("🎭 Automatic scenario adaptation disabled. Twists still obey established evidence and your manual theme bias.");
+        } else {
+          cfg.scenarioAdaptation = true;
+          cfg.scenarioOverride = cleanCommandEntity(raw, 180);
+          const profile = Library.updateScenarioProfile(c, cfg, text);
+          pushMessage(`🎭 Scenario override set to "${cfg.scenarioOverride}". Automatic evidence still contributes, but this guidance is treated as deliberate player direction.`);
+        }
+        Library.updateConfigCard(cfg, c);
+        text = "(A quiet moment passes.)";
+      } else if (head === "twisttypes" || head === "twistcategories") {
+        Library.updateCategoryCatalog(cfg);
+        pushMessage("🗂️ Twist category catalog written — check the \"Twists and Turns — Twist Catalog\" card.");
         text = "(A quiet moment passes.)";
       } else if (head === "twistlog") {
         cfg.showTwistLog = !cfg.showTwistLog;

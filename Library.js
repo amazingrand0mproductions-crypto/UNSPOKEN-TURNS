@@ -1,4 +1,4 @@
-var CP_VERSION = "1.1";
+var CP_VERSION = "1.3";
 
 // Shared by both systems' name/entity detection (TWISTS AND TURNS'
 // findEntityInSentence and UNSAID's CODEX_NAME_TOKEN below) — the set of
@@ -23,12 +23,61 @@ var CP_DEFAULTS = {
   minTurnsForPayoff: 8,
   payoffCooldown: 10,
   establishedFactsCap: 8,
+  maxThreadsPerEntity: 5,
+  allowMatureTwists: false,
+  twistRetryCooldown: 2,
+  scenarioAdaptation: true,
+  scenarioOverride: "",
 
   categoryBias: ""
 
 };
 
 var CP_INTENSITY_PACING = { low: 10, medium: 6, high: 3 };
+
+// Scenario adaptation is intentionally advisory rather than a rigid genre lock.
+// The script can encounter hybrid settings (e.g. historical fantasy, romantic
+// horror, cyberpunk westerns), so detection keeps several weighted tags and uses
+// them to avoid *unsupported* assumptions without preventing evidence-backed
+// twists from working.
+var CP_SCENARIO_SIGNALS = [
+  { tag: "fantasy", rx: /\b(fantasy|magic|magical|mage|wizard|witch|sorcer|spell|enchanted|mana|dragon|elf|dwarf|orc|fae|prophecy|rune|demon|angel|necromanc|potion)\w*/gi, weight: 2 },
+  { tag: "sci-fi", rx: /\b(sci[- ]?fi|science fiction|starship|spaceship|spacecraft|galaxy|planet|alien|android|robot|cyborg|warp|hyperdrive|quantum|colony|orbital|terraform|cryosleep|nanotech|synthetic|interstellar|spacesuit)\w*/gi, weight: 2 },
+  { tag: "cyberpunk", rx: /\b(cyberpunk|megacorp|neon|implant|cyberware|netrunner|braindance|augmented|augmentation|corporate enclave|street samurai|data shard)\w*/gi, weight: 3 },
+  { tag: "contemporary", rx: /\b(contemporary|modern|present[- ]day|smartphone|cell ?phone|text message|social media|internet|rideshare|office|apartment|college|university|hospital|police station|airport|highway|coffee shop|streaming)\w*/gi, weight: 1 },
+  { tag: "historical", rx: /\b(historical|victorian|medieval|renaissance|regency|edwardian|ancient|century|empire|emperor|pharaoh|samurai|shogun|musketeer|telegraph|steamship|carriage|blacksmith)\w*/gi, weight: 2 },
+  { tag: "western", rx: /\b(cowboy|sheriff|saloon|frontier|outlaw|gunslinger|cattle|ranch|stagecoach|marshal|prospector|homestead)\w*/gi, weight: 3 },
+  { tag: "horror", rx: /\b(horror|haunted|ghost|nightmare|ritual|possessed|eldritch|terror|dread|stalker|slasher|undead|vampire|werewolf)\w*/gi, weight: 2 },
+  { tag: "mystery", rx: /\b(mystery|detective|investigat|clue|suspect|alibi|evidence|case|murder|missing person|crime scene|interrogat|forensic)\w*/gi, weight: 2 },
+  { tag: "crime/noir", rx: /\b(crime|noir|mafia|mobster|gangster|cartel|smuggler|heist|detective|fixer|underworld|blackmail|informant|nightclub|dirty cop)\w*/gi, weight: 2 },
+  { tag: "romance", rx: /\b(romance|romantic|dating|crush|kiss|lover|boyfriend|girlfriend|fianc|wedding|marriage|heartbreak|attraction)\w*/gi, weight: 2 },
+  { tag: "slice-of-life", rx: /\b(slice of life|roommate|school day|classmate|coworker|neighbor|family dinner|homework|shift at|day off|weekend|caf[eé]|friend group)\w*/gi, weight: 2 },
+  { tag: "school/campus", rx: /\b(high school|academy|college|university|campus|student|teacher|professor|classroom|dorm|semester|club meeting|prom)\w*/gi, weight: 2 },
+  { tag: "superhero", rx: /\b(superhero|supervillain|masked hero|secret identity|superpower|metahuman|vigilante|cape|powered individual|hero agency)\w*/gi, weight: 3 },
+  { tag: "post-apocalyptic", rx: /\b(post[- ]apocal|wasteland|fallout|ruins|survivors?|bunker|radiation|collapse|infected|zombie|scaveng|supply run)\w*/gi, weight: 2 },
+  { tag: "survival", rx: /\b(survival|stranded|shipwreck|shelter|rations|forage|dehydration|hypothermia|wilderness|supplies|rescue signal)\w*/gi, weight: 2 },
+  { tag: "military/war", rx: /\b(military|soldier|army|navy|marine|air force|platoon|battalion|regiment|commanding officer|mission briefing|battlefield|war|front line|special forces)\w*/gi, weight: 2 },
+  { tag: "political/intrigue", rx: /\b(politic|senator|parliament|congress|minister|election|campaign|diplomat|embassy|court intrigue|succession|treaty|governor|president)\w*/gi, weight: 2 },
+  { tag: "medical", rx: /\b(doctor|nurse|surgeon|patient|diagnosis|hospital|clinic|medicine|treatment|operation|ward|paramedic)\w*/gi, weight: 2 },
+  { tag: "legal", rx: /\b(lawyer|attorney|courtroom|judge|jury|trial|lawsuit|prosecutor|defense counsel|legal case|verdict)\w*/gi, weight: 2 },
+  { tag: "sports", rx: /\b(sports?|athlete|coach|tournament|championship|league|training camp|locker room|boxing|football|basketball|baseball|soccer|hockey|tennis|rugby|cricket|wrestling|MMA)\w*/gi, weight: 2 },
+  { tag: "music/celebrity", rx: /\b(band|singer|actor|actress|musician|concert|album|recording studio|celebrity|record label|film set|audition|premiere|backstage)\w*/gi, weight: 2 },
+  { tag: "pirate/nautical", rx: /\b(pirate|galleon|harbor|harbour|port|sailing|sailor|seafaring|ocean|navy|treasure map|privateer|corsair|yacht|marina)\w*/gi, weight: 2 },
+  { tag: "comedy", rx: /\b(comedy|comic|sitcom|absurd|ridiculous|hilarious|prank|joke|farce)\w*/gi, weight: 2 }
+];
+
+var CP_SPECULATIVE_ONLY_KEYS = new Set([
+  "bodySwap", "familyCurse", "theIllusion", "wrongTimeline", "theSimulation",
+  "dreamWithinReality", "futureMessage", "realityLeak", "notFullyHuman",
+  "theTransferal", "theVessel", "possessedObject", "sentientPlace",
+  "dormantTransformation", "falseProphecy", "thePropheciesTwist",
+  "fatesLoophole", "destinyDeferred", "theSign", "circleComplete"
+]);
+var CP_MAGIC_SUPERNATURAL_KEYS = new Set([
+  "familyCurse", "possessedObject", "sentientPlace", "dreamWithinReality",
+  "theVessel", "falseProphecy", "thePropheciesTwist", "fatesLoophole",
+  "destinyDeferred", "theSign", "circleComplete"
+]);
 
 var CP_CATEGORIES = {
   hiddenIdentity: "someone in the story isn't who they appear to be",
@@ -182,29 +231,110 @@ var CP_CATEGORIES = {
   slowPoison: "someone has been worn down gradually by something, not struck all at once",
   theAdaptation: "someone or something has been quietly changing to survive a threat no one else has noticed yet",
   buriedInstinct: "an old, suppressed nature is starting to resurface",
-  theVessel: "someone's body is carrying, containing, or channeling something that isn't their own"
+  theVessel: "someone's body is carrying, containing, or channeling something that isn't their own",
+
+  // Additional long-form twist pool — v1.2
+  stolenIdentity: "someone has been living under a name or identity that originally belonged to someone else",
+  stagedDefection: "an apparent betrayal or defection was staged as part of a deeper plan",
+  secretProtector: "someone acting hostile has secretly been protecting the target",
+  falseConfession: "a confession was deliberately false to protect someone or redirect blame",
+  secretAdoption: "a character was adopted or raised under a false account of their family",
+  hiddenGuardian: "someone thought unrelated has secretly been a guardian or protector for years",
+  inheritanceTrap: "an inheritance was designed as a trap, test, or source of leverage",
+  controlledOpposition: "the opposition is secretly being funded or directed by the power it claims to resist",
+  coupWithinCoup: "the apparent coup is itself being used by another faction to seize control",
+  emergencyPowers: "a temporary crisis measure was designed to become permanent",
+  puppetSuccessor: "the expected successor is being positioned as a controllable puppet",
+  plantedEvidence: "evidence was deliberately planted to create a false conclusion",
+  fabricatedAlibi: "an alibi was manufactured by someone with access or influence",
+  impossibleWitness: "a witness knows something they could not have seen through ordinary means",
+  censoredRecord: "an official record was selectively altered rather than wholly forged",
+  possessedObject: "an object carries a will, spirit, or intelligence of its own",
+  sentientPlace: "a location is aware of the people inside it and reacts to them",
+  changingMap: "a map or route changes because the place itself is shifting",
+  duplicateKey: "two supposedly unique keys or artifacts exist, proving the accepted story false",
+  stagedRescue: "a rescue was engineered so the rescuer could gain trust or leverage",
+  unknowingAccomplice: "someone has been helping a harmful plan without realizing what they were enabling",
+  secretBenefactor: "someone believed hostile has quietly been funding or protecting the protagonist",
+  falseChoice: "a supposed choice was structured so every option served the same hidden agenda",
+  futureMessage: "a message or warning came from a future version of someone involved",
+  missingTime: "a stretch of time is missing from the characters' memory or records",
+  timeDebt: "an earlier change to fate or time created a consequence that now has to be paid",
+  parallelPlan: "two plans believed unrelated were synchronized around the same hidden deadline",
+  proxyWar: "two groups are fighting a conflict secretly arranged or financed by a third",
+  manufacturedRivalry: "a rivalry between groups was deliberately created to keep them divided",
+  ghostOrganization: "a feared organization is a fabricated identity or front used by someone else",
+  hiddenMutiny: "a crew or team has already split into secret loyalties",
+  memoryAnchor: "one person or object preserves the true memory while everyone else's perception has changed",
+  realityLeak: "details from another reality or timeline are bleeding into the present",
+  decoyTarget: "the obvious target was only bait to hide what the attacker actually wanted",
+  observerEffect: "events change depending on who witnesses or remembers them",
+  falseProphecy: "a prophecy was fabricated by someone trying to manufacture the foretold outcome",
+  inheritedBargain: "a bargain made by an earlier generation binds the present one",
+  chosenByAccident: "the chosen figure received the role through an accident, substitution, or mistake",
+  destinyTransfer: "a fate meant for one person has attached itself to another",
+  cleanHands: "a respectable figure keeps their hands clean by outsourcing wrongdoing",
+  protectedCriminal: "someone dangerous has been shielded by an institution for practical reasons",
+  evidenceBroker: "someone has been buying, selling, or trading secrets between rival sides",
+  compromisedMentor: "a mentor has been steering someone for a private agenda",
+  dormantTransformation: "a transformation has already begun but is being delayed or suppressed",
+  adaptiveEnemy: "an enemy is learning specifically from each encounter with the protagonists",
+  healingCost: "unnatural healing transfers the damage, debt, or cost somewhere else",
+  bodyClock: "a hidden biological or supernatural countdown is changing a character from within",
+  secretIntimacy: "two consenting adult characters have concealed an intimate relationship or history",
+  pastHookup: "two adults who act casual share a one-time intimate past neither has disclosed",
+  friendsWithBenefits: "two consenting adults publicly seem like friends but privately have an intimate arrangement",
+  openRelationshipSecret: "an adult couple is consensually non-monogamous but keeps that arrangement hidden",
+  polyamorySecret: "several consenting adults share a relationship that outsiders do not know about",
+  privateKink: "an adult character has a private consensual intimate preference they fear being judged for",
+  hiddenPregnancy: "an adult character is concealing a pregnancy or the significance of it",
+  disputedParentage: "the assumed parentage of a child is not what the adults involved have claimed",
+  secretParenthood: "an adult has a child they have never publicly acknowledged",
+  marriageOfConvenience: "an adult marriage exists mainly for practical, political, or financial reasons",
+  secretEngagement: "two adults are secretly engaged or privately promised to each other",
+  secretDivorce: "an adult couple is already separated or divorced but is hiding it",
+  doubleLifePartner: "an adult maintains a hidden spouse or partner in another part of their life",
+  workplaceRomance: "adult colleagues have a concealed consensual relationship that complicates their loyalties",
+  exSpouseReturns: "an adult's supposedly distant former spouse returns with unfinished business",
+  financialInfidelity: "an adult partner has hidden major debt, spending, assets, or financial commitments",
+  gamblingDebt: "an adult character's concealed gambling debt is driving their current choices",
+  substanceRelapse: "an adult character has secretly relapsed into substance misuse and is hiding the consequences",
+  adultVenueConnection: "an adult character has a hidden connection to an adults-only venue or social scene",
+  hiddenSexWorkPast: "an adult character has concealed consensual sex-work history or involvement",
+  secretSurrogacy: "adults arranged a hidden surrogacy or parenthood plan that is now affecting the story",
+  fertilitySecret: "an adult partner has concealed a major reproductive or fertility decision",
+  prenupTrap: "an adult marriage contract contains a hidden condition, penalty, or source of leverage",
+  loverIsInformant: "an adult romantic partner is secretly passing information to another side",
+  revengeRomance: "an adult romance began as a calculated scheme for revenge or access, then became emotionally real",
+
 };
 var CP_CATEGORY_KEYS = Object.keys(CP_CATEGORIES);
 
 var CP_CATEGORY_CLUSTERS = {
-  "Identity & Deception": ["hiddenIdentity","falseAlly","fakedDefeat","doubleAgent","notTheOriginal","theRescuerNeedsRescuing","secretRelation","sleeperAgent","bodySwap","theMirror","unreliableMemory","splitPersonality","theActor","disguisedEnemy","theSubstitute","livingLegend"],
-  "Family & Relationship": ["theOriginStory","secretSibling","secretParentage","arrangedFate","theInheritance","disownedHeir","theWard","loversPast","theRival","familyCurse","secretMarriage"],
-  "Power & Authority": ["theFigurehead","hiddenSuccessor","coupInMotion","theUsurpersRegret","falseAuthority","theKingmaker","rebellionWithin","theExile","stolenLegacy","theSuccessionWar"],
-  "Knowledge & Secrets": ["buriedPast","forbiddenKnowledge","theWitness","codedMessage","theArchive","suppressedTruth","theConfession","falseMemoryImplant","theTranslator","hiddenJournal","hushMoney"],
-  "Object & Place": ["hiddenNature","theRelic","falseMap","theVault","cursedGift","theKey","secretPassage","theForgery","livingWeapon","theSanctuary","buriedEvidence"],
-  "Motive & Morality": ["ulteriorMotive","trustedFlip","theTest","wrongEnemy","theGreaterGood","selfishRescue","theRedemption","falseVictim","theBreakingPoint","mercyKilling","theProvocateur","guiltDriven","theInterventionist","falseFlag"],
-  "Time & Sequence": ["longConGame","theFlashback","alreadyHappened","theCountdown","loopedFate","prematureVictory","theOmen","delayedConsequence","theSetup","secondChance","theRecurrence"],
-  "Group & Society": ["allianceOfConvenience","hiddenFaction","infiltratedOrder","theCult","dividedLoyalties","theOutcast","collectiveAmnesia","theGatekeepers","falseConsensus","theInsurance","splinterGroup"],
-  "Perception & Reality": ["misdirection","theIllusion","wrongTimeline","theDouble","theSimulation","sharedDelusion","theGaslight","wrongVillain","theRecording","dreamWithinReality","theStandin"],
-  "Fate & Destiny": ["secretDebt","sharedFate","theWarningWasReal","theCostWasHidden","thePropheciesTwist","bornForThis","theSacrificePlanned","inheritedEnemy","theChosenWrong","fatesLoophole","theBargain","destinyDeferred","theSign","circleComplete"],
-  "Vice & Corruption": ["hiddenAffair","theBlackmail","secretDependency","theExploiter","corruptedOath","theObsession","criminalTies","theCoverUp","soldOut","forbiddenBond"],
-  "Body & Transformation": ["hiddenAilment","theInfection","notFullyHuman","theRegression","inheritedTrait","theTransferal","slowPoison","theAdaptation","buriedInstinct","theVessel"]
+  "Identity & Deception": ["hiddenIdentity","falseAlly","fakedDefeat","doubleAgent","notTheOriginal","theRescuerNeedsRescuing","secretRelation","sleeperAgent","bodySwap","theMirror","unreliableMemory","splitPersonality","theActor","disguisedEnemy","theSubstitute","livingLegend","stolenIdentity","stagedDefection","secretProtector","falseConfession"],
+  "Family & Relationship": ["theOriginStory","secretSibling","secretParentage","arrangedFate","theInheritance","disownedHeir","theWard","loversPast","theRival","familyCurse","secretMarriage","secretAdoption","hiddenGuardian","inheritanceTrap"],
+  "Power & Authority": ["theFigurehead","hiddenSuccessor","coupInMotion","theUsurpersRegret","falseAuthority","theKingmaker","rebellionWithin","theExile","stolenLegacy","theSuccessionWar","controlledOpposition","coupWithinCoup","emergencyPowers","puppetSuccessor"],
+  "Knowledge & Secrets": ["buriedPast","forbiddenKnowledge","theWitness","codedMessage","theArchive","suppressedTruth","theConfession","falseMemoryImplant","theTranslator","hiddenJournal","hushMoney","plantedEvidence","fabricatedAlibi","impossibleWitness","censoredRecord"],
+  "Object & Place": ["hiddenNature","theRelic","falseMap","theVault","cursedGift","theKey","secretPassage","theForgery","livingWeapon","theSanctuary","buriedEvidence","possessedObject","sentientPlace","changingMap","duplicateKey"],
+  "Motive & Morality": ["ulteriorMotive","trustedFlip","theTest","wrongEnemy","theGreaterGood","selfishRescue","theRedemption","falseVictim","theBreakingPoint","mercyKilling","theProvocateur","guiltDriven","theInterventionist","falseFlag","stagedRescue","unknowingAccomplice","secretBenefactor","falseChoice"],
+  "Time & Sequence": ["longConGame","theFlashback","alreadyHappened","theCountdown","loopedFate","prematureVictory","theOmen","delayedConsequence","theSetup","secondChance","theRecurrence","futureMessage","missingTime","timeDebt","parallelPlan"],
+  "Group & Society": ["allianceOfConvenience","hiddenFaction","infiltratedOrder","theCult","dividedLoyalties","theOutcast","collectiveAmnesia","theGatekeepers","falseConsensus","theInsurance","splinterGroup","proxyWar","manufacturedRivalry","ghostOrganization","hiddenMutiny"],
+  "Perception & Reality": ["misdirection","theIllusion","wrongTimeline","theDouble","theSimulation","sharedDelusion","theGaslight","wrongVillain","theRecording","dreamWithinReality","theStandin","memoryAnchor","realityLeak","decoyTarget","observerEffect"],
+  "Fate & Destiny": ["secretDebt","sharedFate","theWarningWasReal","theCostWasHidden","thePropheciesTwist","bornForThis","theSacrificePlanned","inheritedEnemy","theChosenWrong","fatesLoophole","theBargain","destinyDeferred","theSign","circleComplete","falseProphecy","inheritedBargain","chosenByAccident","destinyTransfer"],
+  "Vice & Corruption": ["theBlackmail","secretDependency","theExploiter","corruptedOath","theObsession","criminalTies","theCoverUp","soldOut","forbiddenBond","cleanHands","protectedCriminal","evidenceBroker","compromisedMentor"],
+  "Body & Transformation": ["hiddenAilment","theInfection","notFullyHuman","theRegression","inheritedTrait","theTransferal","slowPoison","theAdaptation","buriedInstinct","theVessel","dormantTransformation","adaptiveEnemy","healingCost","bodyClock"],
+  "Mature & Adult (18+)": ["hiddenAffair","secretIntimacy","pastHookup","friendsWithBenefits","openRelationshipSecret","polyamorySecret","privateKink","hiddenPregnancy","disputedParentage","secretParenthood","marriageOfConvenience","secretEngagement","secretDivorce","doubleLifePartner","workplaceRomance","exSpouseReturns","financialInfidelity","gamblingDebt","substanceRelapse","adultVenueConnection","hiddenSexWorkPast","secretSurrogacy","fertilitySecret","prenupTrap","loverIsInformant","revengeRomance"]
 };
 var CP_CLUSTER_NAMES = Object.keys(CP_CATEGORY_CLUSTERS);
 var CP_CATEGORY_TO_CLUSTER = {};
 CP_CLUSTER_NAMES.forEach(function(cluster) {
   CP_CATEGORY_CLUSTERS[cluster].forEach(function(key) { CP_CATEGORY_TO_CLUSTER[key] = cluster; });
 });
+
+// Mature themes are opt-in and only target characters with clear adult evidence.
+var CP_MATURE_KEYS = new Set([
+  "hiddenAffair", "secretIntimacy", "pastHookup", "friendsWithBenefits", "openRelationshipSecret", "polyamorySecret", "privateKink", "hiddenPregnancy", "disputedParentage", "secretParenthood", "marriageOfConvenience", "secretEngagement", "secretDivorce", "doubleLifePartner", "workplaceRomance", "exSpouseReturns", "financialInfidelity", "gamblingDebt", "substanceRelapse", "adultVenueConnection", "hiddenSexWorkPast", "secretSurrogacy", "fertilitySecret", "prenupTrap", "loverIsInformant", "revengeRomance"
+]);
 
 var CP_CATEGORY_LABELS = {
   hiddenIdentity: "Hidden Identity",
@@ -338,7 +468,7 @@ var CP_CATEGORY_LABELS = {
   theSign: "The Overlooked Sign",
   circleComplete: "Circle Complete",
 
-  hiddenAffair: "Hidden Affair",
+  hiddenAffair: "Hidden Affair (18+)",
   theBlackmail: "The Blackmail",
   secretDependency: "Secret Dependency",
   theExploiter: "The Exploiter",
@@ -358,7 +488,83 @@ var CP_CATEGORY_LABELS = {
   slowPoison: "Slow Poison",
   theAdaptation: "The Adaptation",
   buriedInstinct: "Buried Instinct",
-  theVessel: "The Vessel"
+  theVessel: "The Vessel",
+
+
+  // v1.2 additions
+  stolenIdentity: "Stolen Identity",
+  stagedDefection: "Staged Defection",
+  secretProtector: "Secret Protector",
+  falseConfession: "False Confession",
+  secretAdoption: "Secret Adoption",
+  hiddenGuardian: "Hidden Guardian",
+  inheritanceTrap: "Inheritance Trap",
+  controlledOpposition: "Controlled Opposition",
+  coupWithinCoup: "Coup Within a Coup",
+  emergencyPowers: "Emergency Powers",
+  puppetSuccessor: "Puppet Successor",
+  plantedEvidence: "Planted Evidence",
+  fabricatedAlibi: "Fabricated Alibi",
+  impossibleWitness: "Impossible Witness",
+  censoredRecord: "Censored Record",
+  possessedObject: "Possessed Object",
+  sentientPlace: "Sentient Place",
+  changingMap: "Changing Map",
+  duplicateKey: "Duplicate Key",
+  stagedRescue: "Staged Rescue",
+  unknowingAccomplice: "Unknowing Accomplice",
+  secretBenefactor: "Secret Benefactor",
+  falseChoice: "False Choice",
+  futureMessage: "Message From the Future",
+  missingTime: "Missing Time",
+  timeDebt: "Time Debt",
+  parallelPlan: "Parallel Plan",
+  proxyWar: "Proxy War",
+  manufacturedRivalry: "Manufactured Rivalry",
+  ghostOrganization: "Ghost Organization",
+  hiddenMutiny: "Hidden Mutiny",
+  memoryAnchor: "Memory Anchor",
+  realityLeak: "Reality Leak",
+  decoyTarget: "Decoy Target",
+  observerEffect: "Observer Effect",
+  falseProphecy: "Fabricated Prophecy",
+  inheritedBargain: "Inherited Bargain",
+  chosenByAccident: "Chosen by Accident",
+  destinyTransfer: "Transferred Destiny",
+  cleanHands: "Clean Hands",
+  protectedCriminal: "Protected Criminal",
+  evidenceBroker: "Evidence Broker",
+  compromisedMentor: "Compromised Mentor",
+  dormantTransformation: "Dormant Transformation",
+  adaptiveEnemy: "Adaptive Enemy",
+  healingCost: "Cost of Healing",
+  bodyClock: "Hidden Body Clock",
+  secretIntimacy: "Secret Intimacy (18+)",
+  pastHookup: "Past Hookup (18+)",
+  friendsWithBenefits: "Friends With Benefits (18+)",
+  openRelationshipSecret: "Open Relationship Secret (18+)",
+  polyamorySecret: "Hidden Polyamory (18+)",
+  privateKink: "Private Kink (18+)",
+  hiddenPregnancy: "Hidden Pregnancy (18+)",
+  disputedParentage: "Disputed Parentage (18+)",
+  secretParenthood: "Secret Parenthood (18+)",
+  marriageOfConvenience: "Marriage of Convenience (18+)",
+  secretEngagement: "Secret Engagement (18+)",
+  secretDivorce: "Secret Divorce (18+)",
+  doubleLifePartner: "Double-Life Partner (18+)",
+  workplaceRomance: "Workplace Romance (18+)",
+  exSpouseReturns: "Ex-Spouse Returns (18+)",
+  financialInfidelity: "Financial Infidelity (18+)",
+  gamblingDebt: "Gambling Debt (18+)",
+  substanceRelapse: "Substance Relapse (18+)",
+  adultVenueConnection: "Adults-Only Venue Connection (18+)",
+  hiddenSexWorkPast: "Hidden Sex-Work Past (18+)",
+  secretSurrogacy: "Secret Surrogacy (18+)",
+  fertilitySecret: "Fertility Secret (18+)",
+  prenupTrap: "Prenup Trap (18+)",
+  loverIsInformant: "Lover Is an Informant (18+)",
+  revengeRomance: "Revenge Romance (18+)",
+
 };
 
 var CP_TWIST_CARD_TYPE = "Twist / Turn";
@@ -414,7 +620,119 @@ var CP_LOOSE_THREAD_PATTERNS = [
   { rx: /\b(eyes (?:flickered|shifted) unnaturally|something (?:moved|shifted) beneath (?:his|her|their) skin|not (?:entirely|fully|quite) human)\b/i, cat: "notFullyHuman" },
   { rx: /\b(revert(?:ing|ed) to (?:an? )?(?:old|former|earlier) self|slipping back into (?:old|former) habits (?:no one|nobody) (?:thought|believed) (?:were gone|had ended))\b/i, cat: "theRegression" },
   { rx: /\b(had been getting (?:worse|sicker) for (?:weeks|months|days)|something in (?:his|her|their) (?:food|water|drink) all along)\b/i, cat: "slowPoison" },
-  { rx: /\b(old instincts? (?:resurfacing|returning|clawing back)|couldn't explain the sudden urge)\b/i, cat: "buriedInstinct" }
+  { rx: /\b(old instincts? (?:resurfacing|returning|clawing back)|couldn't explain the sudden urge)\b/i, cat: "buriedInstinct" },
+
+  // v1.2 — direct detection coverage for every twist category, including the opt-in adult set.
+  { rx: /\b(shared (?:the same )?fate|their fates? (?:were|are) linked|bound by the same hidden cause)\b/i, cat: "sharedFate" },
+  { rx: /\b(hidden cost|price (?:no one|nobody) mentioned|victory came with a price|the cost was concealed)\b/i, cat: "theCostWasHidden" },
+  { rx: /\b(origin story was (?:false|a lie)|wasn\'t how it really began|accepted origin was (?:wrong|false))\b/i, cat: "theOriginStory" },
+  { rx: /\b(rescuer (?:was|is) compromised|the one sent to save .{0,20} needed saving|already compromised before the rescue)\b/i, cat: "theRescuerNeedsRescuing" },
+  { rx: /\b(dark reflection of|mirror image of|more alike than (?:he|she|they) wanted to admit)\b/i, cat: "theMirror" },
+  { rx: /\b(second personality|alternate personality|another personality took over|two personalities)\b/i, cat: "splitPersonality" },
+  { rx: /\b(playing a role for so long|the performance became (?:his|her|their) identity|pretending for years)\b/i, cat: "theActor" },
+  { rx: /\b(swapped out midway|substituted without anyone noticing|replacement took (?:his|her|their) place)\b/i, cat: "theSubstitute" },
+  { rx: /\b(raised by someone who wasn\'t who they claimed|secret ward of|guardian wasn\'t who (?:he|she|they) claimed)\b/i, cat: "theWard" },
+  { rx: /\b(used to be lovers|former lovers|old flame|shared a romantic past)\b/i, cat: "loversPast" },
+  { rx: /\b(true successor|hidden successor|secret heir to (?:the )?(?:throne|position|office|command))\b/i, cat: "hiddenSuccessor" },
+  { rx: /\b(usurper.{0,30}regret|wanted to give (?:the )?power back|seizing power was a mistake)\b/i, cat: "theUsurpersRegret" },
+  { rx: /\b(succession (?:struggle|war) had already begun|multiple claimants were already competing|fight over the succession)\b/i, cat: "theSuccessionWar" },
+  { rx: /\b(archive.{0,30}contradict|sealed records? contradicted|records? in the archive told a different story)\b/i, cat: "theArchive" },
+  { rx: /\b(planted memory|memory was implanted|memories were implanted|false memory was inserted)\b/i, cat: "falseMemoryImplant" },
+  { rx: /\b(mistranslated on purpose|translation was altered|translator changed the message|deliberate mistranslation)\b/i, cat: "theTranslator" },
+  { rx: /\b(map was (?:false|fake|deliberately wrong)|false map|map led them the wrong way on purpose)\b/i, cat: "falseMap" },
+  { rx: /\b(turned out to be the key|ordinary .{0,20} unlocked something major|was the only key to)\b/i, cat: "theKey" },
+  { rx: /\b(living weapon|weapon was alive|weapon had a mind of its own|artifact awakened as a weapon)\b/i, cat: "livingWeapon" },
+  { rx: /\b(sanctuary was a trap|safe place wasn\'t safe|supposedly safe .{0,20} compromised|dangerous place was secretly safe)\b/i, cat: "theSanctuary" },
+  { rx: /\b(for the greater good|did terrible things to save|harm was meant to protect everyone|cruelty served a hidden good)\b/i, cat: "theGreaterGood" },
+  { rx: /\b(for (?:your|his|her|their) own good|secretly steering .{0,25} to protect|manipulated events to protect)\b/i, cat: "theInterventionist" },
+  { rx: /\b(past event wasn\'t what it seemed|what happened back then was different|flashback revealed a different truth)\b/i, cat: "theFlashback" },
+  { rx: /\b(second chance at the same choice|same choice again|another chance to choose differently)\b/i, cat: "secondChance" },
+  { rx: /\b(outcast was right|exiled .{0,20} was right all along|shunned .{0,20} had been right)\b/i, cat: "theOutcast" },
+  { rx: /\b(secretly controlling access|gatekeepers controlled|access was being controlled by unseen hands)\b/i, cat: "theGatekeepers" },
+  { rx: /\b(consensus was manufactured|everyone agrees .{0,20} manufactured|only a few made it seem everyone agreed)\b/i, cat: "falseConsensus" },
+  { rx: /\b(secret contingency plan|insurance plan no one knew about|backup plan was already in place)\b/i, cat: "theInsurance" },
+  { rx: /\b(wrong timeline|not the year they thought|events were out of order|timeframe was wrong)\b/i, cat: "wrongTimeline" },
+  { rx: /\b(the simulation|constructed reality|controlled environment masquerading as reality|reality was simulated)\b/i, cat: "theSimulation" },
+  { rx: /\b(recording contradicted|footage didn\'t match|audio contradicted|captured image told a different story)\b/i, cat: "theRecording" },
+  { rx: /\b(dream was real|vision was a real warning|what seemed like a dream actually happened)\b/i, cat: "dreamWithinReality" },
+  { rx: /\b(stand-in for the real|decoy stood in for|substitute was used in place of the real)\b/i, cat: "theStandin" },
+  { rx: /\b(prophecy meant something else|misread prophecy|true meaning of the prophecy|prophecy had been misunderstood)\b/i, cat: "thePropheciesTwist" },
+  { rx: /\b(wrong chosen one|chosen one wasn\'t actually|picked the wrong chosen|the chosen was mistaken)\b/i, cat: "theChosenWrong" },
+  { rx: /\b(loophole in fate|way around destiny|fate could be cheated|escape clause in the prophecy)\b/i, cat: "fatesLoophole" },
+  { rx: /\b(escaped destiny once|avoided fate before|destiny was catching up|deferred fate)\b/i, cat: "destinyDeferred" },
+  { rx: /\b(overlooked sign|sign had pointed to|omen pointed directly to|the sign was there all along)\b/i, cat: "theSign" },
+  { rx: /\b(identity belonged to someone else|living under someone else\'s name|stole (?:his|her|their) identity)\b/i, cat: "stolenIdentity" },
+  { rx: /\b(defection was staged|pretended to defect|fake betrayal was part of the plan)\b/i, cat: "stagedDefection" },
+  { rx: /\b(secretly protecting|hostility was a cover for protection|enemy had been protecting)\b/i, cat: "secretProtector" },
+  { rx: /\b(false confession|confessed to protect someone|confession was deliberately untrue)\b/i, cat: "falseConfession" },
+  { rx: /\b(secretly adopted|adoption was hidden|raised as (?:their|his|her) own but not born to)\b/i, cat: "secretAdoption" },
+  { rx: /\b(secret guardian|had been watching over .{0,25} for years|unseen protector since childhood)\b/i, cat: "hiddenGuardian" },
+  { rx: /\b(inheritance was a trap|will contained a hidden condition|inheritance was designed as a test)\b/i, cat: "inheritanceTrap" },
+  { rx: /\b(opposition was secretly funded by|controlled opposition|rebels were being financed by the regime)\b/i, cat: "controlledOpposition" },
+  { rx: /\b(coup within a coup|used the coup to seize power from the plotters|second takeover behind the first)\b/i, cat: "coupWithinCoup" },
+  { rx: /\b(emergency powers were meant to become permanent|temporary powers .{0,20} permanent|crisis powers were the real goal)\b/i, cat: "emergencyPowers" },
+  { rx: /\b(successor was a puppet|heir was being groomed to be controlled|controllable successor)\b/i, cat: "puppetSuccessor" },
+  { rx: /\b(evidence was planted|planted evidence|proof had been placed there deliberately)\b/i, cat: "plantedEvidence" },
+  { rx: /\b(alibi was fabricated|manufactured alibi|someone created (?:his|her|their) alibi)\b/i, cat: "fabricatedAlibi" },
+  { rx: /\b(witness knew something (?:he|she|they) couldn\'t have seen|impossible witness|could not have witnessed)\b/i, cat: "impossibleWitness" },
+  { rx: /\b(record was selectively altered|pages had been removed from the record|official record was censored)\b/i, cat: "censoredRecord" },
+  { rx: /\b(object was possessed|spirit inside the (?:object|weapon|artifact)|artifact had a will of its own)\b/i, cat: "possessedObject" },
+  { rx: /\b(place was alive|building was aware|forest was watching|location itself reacted)\b/i, cat: "sentientPlace" },
+  { rx: /\b(map kept changing|route moved on the map|roads shifted when no one looked)\b/i, cat: "changingMap" },
+  { rx: /\b(two identical keys|supposedly unique .{0,20} had a duplicate|second copy of the unique artifact)\b/i, cat: "duplicateKey" },
+  { rx: /\b(rescue was staged|engineered the rescue|danger had been arranged so .{0,20} could save)\b/i, cat: "stagedRescue" },
+  { rx: /\b(unknowing accomplice|helping without knowing what it enabled|had been assisting the plan without realizing)\b/i, cat: "unknowingAccomplice" },
+  { rx: /\b(secret benefactor|quietly funding|anonymous protector was actually|enemy had been financing)\b/i, cat: "secretBenefactor" },
+  { rx: /\b(false choice|every option served the same plan|choice was rigged so either way)\b/i, cat: "falseChoice" },
+  { rx: /\b(message from the future|future self sent|warning came from a future version)\b/i, cat: "futureMessage" },
+  { rx: /\b(missing time|hours? (?:he|she|they) couldn\'t remember|gap in (?:his|her|their) memory and the records)\b/i, cat: "missingTime" },
+  { rx: /\b(time debt|changing the past had a price|timeline demanded repayment|cost of altering time)\b/i, cat: "timeDebt" },
+  { rx: /\b(two plans were synchronized|parallel plans shared the same deadline|unrelated plans were timed together)\b/i, cat: "parallelPlan" },
+  { rx: /\b(proxy war|both sides were funded by a third|third party arranged the conflict)\b/i, cat: "proxyWar" },
+  { rx: /\b(rivalry was manufactured|kept the groups divided on purpose|feud had been engineered)\b/i, cat: "manufacturedRivalry" },
+  { rx: /\b(organization never really existed|ghost organization|fabricated group used as a front)\b/i, cat: "ghostOrganization" },
+  { rx: /\b(mutiny was already underway|crew had split into secret loyalties|secret mutiny)\b/i, cat: "hiddenMutiny" },
+  { rx: /\b(memory anchor|only .{0,25} remembered the true version|object preserved the original memory)\b/i, cat: "memoryAnchor" },
+  { rx: /\b(another reality was bleeding through|reality leak|details from another timeline appeared)\b/i, cat: "realityLeak" },
+  { rx: /\b(target was a decoy|obvious target was bait|attack was really aimed at something else)\b/i, cat: "decoyTarget" },
+  { rx: /\b(changed depending on who watched|observer changed the outcome|events differed for different witnesses)\b/i, cat: "observerEffect" },
+  { rx: /\b(prophecy was fabricated|fake prophecy|someone wrote the prophecy to make it come true)\b/i, cat: "falseProphecy" },
+  { rx: /\b(bargain made by (?:their|his|her) ancestors|inherited bargain|old family deal bound)\b/i, cat: "inheritedBargain" },
+  { rx: /\b(chosen by accident|chosen one was a substitution|role went to the wrong person by mistake)\b/i, cat: "chosenByAccident" },
+  { rx: /\b(destiny transferred|fate meant for .{0,20} attached to|inherited someone else\'s fate)\b/i, cat: "destinyTransfer" },
+  { rx: /\b(kept (?:his|her|their) hands clean by|outsourced the dirty work|respectable front while others did the crimes)\b/i, cat: "cleanHands" },
+  { rx: /\b(criminal was protected by|institution shielded .{0,20} from consequences|protected asset despite the crimes)\b/i, cat: "protectedCriminal" },
+  { rx: /\b(selling secrets to both sides|evidence broker|traded information between rivals)\b/i, cat: "evidenceBroker" },
+  { rx: /\b(mentor had a hidden agenda|teacher had been steering .{0,20} for private reasons|compromised mentor)\b/i, cat: "compromisedMentor" },
+  { rx: /\b(transformation had already begun|change was being suppressed|dormant transformation)\b/i, cat: "dormantTransformation" },
+  { rx: /\b(enemy was learning from every encounter|adapted to every tactic|studying each fight to evolve)\b/i, cat: "adaptiveEnemy" },
+  { rx: /\b(healing had a hidden cost|wounds were transferred elsewhere|every cure moved the damage)\b/i, cat: "healingCost" },
+  { rx: /\b(body was on a countdown|biological countdown|transformation deadline inside (?:him|her|them))\b/i, cat: "bodyClock" },
+  { rx: /\b(secret intimate relationship|intimate history they kept hidden|were lovers in secret)\b/i, cat: "secretIntimacy" },
+  { rx: /\b(one[- ]night history|hooked up once|one[- ]time intimate past)\b/i, cat: "pastHookup" },
+  { rx: /\b(friends with benefits|more than friends in private|private arrangement between the two adults)\b/i, cat: "friendsWithBenefits" },
+  { rx: /\b(open relationship|consensually non[- ]monogamous|their relationship was open in private)\b/i, cat: "openRelationshipSecret" },
+  { rx: /\b(polyamorous relationship|secret polyamory|all three were partners)\b/i, cat: "polyamorySecret" },
+  { rx: /\b(private kink|consensual intimate preference|private fetish)\b/i, cat: "privateKink" },
+  { rx: /\b(hiding (?:a |the )?pregnancy|secretly pregnant|pregnancy had been concealed)\b/i, cat: "hiddenPregnancy" },
+  { rx: /\b(paternity was uncertain|not the biological parent everyone assumed|child\'s parentage was a secret)\b/i, cat: "disputedParentage" },
+  { rx: /\b(secret child|never acknowledged (?:his|her|their) child|hidden son|hidden daughter)\b/i, cat: "secretParenthood" },
+  { rx: /\b(marriage of convenience|married for political reasons|married for money rather than love)\b/i, cat: "marriageOfConvenience" },
+  { rx: /\b(secretly engaged|private engagement|promised to marry in secret)\b/i, cat: "secretEngagement" },
+  { rx: /\b(secretly divorced|already separated but hiding it|divorce was kept quiet)\b/i, cat: "secretDivorce" },
+  { rx: /\b(secret spouse|hidden husband|hidden wife|partner in another life)\b/i, cat: "doubleLifePartner" },
+  { rx: /\b(secret office romance|coworkers were secretly dating|concealed workplace relationship)\b/i, cat: "workplaceRomance" },
+  { rx: /\b(ex[- ]husband returned|ex[- ]wife returned|former spouse came back)\b/i, cat: "exSpouseReturns" },
+  { rx: /\b(hidden debt from (?:his|her|their) partner|secret bank account|financial infidelity|concealed spending)\b/i, cat: "financialInfidelity" },
+  { rx: /\b(gambling debt|owed money from betting|betting losses were hidden)\b/i, cat: "gamblingDebt" },
+  { rx: /\b(secretly relapsed|relapse was being hidden|using again after getting clean)\b/i, cat: "substanceRelapse" },
+  { rx: /\b(adults[- ]only club|adult venue|private adult club|hidden connection to the club)\b/i, cat: "adultVenueConnection" },
+  { rx: /\b(past in sex work|worked as an escort|sex[- ]work history|former sex worker)\b/i, cat: "hiddenSexWorkPast" },
+  { rx: /\b(secret surrogacy|surrogate pregnancy was hidden|private surrogacy arrangement)\b/i, cat: "secretSurrogacy" },
+  { rx: /\b(fertility treatment was hidden|secret reproductive decision|concealed fertility issue)\b/i, cat: "fertilitySecret" },
+  { rx: /\b(prenup had a hidden clause|marriage contract was a trap|prenuptial agreement concealed)\b/i, cat: "prenupTrap" },
+  { rx: /\b(lover was an informant|romantic partner was feeding information|partner reported to another side)\b/i, cat: "loverIsInformant" },
+  { rx: /\b(romance began as revenge|relationship started as a scheme|dated .{0,20} to get close for revenge)\b/i, cat: "revengeRomance" },
 ];
 
 var CP_SCENARIO_HINT_PATTERNS = [
@@ -448,14 +766,11 @@ var CP_SCENARIO_HINT_PATTERNS = [
   { rx: /\b(criminal underworld|ties to organized crime|debt to a crime (boss|lord|syndicate))\b/i, cat: "criminalTies" },
   { rx: /\b(cover[- ]?up|corrupt official|bribed into silence)\b/i, cat: "theCoverUp" },
 
-  // The batch below closes a real, substantial gap: an audit found 86 of
-  // the (at the time) 140 twist categories had no detection pattern in
-  // either list at all — meaning they could only ever be picked at
-  // random, never actually recognized from real scenario or story text,
-  // undermining this whole project's founding requirement that twists
-  // build up "logically... not randomly." This doesn't close the whole
-  // gap in one pass (that would risk rushed, low-quality patterns), but
-  // covers a substantial, carefully-tested spread across every cluster.
+  // Earlier builds had a substantial direct-detection gap: many twist
+  // categories could only enter through random selection. v1.2 completes
+  // direct pattern coverage for the entire category pool, while the sorted
+  // specificity matcher below prevents broad phrases from stealing a more
+  // precise match in the same sentence.
   { rx: /\b(had been working against (?:him|her|them) the whole time|betrayed (?:his|her|their) trust from the start)\b/i, cat: "falseAlly" },
   { rx: /\b(were related and neither (?:knew|had known)|shared blood (?:they|neither) (?:had )?ever knew about)\b/i, cat: "secretRelation" },
   { rx: /\b(wasn't in (?:his|her|their) own body|consciousness had been swapped)\b/i, cat: "bodySwap" },
@@ -515,6 +830,21 @@ var CP_SCENARIO_HINT_PATTERNS = [
   { rx: /\b(something had moved from one body to another, and it wasn't supposed to|a consciousness transferred into someone else entirely)\b/i, cat: "theTransferal" },
   { rx: /\b(had been quietly changing to survive something no one else (?:had )?noticed|adapting to a threat still invisible to everyone else)\b/i, cat: "theAdaptation" }
 ];
+
+var CP_ALL_THREAD_PATTERNS = CP_LOOSE_THREAD_PATTERNS
+  .concat(CP_SCENARIO_HINT_PATTERNS)
+  .slice()
+  .sort(function(a, b) {
+    function score(p) {
+      const src = String((p && p.rx && p.rx.source) || "");
+      let n = src.length;
+      n -= (src.match(/\.\*/g) || []).length * 24;
+      n -= (src.match(/\.\+/g) || []).length * 16;
+      if (p && CP_MATURE_KEYS.has(p.cat)) n += 6;
+      return n;
+    }
+    return score(b) - score(a);
+  });
 
 var CP_TIER_MINOR = "minor";
 var CP_TIER_MODERATE = "moderate";
@@ -734,7 +1064,13 @@ var COMMON_CAPITALIZED_STOPWORDS = [
   "Wonder", "Wonders", "Notice", "Notices", "Hear", "Hears", "Saw", "Seeing",
   "Watch", "Watches", "Approach", "Approaches", "Approached", "Cross",
   "Crosses", "Crossed", "Pass", "Passes", "Passed", "Waits", "Waited",
-  "Sudden", "Soft", "Low", "High", "Deep", "Faint", "Brief", "Slow", "Fast"
+  "Sudden", "Soft", "Low", "High", "Deep", "Faint", "Brief", "Slow", "Fast" ,
+
+  // Additional script/config scaffolding words filtered in v1.2.
+  "Prompt", "History", "Key", "Faction", "Twist", "Twists", "Category", "Categories", "Cluster", "Clusters", "Catalog", "Mature", "Adult", "Adults", "Private", "Core", "Truth", "Evidence", "Entity", "Entities", "Theme", "Themes", "Model", "Models", "Script", "Scripts", "Hook", "Hooks", "Cache", "Optimized", "Status", "Command", "Commands", "Enable", "Allow", "Minimum", "Maximum", "Chance", "Cooldown", "Reset", "Detected", "Tracking", "Tracked", "Eligible", "Pending", "Retry", "Retries", "Attempts", "TurnCount", "Version", "Warning", "Backup", "Delivery", "FrontMemory", "StoryCard", "StoryCards", "Established", "Facts", "Brewing", "Resolved", "Ready", "Payoff", "Foreshadow", "Wildcard", "Compound", "Strict", "Logic",
+  "Genre", "Genres", "Tone", "Tones", "Era", "Eras", "Adapt", "Adaptive", "Adaptation",
+  "Override", "Overrides", "Grounded", "Speculative", "Intimate", "Local", "Scale", "Scales",
+  "Canon", "Canonical", "Instructional", "Diagnostic", "Diagnostics", "Automatic", "Automatically"
 ];
 
 // TWISTS AND TURNS' own additions on top of the shared base — narrative-
@@ -785,6 +1121,7 @@ var Library = (() => {
         threads: [],
         twistLog: [],
         lastPayoffTurn: -999,
+        lastPayoffAttemptTurn: -999,
         pendingPayoffId: null,
         pendingSeedId: null,
         forceEntity: null,
@@ -796,6 +1133,8 @@ var Library = (() => {
         scriptTurnCount: 0,
         lastHookActionCount: null,
         lastHookSignature: null,
+        lastMatureEnabled: null,
+        scenarioProfile: null,
 
         multiplayerNames: []
       };
@@ -803,7 +1142,43 @@ var Library = (() => {
     if (typeof state.contingency.turn !== "number") state.contingency.turn = 0;
     if (!Array.isArray(state.contingency.threads)) state.contingency.threads = [];
     if (!Array.isArray(state.contingency.twistLog)) state.contingency.twistLog = [];
+    // Repair/migrate persisted thread state defensively. Old adventures can
+    // survive many script versions, and a missing id/category/number should
+    // not poison every later hook through one swallowed exception.
+    state.contingency.threads = state.contingency.threads.filter(t =>
+      t && typeof t === "object" && t.entity && CP_CATEGORIES[t.category]
+    );
+    let maxThreadSeq = 0;
+    state.contingency.threads.forEach(t => {
+      const idMatch = String(t.id || "").match(/^t(\d+)$/);
+      if (idMatch) maxThreadSeq = Math.max(maxThreadSeq, parseInt(idMatch[1], 10) || 0);
+      if (typeof t.seedTouches !== "number" || !isFinite(t.seedTouches)) t.seedTouches = 1;
+      t.seedTouches = Math.max(1, Math.floor(t.seedTouches));
+      if (!["brewing", "ready", "resolved"].includes(t.status)) t.status = "brewing";
+      if (!CP_TIER_ORDER_FULL.includes(t.tier)) t.tier = tierFor(t.seedTouches);
+      if (typeof t.originTurn !== "number" || !isFinite(t.originTurn)) t.originTurn = state.contingency.turn;
+      if (typeof t.lastSeedTurn !== "number" || !isFinite(t.lastSeedTurn)) t.lastSeedTurn = t.originTurn;
+      if (typeof t.confirmMisses !== "number") t.confirmMisses = 0;
+      if (typeof t.seedConfirmMisses !== "number") t.seedConfirmMisses = 0;
+      t.mature = isMatureCategory(t.category);
+      if (t.mature && typeof t.adultConfirmed !== "boolean") {
+        t.adultConfirmed = isEntityConfirmedAdult(t.entity, "");
+      }
+      if (!t.mature) t.adultConfirmed = false;
+    });
+    const seenThreadIds = new Set();
+    state.contingency.threads.forEach(t => {
+      const id = String(t.id || "");
+      if (!/^t\d+$/.test(id) || seenThreadIds.has(id)) {
+        maxThreadSeq += 1;
+        t.id = "t" + maxThreadSeq;
+      }
+      seenThreadIds.add(t.id);
+    });
+    if (typeof state.contingency._seq !== "number" || !isFinite(state.contingency._seq)) state.contingency._seq = 0;
+    state.contingency._seq = Math.max(state.contingency._seq, maxThreadSeq);
     if (typeof state.contingency.lastPayoffTurn !== "number") state.contingency.lastPayoffTurn = -999;
+    if (typeof state.contingency.lastPayoffAttemptTurn !== "number") state.contingency.lastPayoffAttemptTurn = -999;
     if (typeof state.contingency.pendingPayoffId === "undefined") state.contingency.pendingPayoffId = null;
     if (typeof state.contingency.pendingSeedId === "undefined") state.contingency.pendingSeedId = null;
     if (typeof state.contingency.forceEntity === "undefined") state.contingency.forceEntity = null;
@@ -812,9 +1187,14 @@ var Library = (() => {
     if (typeof state.contingency.lastContextSignature === "undefined") state.contingency.lastContextSignature = null;
     if (typeof state.contingency.lastAuthorsNoteSignature === "undefined") state.contingency.lastAuthorsNoteSignature = null;
     if (typeof state.contingency.pendingPayoffId2 === "undefined") state.contingency.pendingPayoffId2 = null;
+    if (state.contingency.pendingPayoffId && !state.contingency.threads.some(t => t.id === state.contingency.pendingPayoffId)) state.contingency.pendingPayoffId = null;
+    if (state.contingency.pendingPayoffId2 && !state.contingency.threads.some(t => t.id === state.contingency.pendingPayoffId2)) state.contingency.pendingPayoffId2 = null;
+    if (state.contingency.pendingSeedId && !state.contingency.threads.some(t => t.id === state.contingency.pendingSeedId)) state.contingency.pendingSeedId = null;
     if (typeof state.contingency.scriptTurnCount !== "number") state.contingency.scriptTurnCount = 0;
     if (typeof state.contingency.lastHookActionCount !== "number") state.contingency.lastHookActionCount = null;
     if (typeof state.contingency.lastHookSignature !== "string") state.contingency.lastHookSignature = null;
+    if (typeof state.contingency.lastMatureEnabled !== "boolean") state.contingency.lastMatureEnabled = null;
+    if (!state.contingency.scenarioProfile || typeof state.contingency.scenarioProfile !== "object") state.contingency.scenarioProfile = null;
     if (!Array.isArray(state.contingency.multiplayerNames)) state.contingency.multiplayerNames = [];
     if (!state.contingencyConfig) {
       state.contingencyConfig = Object.assign({}, CP_DEFAULTS);
@@ -905,6 +1285,248 @@ var Library = (() => {
       else if (typeof console !== "undefined" && console.log) console.log(msg);
     } catch (e) {}
   }
+
+  function scenarioSourceText(liveText) {
+    const parts = [];
+    if (typeof liveText === "string" && liveText.trim()) parts.push(liveText.slice(-12000));
+    try {
+      if (state && state.memory) {
+        if (typeof state.memory.context === "string") parts.push(state.memory.context.slice(-5000));
+        if (typeof state.memory.authorsNote === "string") parts.push(state.memory.authorsNote.slice(-3000));
+      }
+    } catch (e) {}
+    try {
+      if (typeof storyCards !== "undefined" && Array.isArray(storyCards)) {
+        let used = 0;
+        for (let i = storyCards.length - 1; i >= 0 && used < 12; i--) {
+          const card = storyCards[i];
+          if (!card || !card.title || isOwnCard(card.title)) continue;
+          parts.push([card.title, card.entry, card.description].filter(Boolean).join(" ").slice(0, 900));
+          used++;
+        }
+      }
+    } catch (e) {}
+    return parts.join("\n").slice(-24000);
+  }
+
+  function detectScenarioProfile(liveText, cfg) {
+    const safeCfg = cfg || CP_DEFAULTS;
+    if (!safeCfg.scenarioAdaptation) {
+      return {
+        enabled: false,
+        tags: ["general"],
+        era: "unspecified",
+        reality: "unspecified",
+        scale: "flexible",
+        override: "",
+        scores: {}
+      };
+    }
+
+    const source = scenarioSourceText(liveText);
+    const scores = {};
+    CP_SCENARIO_SIGNALS.forEach(rule => {
+      const matches = source.match(rule.rx);
+      if (matches && matches.length) scores[rule.tag] = Math.min(16, matches.length) * rule.weight;
+    });
+
+    const override = String(safeCfg.scenarioOverride || "").trim().slice(0, 180);
+    let noMagic = false;
+    let noSupernatural = false;
+    let noAdvancedTech = false;
+    if (override) {
+      CP_SCENARIO_SIGNALS.forEach(rule => {
+        const matches = override.match(rule.rx);
+        if (matches && matches.length) scores[rule.tag] = (scores[rule.tag] || 0) + 25;
+      });
+      const ov = override.toLowerCase();
+      noMagic = /\b(?:no|without)\s+(?:magic|magical powers?|spellcasting)\b|\bnon[- ]?magical\b/.test(ov);
+      noSupernatural = /\b(?:no|without)\s+(?:supernatural|paranormal)\b/.test(ov);
+      noAdvancedTech = /\b(?:no|without)\s+(?:advanced|future|futuristic)\s+tech(?:nology)?\b/.test(ov);
+      if (noMagic) scores.fantasy = 0;
+      if (noSupernatural && !/\b(?:fantasy|magic|sci[- ]?fi|science fiction)\b/.test(ov)) scores.fantasy = 0;
+      if (noAdvancedTech && !/\b(?:sci[- ]?fi|science fiction|cyberpunk)\b/.test(ov)) {
+        scores["sci-fi"] = 0;
+        scores.cyberpunk = 0;
+      }
+    }
+
+    const ranked = Object.keys(scores)
+      .sort((a, b) => scores[b] - scores[a] || a.localeCompare(b))
+      .filter(tag => scores[tag] > 0);
+    const tags = ranked.slice(0, 4);
+    if (!tags.length) tags.push("general");
+
+    const speculativeTags = new Set(["fantasy","sci-fi","cyberpunk","superhero","post-apocalyptic"]);
+    const speculativeScore = tags.reduce((n, tag) => n + (speculativeTags.has(tag) ? (scores[tag] || 0) : 0), 0);
+    const groundedScore = ["contemporary","historical","slice-of-life","crime/noir","medical","legal","sports","school/campus"]
+      .reduce((n, tag) => n + (scores[tag] || 0), 0);
+    const reality = speculativeScore >= Math.max(4, groundedScore)
+      ? "speculative"
+      : (groundedScore >= 3 ? "grounded" : "unspecified");
+
+    let era = "unspecified";
+    const futureScore = (scores["sci-fi"] || 0) + (scores["cyberpunk"] || 0) + (scores["post-apocalyptic"] || 0);
+    if ((scores.historical || 0) >= Math.max(3, futureScore, scores.contemporary || 0)) era = "historical";
+    else if (futureScore >= Math.max(4, scores.contemporary || 0)) era = "futuristic/speculative";
+    else if ((scores.contemporary || 0) >= 2) era = "contemporary";
+
+    const intimateScore = (scores.romance || 0) + (scores["slice-of-life"] || 0) +
+      (scores["school/campus"] || 0) + (scores.medical || 0) + (scores.sports || 0);
+    const largeScaleScore = (scores["military/war"] || 0) + (scores["post-apocalyptic"] || 0) +
+      (scores.superhero || 0) + (scores["political/intrigue"] || 0);
+    const scale = intimateScore > largeScaleScore + 3 ? "intimate/local"
+      : (largeScaleScore > intimateScore + 3 ? "large-scale" : "flexible");
+
+    return { enabled: true, tags, era, reality, scale, override, scores, noMagic, noSupernatural, noAdvancedTech };
+  }
+
+  function updateScenarioProfile(c, cfg, liveText) {
+    if (!c) return detectScenarioProfile(liveText, cfg);
+    const profile = detectScenarioProfile(liveText, cfg);
+    profile.updatedTurn = typeof c.turn === "number" ? c.turn : 0;
+    c.scenarioProfile = profile;
+    return profile;
+  }
+
+  function currentScenarioProfile(liveText, cfg) {
+    try {
+      const c = state && state.contingency;
+      if (c && c.scenarioProfile) return c.scenarioProfile;
+    } catch (e) {}
+    return detectScenarioProfile(liveText, cfg || CP_DEFAULTS);
+  }
+
+  function scenarioGuidance(liveText, cfg) {
+    const profile = currentScenarioProfile(liveText, cfg);
+    if (!profile || !profile.enabled) return "";
+    const tagText = profile.tags && profile.tags.length ? profile.tags.join(", ") : "general";
+    const overrideText = profile.override ? ` User scenario guidance: "${profile.override}".` : "";
+    return " Match the established scenario instead of importing a default genre: " +
+      tagText + "; era " + profile.era + "; " + profile.reality + "; stakes " + profile.scale + "." +
+      overrideText +
+      " Preserve the world's existing technology, magic/supernatural rules, institutions, species, social norms, tone, and power scale. " +
+      "Do not add genre mechanics merely because they are common elsewhere. Treat twist severity relative to this story: a top-tier revelation in an intimate scenario can be life-changing without being world-ending.";
+  }
+
+  function categoryFitsScenario(category, profile) {
+    if (!category || !CP_CATEGORIES[category]) return false;
+    if (!profile || !profile.enabled) return true;
+    if ((profile.noMagic || profile.noSupernatural) && CP_MAGIC_SUPERNATURAL_KEYS.has(category)) return false;
+    if (profile.reality === "grounded" && CP_SPECULATIVE_ONLY_KEYS.has(category)) return false;
+    return true;
+  }
+
+  function isMatureCategory(category) {
+    return !!category && CP_MATURE_KEYS.has(category);
+  }
+
+  function ageSignals(text) {
+    const s = String(text || "");
+    const ages = [];
+    const patterns = [
+      /\b(?:age|aged)\s*[:\-]?\s*(\d{1,3})\b/gi,
+      /\b(\d{1,3})\s*[- ]?years?\s*[- ]?old\b/gi,
+      /\b(\d{1,3})\s*[- ]year[- ]old\b/gi
+    ];
+    patterns.forEach(rx => {
+      let m;
+      while ((m = rx.exec(s))) {
+        const n = parseInt(m[1], 10);
+        if (!isNaN(n) && n > 0 && n < 130) ages.push(n);
+      }
+    });
+    return ages;
+  }
+
+  function isExplicitMinorText(text) {
+    const s = String(text || "");
+    const ages = ageSignals(s);
+    if (ages.some(n => n < 18)) return true;
+    return /\b(minor|underage|child|kid|preteen|teenager|teen|schoolboy|schoolgirl|boy|girl|toddler|infant)\b/i.test(s);
+  }
+
+  function isExplicitAdultText(text) {
+    const s = String(text || "");
+    const ages = ageSignals(s);
+    if (ages.some(n => n >= 18)) return true;
+    if (isExplicitMinorText(s)) return false;
+    // Relationship status alone is not proof of adulthood: teenagers can
+    // have boyfriends/girlfriends, and even "parent" is not a safe age gate.
+    // Keep the 18+ system conservative unless age/adult wording or an
+    // unambiguously adult person noun is present.
+    return /\b(adult|grown[- ]?(?:man|woman|person)|woman|man|wife|husband|spouse|widow|widower)\b/i.test(s);
+  }
+
+  function entityCardText(entity, directOnly) {
+    if (!entity || typeof storyCards === "undefined" || !Array.isArray(storyCards)) return "";
+    for (let i = 0; i < storyCards.length; i++) {
+      const card = storyCards[i];
+      if (!card || !card.title) continue;
+      let same = false;
+      try {
+        same = typeof isSameCardEntity === "function"
+          ? isSameCardEntity(card.title, entity)
+          : String(card.title).toLowerCase() === String(entity).toLowerCase();
+      } catch (e) {}
+      if (!same) continue;
+      const type = String(card.type || "").trim().toLowerCase();
+      const entryText = String(card.entry || "");
+      const characterFieldSignals = (entryText.match(/^\s*(?:Race|Species|Nature|Strength Level|Personality|Background|Appearance|Abilities|Weaknesses|Relationships)\s*[:=]/gim) || []).length;
+      const explicitCharacterType = /^(?:character|npc|person|companion|ally|rival|protagonist|antagonist|crewmate|crew member)$/i.test(type);
+      const explicitNonCharacterType = /^(?:location|place|item|object|vehicle|weapon|faction|organization|organisation|business|restaurant|building|city|country|planet|world|class|event|lore)$/i.test(type);
+      if (explicitNonCharacterType && characterFieldSignals < 2) return "";
+      if (type && !explicitCharacterType && characterFieldSignals < 2) return "";
+
+      if (!directOnly) {
+        return [card.title, card.entry, card.description].filter(Boolean).join(" ");
+      }
+
+      // For age-gating, use fields that describe the character directly.
+      // Background/Relationships can contain somebody else's age ("his
+      // eight-year-old daughter") and must not make a forty-year-old target
+      // look like a minor.
+      const directLines = String(card.entry || "")
+        .split(/\r?\n/)
+        .filter(line => /^\s*(?:Age|Appearance|Description|Race|Type|Strength Level)\s*[:=]/i.test(line))
+        .join(" ");
+      return [card.title, directLines, String(card.description || "").slice(0, 320)]
+        .filter(Boolean)
+        .join(" ");
+    }
+    return "";
+  }
+
+  function isEntityConfirmedAdult(entity, evidenceText) {
+    const directCard = entityCardText(entity, true);
+    const liveEvidence = String(evidenceText || "");
+    const combined = [directCard, liveEvidence].filter(Boolean).join(" ");
+    if (!combined) return false;
+
+    const ages = ageSignals(combined);
+    // Direct evidence of a minor always wins. Otherwise an explicit adult
+    // age is the strongest signal available.
+    if (ages.some(n => n < 18)) return false;
+    if (ages.some(n => n >= 18)) return true;
+    if (isExplicitMinorText(combined)) return false;
+    return isExplicitAdultText(combined);
+  }
+
+  function isCategoryAllowed(category, entity, cfg, evidenceText) {
+    if (!category || !CP_CATEGORIES[category]) return false;
+    if (!isMatureCategory(category)) return true;
+    if (!cfg || !cfg.allowMatureTwists) return false;
+    return isEntityConfirmedAdult(entity, evidenceText);
+  }
+
+  function isThreadAllowed(thread, cfg) {
+    if (!thread || !thread.category) return false;
+    if (!isMatureCategory(thread.category)) return true;
+    if (!cfg || !cfg.allowMatureTwists) return false;
+    return !!thread.adultConfirmed || isEntityConfirmedAdult(thread.entity, "");
+  }
+
+
 
   function findEntityInSentence(sentence) {
     const matches = Array.from(sentence.matchAll(new RegExp(`\\b[A-Z][${NAME_ALPHANUM}'-]*\\b`, "g")));
@@ -1004,20 +1626,68 @@ var Library = (() => {
     return c.twistLog.filter(t => t.entity === entity).length;
   }
 
-  function createThread(c, entity, category, originTurn, cfg) {
+  function createThread(c, entity, category, originTurn, cfg, evidenceText) {
+    if (!c || !entity) return null;
+    const safeCfg = cfg || CP_DEFAULTS;
     let cat = category && CP_CATEGORIES[category] ? category : null;
-    if (!cat) {
-      const unused = CP_CATEGORY_KEYS.filter(k => !alreadyResolvedCombo(c, entity, k));
-      let pool = unused.length > 0 ? unused : CP_CATEGORY_KEYS;
 
-      if (cfg && cfg.categoryBias) {
-        const biasClusters = cfg.categoryBias.split(",").map(s => s.trim());
+    if (cat && !isCategoryAllowed(cat, entity, safeCfg, evidenceText || "")) return null;
+
+    const activeForEntity = c.threads.filter(t =>
+      t && t.status !== "resolved" &&
+      String(t.entity || "").toLowerCase() === String(entity || "").toLowerCase()
+    );
+
+    if (cat) {
+      const same = activeForEntity.find(t => t.category === cat);
+      if (same) return same;
+    }
+
+    const maxForEntity = Math.max(1, Math.min(12, Number(safeCfg.maxThreadsPerEntity) || CP_DEFAULTS.maxThreadsPerEntity));
+    if (activeForEntity.length >= maxForEntity) return null;
+
+    if (!cat) {
+      const activeCategories = new Set(activeForEntity.map(t => t.category));
+      const profile = currentScenarioProfile(evidenceText || "", safeCfg);
+      let pool = CP_CATEGORY_KEYS.filter(k =>
+        !alreadyResolvedCombo(c, entity, k) &&
+        !activeCategories.has(k) &&
+        isCategoryAllowed(k, entity, safeCfg, evidenceText || "") &&
+        categoryFitsScenario(k, profile)
+      );
+
+      if (pool.length === 0) {
+        pool = CP_CATEGORY_KEYS.filter(k =>
+          !activeCategories.has(k) &&
+          isCategoryAllowed(k, entity, safeCfg, evidenceText || "") &&
+          categoryFitsScenario(k, profile)
+        );
+      }
+      if (pool.length === 0) return null;
+
+      // Prefer a different theme from this entity's already-active threads.
+      const activeClusters = new Set(activeForEntity.map(t => CP_CATEGORY_TO_CLUSTER[t.category]).filter(Boolean));
+      const freshClusterPool = pool.filter(k => !activeClusters.has(CP_CATEGORY_TO_CLUSTER[k]));
+      if (freshClusterPool.length > 0) pool = freshClusterPool;
+
+      // A theme bias is a preference, never a reason to pick a disallowed
+      // or already-overused category.
+      if (safeCfg.categoryBias) {
+        const biasClusters = safeCfg.categoryBias.split(",").map(s => s.trim()).filter(Boolean);
         const biased = pool.filter(k => biasClusters.indexOf(CP_CATEGORY_TO_CLUSTER[k]) !== -1);
         if (biased.length > 0) pool = biased;
       }
 
+      // Avoid repeating the same category globally if there are alternatives.
+      const recentCategories = new Set((c.twistLog || []).slice(-12).map(t => t && t.category).filter(Boolean));
+      const fresh = pool.filter(k => !recentCategories.has(k));
+      if (fresh.length > 0) pool = fresh;
+
       cat = pool[Math.floor(Math.random() * pool.length)];
     }
+
+    if (!cat || !isCategoryAllowed(cat, entity, safeCfg, evidenceText || "")) return null;
+
     const thread = {
       id: nextId(c),
       entity: entity,
@@ -1027,10 +1697,14 @@ var Library = (() => {
       status: "brewing",
       tier: CP_TIER_MINOR,
       lastSeedTurn: typeof c.turn === "number" ? c.turn : originTurn,
-
+      confirmMisses: 0,
+      seedConfirmMisses: 0,
+      mature: isMatureCategory(cat),
+      adultConfirmed: isMatureCategory(cat) ? isEntityConfirmedAdult(entity, evidenceText || "") : false,
       priorTwistCount: priorTwistCountFor(c, entity)
     };
     c.threads.push(thread);
+
     if (c.threads.length > MAX_ACTIVE_TWIST_THREADS) {
       c.threads.sort((a, b) => {
         const ar = a.status === "ready" ? 1 : 0;
@@ -1099,12 +1773,12 @@ var Library = (() => {
   // when the identical sentence appeared in ordinary story text one turn
   // later, purely because the two scanners drew from different pattern
   // pools for what should be the same underlying check.
-  function matchAnyThreadPattern(sentence) {
-    for (const p of CP_LOOSE_THREAD_PATTERNS) {
-      if (p.rx.test(sentence)) return p.cat;
-    }
-    for (const p of CP_SCENARIO_HINT_PATTERNS) {
-      if (p.rx.test(sentence)) return p.cat;
+  function matchAnyThreadPattern(sentence, entity, cfg) {
+    const safeCfg = cfg || CP_DEFAULTS;
+    for (const p of CP_ALL_THREAD_PATTERNS) {
+      if (!p.rx.test(sentence)) continue;
+      if (!isCategoryAllowed(p.cat, entity, safeCfg, sentence)) continue;
+      return p.cat;
     }
     return null;
   }
@@ -1114,37 +1788,48 @@ var Library = (() => {
     const sentences = splitSentences(text);
 
     let lastEntity = null;
+    let carryRemaining = 0;
     for (const s of sentences) {
       const sentenceEntity = findKnownEntityInSentence(s, cardTitles) || findEntityInSentence(s);
-      if (sentenceEntity) lastEntity = sentenceEntity;
-      const cat = matchAnyThreadPattern(s);
-      if (cat) {
-        const entity = sentenceEntity || lastEntity;
-        if (!entity) continue;
-        if (isPlayerEntity(c, entity) && !cfg.involvePlayer) continue;
-        if (alreadyResolvedCombo(c, entity, cat)) continue;
-        const existing = findThread(c, entity, cat);
-        if (existing) {
-          if (existing.status === "brewing" && existing.lastSeedTurn !== c.turn) {
-            existing.seedTouches += 1;
-            existing.lastSeedTurn = c.turn;
-            existing.tier = tierFor(existing.seedTouches);
-            if (isEligible(existing, c, cfg)) existing.status = "ready";
-          }
-        } else {
-          createThread(c, entity, cat, c.turn, cfg);
+      let entity = sentenceEntity;
+      if (sentenceEntity) {
+        lastEntity = sentenceEntity;
+        carryRemaining = 1; // allow one immediately-following pronoun-only sentence
+      } else if (lastEntity && carryRemaining > 0) {
+        entity = lastEntity;
+        carryRemaining -= 1;
+      } else {
+        lastEntity = null;
+        carryRemaining = 0;
+      }
+      if (!entity) continue;
+
+      const cat = matchAnyThreadPattern(s, entity, cfg);
+      if (!cat) continue;
+      if (isPlayerEntity(c, entity) && !cfg.involvePlayer) continue;
+      if (alreadyResolvedCombo(c, entity, cat)) continue;
+
+      const existing = findThread(c, entity, cat);
+      if (existing) {
+        if (existing.status === "brewing" && existing.lastSeedTurn !== c.turn) {
+          existing.seedTouches += 1;
+          existing.lastSeedTurn = c.turn;
+          existing.tier = tierFor(existing.seedTouches);
+          if (isEligible(existing, c, cfg)) existing.status = "ready";
         }
+      } else {
+        createThread(c, entity, cat, c.turn, cfg, s);
       }
     }
   }
 
-  function matchScenarioCategory(text) {
+  function matchScenarioCategory(text, entity, cfg) {
     if (!text) return null;
-    for (const p of CP_SCENARIO_HINT_PATTERNS) {
-      if (p.rx.test(text)) return p.cat;
-    }
-    for (const p of CP_LOOSE_THREAD_PATTERNS) {
-      if (p.rx.test(text)) return p.cat;
+    const safeCfg = cfg || CP_DEFAULTS;
+    for (const p of CP_ALL_THREAD_PATTERNS) {
+      if (!p.rx.test(text)) continue;
+      if (!isCategoryAllowed(p.cat, entity, safeCfg, text)) continue;
+      return p.cat;
     }
     return null;
   }
@@ -1153,9 +1838,10 @@ var Library = (() => {
     return c.twistLog.some(t => t.entity === entity && t.category === category);
   }
 
-  function creditPartialThread(c, entity, category, cfg, source) {
+  function creditPartialThread(c, entity, category, cfg, source, evidenceText) {
     const originTurn = c.turn - Math.floor(cfg.minTurnsForPayoff / 2);
-    const thread = createThread(c, entity, category, originTurn, cfg);
+    const thread = createThread(c, entity, category, originTurn, cfg, evidenceText || "");
+    if (!thread) return null;
     thread.seedTouches = Math.max(1, Math.ceil(cfg.minSeedsForPayoff / 2));
     thread.tier = tierFor(thread.seedTouches);
     thread.source = source;
@@ -1182,12 +1868,12 @@ var Library = (() => {
       if (!entity || entity.length < 2) continue;
       if (isPlayerEntity(c, entity) && !cfg.involvePlayer) continue;
 
-      const category = matchScenarioCategory(haystack);
+      const category = matchScenarioCategory(haystack, entity, cfg);
       if (!category) continue;
       if (alreadyResolvedCombo(c, entity, category)) continue;
       if (findThread(c, entity, category)) continue;
 
-      creditPartialThread(c, entity, category, cfg, "scenario");
+      creditPartialThread(c, entity, category, cfg, "scenario", haystack);
     }
   }
 
@@ -1202,15 +1888,16 @@ var Library = (() => {
     for (const s of sentences) {
       const sentenceEntity = findKnownEntityInSentence(s, cardTitles) || findEntityInSentence(s);
       if (sentenceEntity) lastEntity = sentenceEntity;
-      const category = matchScenarioCategory(s);
-      if (!category) continue;
       const entity = sentenceEntity || lastEntity;
       if (!entity) continue;
+
+      const category = matchScenarioCategory(s, entity, cfg);
+      if (!category) continue;
       if (isPlayerEntity(c, entity) && !cfg.involvePlayer) continue;
       if (alreadyResolvedCombo(c, entity, category)) continue;
       if (findThread(c, entity, category)) continue;
 
-      creditPartialThread(c, entity, category, cfg, sourceTag);
+      creditPartialThread(c, entity, category, cfg, sourceTag, s);
     }
   }
 
@@ -1249,34 +1936,55 @@ var Library = (() => {
   // directly via sandbox. Filtering here too closes that gap the same way
   // the other three pickers already do.
   function pickForeshadowThread(c, cfg) {
-    let brewing = c.threads.filter(t => t.status === "brewing");
+    let brewing = c.threads.filter(t => t.status === "brewing" && isThreadAllowed(t, cfg));
     if (cfg && !cfg.involvePlayer) brewing = brewing.filter(t => !isPlayerEntity(c, t.entity));
     if (brewing.length === 0) return null;
-    brewing.sort((a, b) => a.seedTouches - b.seedTouches || a.originTurn - b.originTurn);
+    brewing.sort((a, b) =>
+      a.seedTouches - b.seedTouches ||
+      a.originTurn - b.originTurn ||
+      String(a.entity).localeCompare(String(b.entity))
+    );
     return brewing[0];
   }
 
   function pickMostBuiltUpBrewingThread(c, cfg) {
-    let brewing = c.threads.filter(t => t.status === "brewing");
+    let brewing = c.threads.filter(t => t.status === "brewing" && isThreadAllowed(t, cfg));
     if (!cfg.involvePlayer) brewing = brewing.filter(t => !isPlayerEntity(c, t.entity));
     if (brewing.length === 0) return null;
-    brewing.sort((a, b) => b.seedTouches - a.seedTouches || a.originTurn - b.originTurn);
+    brewing.sort((a, b) =>
+      b.seedTouches - a.seedTouches ||
+      a.originTurn - b.originTurn ||
+      String(a.entity).localeCompare(String(b.entity))
+    );
     return brewing[0];
   }
 
   function pickPayoffThread(c, cfg) {
-    let ready = c.threads.filter(t => t.status === "ready");
+    let ready = c.threads.filter(t => t.status === "ready" && isThreadAllowed(t, cfg));
     if (!cfg.involvePlayer) ready = ready.filter(t => !isPlayerEntity(c, t.entity));
     if (ready.length === 0) return null;
-    ready.sort((a, b) => a.originTurn - b.originTurn);
+
+    // Oldest ready threads still win, but stronger build-up and fewer
+    // failed confirmation attempts break ties so one stubborn thread does
+    // not starve everything behind it forever.
+    ready.sort((a, b) =>
+      a.originTurn - b.originTurn ||
+      (a.confirmMisses || 0) - (b.confirmMisses || 0) ||
+      b.seedTouches - a.seedTouches ||
+      String(a.entity).localeCompare(String(b.entity))
+    );
     return ready[0];
   }
 
   function pickCompoundPayoffThreads(c, cfg) {
-    let ready = c.threads.filter(t => t.status === "ready");
+    let ready = c.threads.filter(t => t.status === "ready" && isThreadAllowed(t, cfg));
     if (!cfg.involvePlayer) ready = ready.filter(t => !isPlayerEntity(c, t.entity));
     if (ready.length < 2) return null;
-    ready.sort((a, b) => a.originTurn - b.originTurn);
+    ready.sort((a, b) =>
+      a.originTurn - b.originTurn ||
+      (a.confirmMisses || 0) - (b.confirmMisses || 0) ||
+      b.seedTouches - a.seedTouches
+    );
     for (let i = 0; i < ready.length; i++) {
       for (let j = i + 1; j < ready.length; j++) {
         if (ready[i].entity !== ready[j].entity) return [ready[i], ready[j]];
@@ -1297,19 +2005,26 @@ var Library = (() => {
     const sourceNote = (thread.source === "scenario" || thread.source === "context" || thread.source === "authorsnote")
       ? " (this ties to something already true about them in this world, not something new)"
       : "";
+    const adapt = scenarioGuidance("", state && state.contingencyConfig ? state.contingencyConfig : CP_DEFAULTS);
     return "[Subtle texture only, never explained or drawn attention to: plant one small, " +
       "easy-to-overlook detail connected to " + thread.entity + sourceNote + " that would make sense in " +
       "hindsight if it turned out that " + desc + ". Do not resolve or hint at this being " +
-      "important. It should read as ordinary right now." + memoryNote(thread) + "]";
+      "important. It should read as ordinary for this scenario right now." + memoryNote(thread) + adapt +
+      " If you actually include that setup detail in this response, append the exact hidden marker " +
+      "【UT-SEED:" + thread.id + "】 at the very end. Do not mention or explain the marker.]";
   }
 
   function payoffHint(thread) {
     const desc = CP_CATEGORIES[thread.category];
+    const marker = "【UT-TWIST:" + thread.id + "】";
+    const adapt = scenarioGuidance("", state && state.contingencyConfig ? state.contingencyConfig : CP_DEFAULTS);
     if (thread.wildcard) {
       return "[A sudden but coherent twist involving " + thread.entity + " happens now: " + desc +
-        ". This one doesn't need prior setup — invent a believable, specific reason it's true, " +
+        ". This one doesn't need prior setup, but it still must fit the current scenario. Invent a believable, specific reason it's true, " +
         "consistent with everything already established about " + thread.entity +
-        "." + memoryNote(thread) + " Let the story react to it honestly.]";
+        "." + memoryNote(thread) + adapt + " Let the story react to it honestly. Only if the twist actually lands " +
+        "in this response, append the exact hidden marker " + marker +
+        " at the very end. Do not mention or explain the marker.]";
     }
     const sourceNote = (thread.source === "scenario" || thread.source === "context" || thread.source === "authorsnote")
       ? " Draw on this world's own established background for " + thread.entity + ", not just recent scenes."
@@ -1317,20 +2032,26 @@ var Library = (() => {
     return "[A twist involving " + thread.entity + " is due now: " + desc + ". Let it emerge " +
       "as a logical consequence of details already established about " + thread.entity +
       " in this story — not a random event, not out of nowhere." + sourceNote +
-      " Scale it as a " + CP_TIER_LABELS[thread.tier] + " revelation." + memoryNote(thread) +
-      " Let the story react to it honestly.]";
+      " Scale it as a " + CP_TIER_LABELS[thread.tier] + " revelation relative to this scenario's normal stakes." +
+      memoryNote(thread) + adapt +
+      " Let the story react to it honestly. Only if the twist actually lands in this response, append the exact " +
+      "hidden marker " + marker + " at the very end. Do not mention or explain the marker.]";
   }
 
   function compoundPayoffHint(threadA, threadB) {
     const descA = CP_CATEGORIES[threadA.category];
     const descB = CP_CATEGORIES[threadB.category];
     const scaleTier = (tierRank(threadA.tier) >= tierRank(threadB.tier)) ? threadA.tier : threadB.tier;
+    const adapt = scenarioGuidance("", state && state.contingencyConfig ? state.contingencyConfig : CP_DEFAULTS);
     return "[Two threads resolve together right now, as one connected twist: " +
       threadA.entity + " — " + descA + " — turns out to be tied to " + threadB.entity +
       " — " + descB + ". Invent a specific, logical connection between them built on what's " +
       "already established about each, so the two revelations land as a single discovery, not " +
-      "two coincidences. Scale it as a " + CP_TIER_LABELS[scaleTier] + " revelation." +
-      memoryNote(threadA) + memoryNote(threadB) + " Let the story react honestly.]";
+      "two coincidences. Scale it as a " + CP_TIER_LABELS[scaleTier] + " revelation relative to this scenario's normal stakes." +
+      memoryNote(threadA) + memoryNote(threadB) + adapt +
+      " Let the story react honestly. Only if both parts actually land in this response, append the exact " +
+      "hidden markers 【UT-TWIST:" + threadA.id + "】 and 【UT-TWIST:" + threadB.id +
+      "】 at the very end. Do not mention or explain the markers.]";
   }
 
   function tierRank(tier) {
@@ -1404,12 +2125,13 @@ var Library = (() => {
       const recent = c.twistLog.slice(-cap);
 
       const factLine = (t) => {
-        const d = CP_CATEGORIES[t.category];
-        return t.entity + ": " + d.charAt(0).toUpperCase() + d.slice(1) + " (turn " + t.resolvedTurn + ").";
+        const d = CP_CATEGORIES[t.category] || "a previously resolved revelation remains true";
+        const entity = String(t.entity || "Unknown").trim() || "Unknown";
+        return entity + ": " + d.charAt(0).toUpperCase() + d.slice(1) + " (turn " + t.resolvedTurn + ").";
       };
       const entry = recent.map(factLine).join(" ") + " Treat all of this as settled fact going forward.";
 
-      const keys = Array.from(new Set(recent.map(t => t.entity))).join(", ");
+      const keys = Array.from(new Set(recent.map(t => String(t.entity || "").trim()).filter(Boolean))).join(", ");
 
       const notes = "ESTABLISHED FACTS\n\n" +
         "Carries the " + recent.length + " most recent resolved twists into the model's context, " +
@@ -1442,6 +2164,9 @@ var Library = (() => {
     const compoundMatch = section.match(/Allow compound twists:\s*(true|false)/i);
     if (compoundMatch) cfg.allowCompoundTwists = compoundMatch[1].toLowerCase() === "true";
 
+    const matureMatch = section.match(/Allow mature \(18\+\) twists for confirmed adults:\s*(true|false)/i);
+    if (matureMatch) cfg.allowMatureTwists = matureMatch[1].toLowerCase() === "true";
+
     const involveMatch = section.match(/Involve the player character in twists:\s*(true|false)/i);
     if (involveMatch) cfg.involvePlayer = involveMatch[1].toLowerCase() === "true";
 
@@ -1466,6 +2191,24 @@ var Library = (() => {
       if (!isNaN(n) && n >= 1 && n <= 200) cfg.payoffCooldown = n;
     }
 
+    const retryMatch = section.match(/Turns before retrying an unconfirmed twist payoff:\s*(\d+)/i);
+    if (retryMatch) {
+      const n = parseInt(retryMatch[1], 10);
+      if (!isNaN(n) && n >= 1 && n <= 20) cfg.twistRetryCooldown = n;
+    }
+
+    const maxThreadMatch = section.match(/Maximum active twist threads per entity:\s*(\d+)/i);
+    if (maxThreadMatch) {
+      const n = parseInt(maxThreadMatch[1], 10);
+      if (!isNaN(n) && n >= 1 && n <= 12) cfg.maxThreadsPerEntity = n;
+    }
+
+    const scenarioAdaptMatch = section.match(/Automatically adapt twists\/cards to the current scenario:\s*(true|false)/i);
+    if (scenarioAdaptMatch) cfg.scenarioAdaptation = scenarioAdaptMatch[1].toLowerCase() === "true";
+
+    const scenarioOverrideMatch = section.match(/Scenario override, blank for automatic detection:[ \t]*(.*)/i);
+    if (scenarioOverrideMatch) cfg.scenarioOverride = scenarioOverrideMatch[1].trim().slice(0, 180);
+
     const capMatch = section.match(/How many resolved twists Established Facts keeps:\s*(\d+)/i);
     if (capMatch) {
       const n = parseInt(capMatch[1], 10);
@@ -1482,7 +2225,7 @@ var Library = (() => {
         const matched = requested
           .map(r => CP_CLUSTER_NAMES.find(clusterName => clusterName.toLowerCase() === r.toLowerCase()))
           .filter(Boolean);
-        if (matched.length > 0) cfg.categoryBias = matched.join(", ");
+        cfg.categoryBias = matched.length > 0 ? [...new Set(matched)].join(", ") : "";
       }
     }
   }
@@ -1496,22 +2239,37 @@ var Library = (() => {
     const brewing = c ? c.threads.filter(t => t.status === "brewing").length : 0;
     const ready = c ? c.threads.filter(t => t.status === "ready").length : 0;
     const resolved = c ? c.twistLog.length : 0;
+    const matureState = cfg.allowMatureTwists ? "enabled for confirmed adults" : "off";
+    const profile = c && c.scenarioProfile ? c.scenarioProfile : currentScenarioProfile("", cfg);
+    const scenarioState = cfg.scenarioAdaptation
+      ? ((profile && profile.tags ? profile.tags.join(", ") : "general") +
+         (cfg.scenarioOverride ? ` · override: ${cfg.scenarioOverride}` : ""))
+      : "off";
+
     const notes = CONFIG_SECTION_TWIST + "\n" +
       "TWISTS AND TURNS — v" + CP_VERSION + "\n" +
-      brewing + " brewing · " + ready + " about to surface · " + resolved + " resolved\n\n" +
+      brewing + " brewing · " + ready + " about to surface · " + resolved + " resolved\n" +
+      CP_CATEGORY_KEYS.length + " twist concepts across " + CP_CLUSTER_NAMES.length + " themes · " +
+      CP_MATURE_KEYS.size + " opt-in mature (18+) concepts\n" +
+      "Scenario adaptation: " + scenarioState + "\n\n" +
       "- Enable Twists and Turns: turns the whole twist half on or off.\n" +
       "- Intensity: low / medium / high — how often twists build and land.\n" +
       "- Strict logic only: twists only ever come from a tracked thread, never a wildcard.\n" +
       "- Allow wildcard twists: occasional twist with no build-up.\n" +
       "- Allow compound twists: two threads can resolve together as one.\n" +
+      "- Mature (18+) twists: " + matureState + ". They are non-graphic themes and are never auto-applied unless the target has clear adult evidence.\n" +
       "- Involve the player: twists may target you directly, not just NPCs.\n" +
       "- Show resolved twists in the Twist Log: reveals them on the Twist Log card.\n" +
       "- Minimum seed touches before payoff: reinforcement a thread needs before it's eligible.\n" +
       "- Minimum turns before payoff: minimum age a thread must reach before it's eligible.\n" +
-      "- Turns between payoffs: cooldown between any two twists landing.\n" +
-      "- Established Facts cap: how many recent twists stay visible to the AI at once.\n" +
-      "- Theme bias: lean toward certain themes without overriding what the story's already established. Themes: " + CP_CLUSTER_NAMES.join(", ") + "\n\n" +
-      "Commands: /twist, /twist <name>, /plant <name> [category], /twistlog, /threads, /intensity <low|medium|high>, /rescan, /twists";
+      "- Turns between payoffs: cooldown between confirmed twists landing.\n" +
+      "- Unconfirmed retry delay: how long to wait when the model ignores a requested twist marker instead of falsely logging it as canon.\n" +
+      "- Threads per entity: prevents one name from collecting an unlimited pile of unrelated twists.\n" +
+      "- Automatic scenario adaptation: reads the current story/lore and keeps generated cards, private-thought prompts, wildcard twists, tone, era, and stakes appropriate to THIS scenario.\n" +
+      "- Scenario override: optional free-text guidance such as 'grounded Victorian detective', 'hard sci-fi with no magic', or any custom setting description. Blank = automatic.\n" +
+      "- Established Facts cap: how many recent confirmed twists stay visible to the AI at once.\n" +
+      "- Theme bias: lean toward certain themes without overriding what the story has established. Themes: " + CP_CLUSTER_NAMES.join(", ") + "\n\n" +
+      "Commands: /twist, /twist <name>, /plant <name> [category], /twistlog, /threads, /twisttypes, /mature <on|off>, /scenario, /scenario auto|off|<custom guidance>, /intensity <low|medium|high>, /rescan, /twists";
 
     card.description = spliceConfigSection(card.description, CONFIG_SECTION_TWIST, notes);
   }
@@ -1538,6 +2296,29 @@ var Library = (() => {
     safeSetCard("Twists and Turns — Brewing Overview", "class", " ", notes);
   }
 
+  function updateCategoryCatalog(cfg) {
+    const lines = [];
+    lines.push("TWIST CATEGORY CATALOG — no active-thread spoilers");
+    lines.push("");
+    lines.push(CP_CATEGORY_KEYS.length + " concepts across " + CP_CLUSTER_NAMES.length + " themes.");
+    lines.push("Use a category key with /plant <name> <categoryKey>.");
+    lines.push("");
+    CP_CLUSTER_NAMES.forEach(cluster => {
+      const keys = CP_CATEGORY_CLUSTERS[cluster] || [];
+      const mature = cluster === "Mature & Adult (18+)";
+      lines.push(cluster + " (" + keys.length + ")" + (mature ? " — opt-in, confirmed adults only" : ""));
+      lines.push(keys.map(k => (CP_CATEGORY_LABELS[k] || k) + " [" + k + "]").join(", "));
+      lines.push("");
+    });
+    if (!cfg || !cfg.allowMatureTwists) {
+      lines.push("Mature (18+) twists are currently OFF. Use /mature on or edit the config card to enable them.");
+    } else {
+      lines.push("Mature (18+) twists are ON, but automatic use still requires clear adult evidence for the target.");
+    }
+    safeSetCard("Twists and Turns — Twist Catalog", "class", " ", lines.join("\n").slice(0, 12000));
+  }
+
+
   function updateTwistLogCard(c, cfg) {
     let notes;
     if (!cfg.showTwistLog) {
@@ -1550,9 +2331,10 @@ var Library = (() => {
       const lines = c.twistLog.slice(-25).map(t => {
         const tags = [CP_TIER_LABELS[t.tier] || t.tier];
         if (t.wildcard) tags.push("wildcard");
+        if (t.mature || isMatureCategory(t.category)) tags.push("18+");
         if (t.compoundWith) tags.push("with " + t.compoundWith);
         if (t.source === "scenario" || t.source === "context" || t.source === "authorsnote") tags.push("from scenario");
-        return "Turn " + t.resolvedTurn + " — " + t.entity + ": " + CP_CATEGORIES[t.category] + " (" + tags.join(", ") + ")";
+        return "Turn " + t.resolvedTurn + " — " + t.entity + ": " + (CP_CATEGORIES[t.category] || "resolved twist") + " (" + tags.join(", ") + ")";
       });
       notes = "TWIST LOG — most recent " + lines.length + "\n\n" + lines.join("\n");
     }
@@ -1561,12 +2343,14 @@ var Library = (() => {
 
   return {
     CP_VERSION, CP_DEFAULTS, CP_CATEGORIES, CP_CATEGORY_KEYS, CP_TIER_MINOR, CP_TIER_MODERATE, CP_TIER_MAJOR, CP_TIER_CATACLYSMIC,
-    CP_COMPOUND_CHANCE, CP_WILDCARD_CHANCE, CP_CLUSTER_NAMES, CP_CATEGORY_CLUSTERS, CP_CATEGORY_TO_CLUSTER,
+    CP_COMPOUND_CHANCE, CP_WILDCARD_CHANCE, CP_CLUSTER_NAMES, CP_CATEGORY_CLUSTERS, CP_CATEGORY_TO_CLUSTER, CP_MATURE_KEYS,
     initState, getConfig, pacingFor, effectivePacing, beginContextTurn, extractCommand, nextId, findEntityInSentence, findKnownEntityInSentence, eligibleCardTitles,
     splitSentences, findThread, findThreadFuzzy, createThread, tierFor, isEligible, priorTwistCountFor, scanForLooseThreads, scanStoryCardsForScenarioThreads,
     scanPlotEssentialsForThreads, scanAuthorsNoteForThreads, pickForeshadowThread, pickMostBuiltUpBrewingThread, pickPayoffThread, pickCompoundPayoffThreads, pickWildcardEntity,
     foreshadowHint, payoffHint, compoundPayoffHint, safeSetCard, createTwistStoryCard, safeLog, applyEntryConfig,
-    updateCacheEfficiencyWarning, updateNudgeCard, updateConfigCard, updateTwistLogCard, updateThreadsOverview, reinforceFromCoreShift,
+    updateCacheEfficiencyWarning, updateNudgeCard, updateConfigCard, updateTwistLogCard, updateThreadsOverview, updateCategoryCatalog, reinforceFromCoreShift,
+    isMatureCategory, isCategoryAllowed, isEntityConfirmedAdult, isThreadAllowed,
+    detectScenarioProfile, updateScenarioProfile, currentScenarioProfile, scenarioGuidance, categoryFitsScenario,
     CP_ALWAYS_MATCH_KEYS
   };
 })();
@@ -1632,7 +2416,7 @@ var CODEX_STOPWORDS = new Set([
   ...COMMON_CAPITALIZED_STOPWORDS
 ].map(w => w.toLowerCase()));
 
-var CODEX_LOCATION_HINTS = /\b(city|state|street|avenue|canyon|terminal|park|building|tower|island|country|nation|kingdom|realm|district|region|planet|world|base|facility|academy|university|bridge|river|mountain|forest|desert|battleground|warzone|hall|tavern|inn|castle|fortress|temple|level|sector|wing|chamber|vault|bay|deck|outpost|colony|settlement|village|town|hamlet|station|harbor|wharf)\b/i;
+var CODEX_LOCATION_HINTS = /\b(city|state|street|road|lane|avenue|boulevard|canyon|terminal|park|building|tower|island|country|nation|kingdom|realm|district|region|planet|world|base|facility|academy|university|school|campus|bridge|river|mountain|forest|desert|battleground|warzone|hall|tavern|inn|hotel|motel|castle|fortress|temple|church|mosque|shrine|level|sector|wing|chamber|vault|bay|deck|outpost|colony|settlement|village|town|hamlet|station|harbor|harbour|wharf|apartment|house|home|office|warehouse|factory|farm|ranch|arena|stadium|courtroom|courthouse|prison|jail|laboratory|lab|theater|theatre|cinema|museum|library|mall|market|beach|cave|mine|ruins?|cemetery|graveyard|neighborhood|neighbourhood|suburb|block)\b/i;
 var CODEX_LOCATION_SUFFIX_HINTS = /(tower|keep|hold|spire|haven|hollow|reach|scraper)/i;
 
 // "Faction" doubles as the best fit for any organization — guild-and-empire
@@ -1642,7 +2426,7 @@ var CODEX_LOCATION_SUFFIX_HINTS = /(tower|keep|hold|spire|haven|hollow|reach|scr
 // directly: none of the fantasy-only terms below matched "Thorne
 // Industries" or "Dragon's Breath Fried Chicken", so both silently fell
 // back to being guessed as a character.
-var CODEX_FACTION_HINTS = /\b(order|guild|alliance|empire|faction|clan|brotherhood|council|syndicate|coalition|army|legion|cult|society|corporation|company|companies|initiative|division|agency|federation|dynasty|tribe|vanguard|battalion|regiment|squad|cabal|circle|sect|resistance|movement|militia|garrison|industries|industry|enterprises|incorporated|holdings|conglomerate|group|partners|associates|firm|labs?|laboratory|laboratories|studio|studios|productions|pharmaceuticals|restaurant|diner|bistro|caf[eé]|eatery|grill|kitchen|bakery|brewery|pizzeria|steakhouse|deli|hospital|clinic|salon|boutique|store|shop|franchise|chain|brand|app|platform|network|streaming)\b/i;
+var CODEX_FACTION_HINTS = /\b(order|guild|alliance|empire|faction|clan|brotherhood|council|syndicate|coalition|army|legion|cult|society|corporation|company|companies|initiative|division|agency|federation|dynasty|tribe|vanguard|battalion|regiment|squad|squadron|fleet|crew|cabal|circle|sect|resistance|movement|militia|garrison|industries|industry|enterprises|incorporated|holdings|conglomerate|group|partners|associates|firm|labs?|laboratory|laboratories|studio|studios|productions|pharmaceuticals|restaurant|diner|bistro|caf[eé]|eatery|grill|kitchen|bakery|brewery|pizzeria|steakhouse|deli|hospital|clinic|salon|boutique|store|shop|franchise|chain|brand|app|platform|network|streaming|team|club|league|union|association|foundation|charity|church|ministry|department|bureau|office|committee|party|campaign|band|orchestra|label|school|college|university|house|family|court|government|police|fire department)\b/i;
 
 // Sci-fi vessel/mech/robot vocabulary was missing here entirely — the
 // modern-vehicle words (car/truck/van/vehicle) already reflect an earlier
@@ -1653,7 +2437,7 @@ var CODEX_FACTION_HINTS = /\b(order|guild|alliance|empire|faction|clan|brotherho
 // on the correction-note-plus-scoring fallback — the same accepted,
 // unavoidable limitation as a wholly invented name like "Starhopper" with
 // no recognizable component in it at all.
-var CODEX_ITEM_HINTS = /\b(sword|blade|gun|rifle|pistol|staff|wand|amulet|ring|armou?r|shield|artifact|device|weapon|tool|key|book|tome|potion|elixir|gem|crystal|relic|suit|mask|cloak|helmet|gauntlet|hammer|axe|bow|orb|blaster|scroll|spear|dagger|lance|trident|chalice|sigil|banner|car|truck|motorcycle|motorbike|van|jeep|convertible|sedan|coupe|vehicle|automobile|ship|starship|spaceship|spacecraft|shuttle|cruiser|frigate|freighter|corvette|mech|mecha|robot|android|cyborg|rover|submarine|tank|helicopter|aircraft|airship|mothership|jacket|dress|gown|coat|shirt|blouse|jeans|skirt|boots|shoes|sneakers|scarf|gloves|necklace|bracelet|earrings|sunglasses|phone|smartphone|laptop|tablet|computer|console|headset|drone|camera|backpack|purse|wallet|suitcase)\b/i;
+var CODEX_ITEM_HINTS = /\b(sword|blade|gun|rifle|pistol|staff|wand|amulet|ring|armou?r|shield|artifact|device|weapon|tool|key|book|tome|potion|elixir|gem|crystal|relic|suit|mask|cloak|helmet|gauntlet|hammer|axe|bow|orb|blaster|scroll|spear|dagger|lance|trident|chalice|sigil|banner|car|truck|motorcycle|motorbike|van|jeep|convertible|sedan|coupe|vehicle|automobile|ship|starship|spaceship|spacecraft|shuttle|cruiser|frigate|freighter|corvette|mech|mecha|robot|android|cyborg|rover|submarine|tank|helicopter|aircraft|airship|mothership|jacket|dress|gown|coat|shirt|blouse|jeans|skirt|boots|shoes|sneakers|scarf|gloves|necklace|bracelet|earrings|sunglasses|phone|smartphone|laptop|tablet|computer|console|headset|drone|camera|backpack|purse|wallet|suitcase|bicycle|bike|bus|train|tram|boat|yacht|guitar|violin|piano|instrument|microphone|recording|photograph|photo|letter|document|file|contract|map|badge|medicine|medication|serum|vial|inhaler|watch|radio|communicator)\b/i;
 
 var CODEX_TITLE_WORDS = new Set([
   "Emperor", "Empress", "King", "Queen", "Prince", "Princess", "Duke",
@@ -2023,11 +2807,16 @@ function renderTwistSection(cfg) {
     `> Strict logic only, no wildcard twists: ${cfg.strictLogic}\n` +
     `> Allow wildcard twists: ${cfg.allowWildcard}\n` +
     `> Allow compound twists: ${cfg.allowCompoundTwists}\n` +
+    `> Allow mature (18+) twists for confirmed adults: ${cfg.allowMatureTwists}\n` +
     `> Involve the player character in twists: ${cfg.involvePlayer}\n` +
     `> Show resolved twists in the Twist Log: ${cfg.showTwistLog}\n` +
     `> Minimum seed touches before a twist can pay off: ${cfg.minSeedsForPayoff}\n` +
     `> Minimum turns before a twist can pay off: ${cfg.minTurnsForPayoff}\n` +
     `> Turns to wait between twist payoffs: ${cfg.payoffCooldown}\n` +
+    `> Turns before retrying an unconfirmed twist payoff: ${cfg.twistRetryCooldown}\n` +
+    `> Maximum active twist threads per entity: ${cfg.maxThreadsPerEntity}\n` +
+    `> Automatically adapt twists/cards to the current scenario: ${cfg.scenarioAdaptation}\n` +
+    `> Scenario override, blank for automatic detection: ${cfg.scenarioOverride || ""}\n` +
     `> How many resolved twists Established Facts keeps: ${cfg.establishedFactsCap}\n` +
     `> Theme bias, comma-separated, blank for none: ${cfg.categoryBias || ""}\n`;
 }
@@ -2447,7 +3236,7 @@ function isLikelyCharacterIntroduction(name, text) {
     new RegExp(`\\b(?:you|he|she|they|we)\\s+(?:see|spot|notice|meet|find|face|approach|watch|hear)\\s+(?:the\\s+|a\\s+|an\\s+)?${n}\\b`, "i"),
     new RegExp(`\\b${n}(?:'s|’s)\\s+(?:eyes?|voice|hands?|face|expression|smile|gaze|shoulders?|breath|hair|fingers?|arms?|feet|heart|cheeks?|lips?|posture|jaw|stance|grip|step|footsteps?)\\b`, "i"),
     new RegExp(`\\b${n}\\b[^\\n.!?]{0,64}\\b(?:steps?|stepped|walks?|walked|approaches?|approached|enters?|entered|arrives?|arrived|comes?|came|sits?|sat|stands?|stood|leans?|leaned|reaches?|reached|turns?|turned|looks?|looked|glances?|glanced|stares?|stared|smiles?|smiled|frowns?|frowned|nods?|nodded|shrugs?|shrugged|runs?|ran|follows?|followed|kneels?|knelt|rises?|rose|flinches?|flinched|grabs?|grabbed|takes?|took|places?|placed|pushes?|pushed|pulls?|pulled|moves?|moved|laughs?|laughed|sighs?|sighed|winces?|winced|swallows?|swallowed|gestures?|gestured|speaks?|spoke)\\b`, "i"),
-    new RegExp(`\\b(?:a|an|the)\\s+(?:young\\s+|old\\s+|elderly\\s+)?(?:girl|boy|woman|man|lady|gentleman|teenager|teen|child|youth|guard|soldier|knight|mage|wizard|witch|priest|priestess|captain|doctor|merchant|stranger|traveler|traveller|officer|detective|pilot|engineer|nurse|bartender)\\s+(?:named|called)\\s+${n}\\b`, "i"),
+    new RegExp(`\\b(?:a|an|the)\\s+(?:young\\s+|old\\s+|elderly\\s+)?(?:girl|boy|woman|man|person|lady|gentleman|teenager|teen|child|youth|guard|soldier|knight|mage|wizard|witch|priest|priestess|captain|doctor|merchant|stranger|traveler|traveller|officer|detective|pilot|engineer|nurse|bartender|teacher|professor|student|lawyer|attorney|judge|athlete|coach|musician|singer|actor|artist|scientist|researcher|agent|android|robot|synthetic|AI|alien|creature|spirit|ghost|vampire|werewolf|superhero|hero|villain|elf|dwarf|orc|fae|demon|angel|dragon|deity|god|goddess|dog|cat|horse|animal|companion)\\s+(?:named|called)\\s+${n}\\b`, "i"),
     new RegExp(`\\b${n}\\b\\s+(?:says?|asks?|replies?|answers?|whispers?|murmurs?|shouts?|calls?|adds?|admits?|explains?|insists?|snaps?|growls?|mutters?|laughs?|sighs?)\\s*[,.:!?-]?\\s*["“]`, "i"),
     new RegExp(`["”][^\\n]{0,40}\\b${n}\\b\\s+(?:says?|asks?|replies?|answers?|whispers?|murmurs?|shouts?|adds?|admits?|explains?|insists?|snaps?|growls?|mutters?)\\b`, "i")
   ];
@@ -2531,7 +3320,8 @@ function trackMentions(text, observeIntroductions) {
     if (words.length === 1 && CODEX_STOPWORDS.has(stopKey(words[0]))) return;
     if (words.length === 1 && CODEX_TITLE_WORDS.has(stopKey(name))) return;
     if (words.length === 1 && name.length <= 1) return;
-    if (words.length === 1 && name.length <= 5 && name === name.toUpperCase() && /[A-Z]{2,}/.test(name)) return;
+    if (words.length === 1 && name.length <= 5 && name === name.toUpperCase() && /[A-Z]{2,}/.test(name) &&
+        !isLikelyCharacterIntroduction(name, source)) return;
 
     const keys = Object.keys(state.unsaid.codex.mentionCounts);
     const exactKey = keys.find(k => k.toLowerCase() === name.toLowerCase());
@@ -2614,11 +3404,11 @@ function classifyCodexEntry(name, text) {
 
   const n = escapeForRegex(name);
   const nearLocation = new RegExp(`(in|inside|outside|through|into)\\s+(?:the\\s+)?${n}\\b`, "i");
-  const describedAsLocation = new RegExp(`\\b(?:city|town|village|hamlet|kingdom|realm|district|region|port|harbor|harbour|forest|woods|mountain|valley|island|station|outpost|colony|settlement|tavern|inn|castle|fortress|temple|academy|university|facility|base)\\s+(?:of|called|named)\\s+${n}\\b|\\b${n}\\b\\s+(?:is|was)\\s+(?:an?\\s+|the\\s+)?(?:city|town|village|hamlet|kingdom|realm|district|region|port|harbor|harbour|forest|station|outpost|colony|settlement|tavern|inn|castle|fortress|temple|academy|university|facility|base)\\b`, "i");
+  const describedAsLocation = new RegExp(`\\b(?:city|town|village|hamlet|kingdom|realm|district|region|port|harbor|harbour|forest|woods|mountain|valley|island|station|outpost|colony|settlement|tavern|inn|hotel|motel|castle|fortress|temple|academy|school|college|university|campus|facility|base|office|apartment|house|home|warehouse|factory|farm|ranch|arena|stadium|courtroom|courthouse|prison|jail|theater|theatre|museum|library|mall|market|beach|cave|mine|ruins?|cemetery|graveyard|neighbou?rhood|suburb)\\s+(?:of|called|named)\\s+${n}\\b|\\b${n}\\b\\s+(?:is|was)\\s+(?:an?\\s+|the\\s+)?(?:city|town|village|hamlet|kingdom|realm|district|region|port|harbor|harbour|forest|station|outpost|colony|settlement|tavern|inn|hotel|motel|castle|fortress|temple|academy|school|college|university|campus|facility|base|office|apartment|house|home|warehouse|factory|farm|ranch|arena|stadium|courtroom|courthouse|prison|jail|theater|theatre|museum|library|mall|market|beach|cave|mine|ruins?|cemetery|graveyard|neighbou?rhood|suburb)\\b`, "i");
   if (nearLocation.test(text) || describedAsLocation.test(text)) return "location";
 
   const nearItem = new RegExp(`(wields?|holds?|wearing|wears|wore|donned|dressed\\s+in|put\\s+on|slipped\\s+into|using|uses|draws?|grips?|picks?\\s+up|holsters?|drove|drives|driving|parked|rode|riding|climbed\\s+into|hopped\\s+into|flew|flying|piloted|piloting|boarded|boarding|launched|launching|docked|docking)\\s+(the\\s+|a\\s+|an\\s+|his\\s+|her\\s+|their\\s+)?${n}\\b`, "i");
-  const describedAsItem = new RegExp(`\\b(?:sword|blade|gun|rifle|pistol|staff|wand|amulet|ring|artifact|device|weapon|tool|key|book|tome|relic|ship|starship|vehicle|car|truck|robot|android|mech)\\s+(?:called|named)\\s+${n}\\b|\\b${n}\\b\\s+(?:is|was)\\s+(?:an?\\s+|the\\s+)?(?:sword|blade|gun|rifle|pistol|staff|wand|amulet|ring|artifact|device|weapon|tool|key|book|tome|relic|ship|starship|vehicle|car|truck|robot|android|mech)\\b`, "i");
+  const describedAsItem = new RegExp(`\\b(?:sword|blade|gun|rifle|pistol|staff|wand|amulet|ring|artifact|device|weapon|tool|key|book|tome|relic|ship|starship|vehicle|car|truck|motorcycle|bicycle|train|boat|robot|android|mech|phone|computer|laptop|camera|instrument|guitar|document|letter|contract|map|medicine|medication|serum)\\s+(?:called|named)\\s+${n}\\b|\\b${n}\\b\\s+(?:is|was)\\s+(?:an?\\s+|the\\s+)?(?:sword|blade|gun|rifle|pistol|staff|wand|amulet|ring|artifact|device|weapon|tool|key|book|tome|relic|ship|starship|vehicle|car|truck|motorcycle|bicycle|train|boat|robot|android|mech|phone|computer|laptop|camera|instrument|guitar|document|letter|contract|map|medicine|medication|serum)\\b`, "i");
   if (nearItem.test(text) || describedAsItem.test(text)) return "item";
 
   // A name with no recognizable keyword in itself ("Dragon's Breath Fried
@@ -2635,8 +3425,8 @@ function classifyCodexEntry(name, text) {
   // followed by the word that actually classifies it ("Silver Hand
   // guild", "VyrMusic app") — the hint checks above only look inside the
   // name itself, so this catches the same signal sitting just outside it.
-  const followedByFactionWord = new RegExp(`${n}\\s+(order|guild|alliance|empire|faction|clan|brotherhood|council|syndicate|coalition|army|legion|cult|society|corporation|compan(?:y|ies)|division|agency|federation|dynasty|tribe|app|platform|website|network|restaurant|diner|caf[eé]|bakery|store|shop)\\b`, "i");
-  const describedAsFaction = new RegExp(`\\b(?:order|guild|alliance|faction|clan|brotherhood|council|syndicate|coalition|company|corporation|agency|organization|organisation|group|gang|cult|society|restaurant|store|shop|brand|network)\\s+(?:called|named)\\s+${n}\\b|\\b${n}\\b\\s+(?:is|was)\\s+(?:an?\\s+|the\\s+)?(?:order|guild|alliance|faction|clan|brotherhood|council|syndicate|coalition|company|corporation|agency|organization|organisation|group|gang|cult|society|restaurant|store|shop|brand|network)\\b`, "i");
+  const followedByFactionWord = new RegExp(`${n}\\s+(order|guild|alliance|empire|faction|clan|brotherhood|council|syndicate|coalition|army|legion|cult|society|corporation|compan(?:y|ies)|division|agency|federation|dynasty|tribe|app|platform|website|network|restaurant|diner|caf[eé]|bakery|store|shop|team|club|league|union|association|foundation|charity|department|bureau|committee|party|campaign|band|orchestra|label|school|college|university|crew|fleet|police|government)\\b`, "i");
+  const describedAsFaction = new RegExp(`\\b(?:order|guild|alliance|faction|clan|brotherhood|council|syndicate|coalition|company|corporation|agency|organization|organisation|group|gang|cult|society|restaurant|store|shop|brand|network|team|club|league|union|association|foundation|charity|department|bureau|committee|party|campaign|band|orchestra|label|school|college|university|crew|fleet|police|government)\\s+(?:called|named)\\s+${n}\\b|\\b${n}\\b\\s+(?:is|was)\\s+(?:an?\\s+|the\\s+)?(?:order|guild|alliance|faction|clan|brotherhood|council|syndicate|coalition|company|corporation|agency|organization|organisation|group|gang|cult|society|restaurant|store|shop|brand|network|team|club|league|union|association|foundation|charity|department|bureau|committee|party|campaign|band|orchestra|label|school|college|university|crew|fleet|police|government)\\b`, "i");
   if (followedByFactionWord.test(text) || describedAsFaction.test(text)) return "faction";
 
   return "character";
@@ -2797,6 +3587,7 @@ function findCodexCandidates(threshold, excludeNames, maxAttempts, maxCount) {
 
 function buildCodexInstruction(names, text, forced, priorFailures, hardDeadline, compact) {
   const failures = typeof priorFailures === "number" ? priorFailures : 0;
+  const scenarioNote = Library.scenarioGuidance(text);
 
   const blocks = names.map((name, i) => {
     const trackedType = state.unsaid.codex.likelyCharacters[name]
@@ -2856,7 +3647,7 @@ function buildCodexInstruction(names, text, forced, priorFailures, hardDeadline,
   }
 
   const rules = compact
-    ? `Rules: keep the CARD markers exactly; one short concrete line per field; no blanks, "...", Unknown, N/A or TBD. Use established evidence first and infer missing details conservatively without contradicting the story. Do not mention this task outside the hidden block.${forced || hardDeadline ? " Visible story prose is optional after the block." : " Continue the visible story after the block."}`
+    ? `Rules: keep the CARD markers exactly; one short concrete line per field; no blanks, "...", Unknown, N/A or TBD. Use established evidence first and infer missing details conservatively without contradicting the story. Fit every field to the actual scenario: Race means species/nature/kind; Strength Level means relevant capability, not automatically combat; Abilities may be skills/expertise/powers/resources; Relationships must be evidence-based. Do not mention this task outside the hidden block.${forced || hardDeadline ? " Visible story prose is optional after the block." : " Continue the visible story after the block."}`
     : `Rules:
 - Keep the 【CARD】 and 【/CARD】 markers exactly.
 - Output exactly one short line per listed field.
@@ -2865,10 +3656,13 @@ function buildCodexInstruction(names, text, forced, priorFailures, hardDeadline,
 - Use established facts first. Infer only what is still missing, and keep those inferences conservative, specific, and compatible with the story.
 - Do not turn hearsay into an on-screen event, invent a relationship that contradicts the text, or overstate abilities that have not been demonstrated.
 - For Background/Personality/Relationships, connect details to what the character has actually said, done, feared, wanted, or been described as.
+- Interpret fields in a scenario-neutral way. "Race" means species/nature/kind (Human for an ordinary human, the actual nature for an AI/robot/construct/nonhuman). "Strength Level" means relevant capability/status in THIS setting, not automatically combat power. "Abilities" can be practical skills, expertise, social/professional strengths, powers, resources, or special traits. "Weaknesses" means actual limitations/vulnerabilities, not forced combat flaws.
+- Never invent magic, futuristic technology, superpowers, criminal ties, aristocratic titles, romance, military rank, or other genre-specific facts unless the scenario supports them.
+- Preserve established pronouns, culture, era, technology level, social norms, power scale, and tone.
 - Do not explain the profile or mention this task outside the hidden card block.
 ${forced || hardDeadline ? "- Once the card block is complete, visible story prose is optional this turn." : "- After the card block is complete, continue the visible story normally."}`;
 
-  return `\n[UNSAID CODEX — mandatory script task. ${priorityLine}
+  return `\n[UNSAID CODEX — mandatory script task. ${priorityLine}${scenarioNote ? "\nScenario adaptation:" + scenarioNote : ""}
 ${blocks}
 ${rules}]
 `;
@@ -2891,6 +3685,12 @@ function codexLogTitle(type) {
 function buildStatusReport(cfg) {
   const lines = [];
   lines.push(`UNSAID: ${cfg.enabled ? "enabled" : "DISABLED"}  |  Codex: ${cfg.codexEnabled ? "enabled" : "disabled"}  |  Turn: ${state.unsaid.turn}`);
+
+  try {
+    const twistCfg = state.contingencyConfig || Library.CP_DEFAULTS;
+    const profile = Library.currentScenarioProfile("", twistCfg);
+    lines.push(`Scenario adaptation: ${twistCfg.scenarioAdaptation ? "enabled" : "off"}  |  ${profile.tags.join(", ")}  |  era: ${profile.era}  |  reality: ${profile.reality}  |  stakes: ${profile.scale}${twistCfg.scenarioOverride ? `  |  override: ${twistCfg.scenarioOverride}` : ""}`);
+  } catch (e) {}
 
   const cacheCard = storyCards.find(c => c.title === "UNSAID — Important, Read This ⚠️");
   if (cacheCard && cacheCard.entry && cacheCard.entry.indexOf("no longer detected") === -1) {
@@ -3344,6 +4144,17 @@ function naturalCoreShiftEligible(mind, allowCoreShift) {
   return atDrasticTier || (atThreshold && naturallyEligible);
 }
 
+function compactMindScenarioGuard() {
+  try {
+    const p = Library.currentScenarioProfile("");
+    if (!p || !p.enabled) return "";
+    const tags = p.tags && p.tags.length ? p.tags.slice(0, 3).join(", ") : "general";
+    return ` Keep this psychologically and socially appropriate to the current ${tags} scenario; do not invent unsupported powers, technology, magic, institutions, ranks, species, or relationships.`;
+  } catch (e) {
+    return "";
+  }
+}
+
 function buildCoreCheckInstruction(chosen, mind) {
   const coreNote = mind && mind.core ? ` Their current anchor: "${mind.core}".` : "";
   const tensionNote = mind && typeof mind.tensionLevel === "number"
@@ -3351,11 +4162,13 @@ function buildCoreCheckInstruction(chosen, mind) {
       ? " Their feelings have been genuinely unsettled for a while now — this may well be the moment."
       : " Their feelings have been fairly steady lately, for what that's worth.")
     : "";
-  return `\n[Consider whether recent events have genuinely, permanently changed how ${chosen} sees themselves — not just a passing mood.${coreNote}${tensionNote} If yes, reveal it (keep the 《 》 characters exactly as shown, they're required, not decorative — no asterisks or other markdown, the 《 》 pair is the only formatting needed) as "《${chosen}, [one-word-emotion], core-shift: new lasting truth.》" (replace [one-word-emotion] with an actual word, not the literal placeholder) (1–2 concise sentences inside the required 《 》 marker). If nothing that significant has happened, don't force it — continue the story normally with no reveal at all.]\n`;
+  const scenarioNote = compactMindScenarioGuard();
+  return `\n[Consider whether recent events have genuinely, permanently changed how ${chosen} sees themselves — not just a passing mood.${coreNote}${tensionNote}${scenarioNote} If yes, reveal it (keep the 《 》 characters exactly as shown, they're required, not decorative — no asterisks or other markdown, the 《 》 pair is the only formatting needed) as "《${chosen}, [one-word-emotion], core-shift: new lasting truth.》" (replace [one-word-emotion] with an actual word, not the literal placeholder) (1–2 concise sentences inside the required 《 》 marker). If nothing that significant has happened, don't force it — continue the story normally with no reveal at all.]\n`;
 }
 
 function buildAndFitThoughtInstruction(chosen, active, baseText, allowCoreShift) {
   const mind = state.unsaid.minds[chosen];
+  const scenarioNote = compactMindScenarioGuard();
 
   const others = (active || []).filter(n => n !== chosen);
   const withHistory = others.filter(n => mind && mind.relations && mind.relations[n]);
@@ -3392,7 +4205,7 @@ function buildAndFitThoughtInstruction(chosen, active, baseText, allowCoreShift)
       : (mind && mind.relations && mind.relations[target]
         ? ` Feels ${mind.relations[target]} toward ${target} unless this scene shifts it.`
         : "");
-    instruction = `\n[${chosen}'s unspoken reaction to ${target} — 1–2 concise sentences inside the required 《 》 marker: how they really feel about ${target} right now, and what they secretly want from this moment. ${target} can't perceive it.${coreNote}${relationNote}${historyNote}${wantNote}${varietyNote} Replace [one-word-emotion] with an actual single word (e.g. wary, hopeful) — do not write the words "feeling" or "emotion" literally. Format (keep the 《 》 characters exactly as shown, they're required, not decorative — no asterisks or other markdown, the 《 》 pair is the only formatting needed): "《${chosen}, [one-word-emotion], about ${target}: thought.》"]\n`;
+    instruction = `\n[${chosen}'s unspoken reaction to ${target} — 1–2 concise sentences inside the required 《 》 marker: how they really feel about ${target} right now, and what they secretly want from this moment. ${target} can't perceive it.${coreNote}${relationNote}${historyNote}${wantNote}${varietyNote} Replace [one-word-emotion] with an actual single word (e.g. wary, hopeful) — do not write the words "feeling" or "emotion" literally.${scenarioNote} Format (keep the 《 》 characters exactly as shown, they're required, not decorative — no asterisks or other markdown, the 《 》 pair is the only formatting needed): "《${chosen}, [one-word-emotion], about ${target}: thought.》"]\n`;
   } else if (mind && mind.core) {
     const atThreshold = allowCoreShift && typeof mind.tensionLevel === "number" &&
       mind.tensionLevel >= TENSION_THRESHOLD;
@@ -3405,9 +4218,9 @@ function buildAndFitThoughtInstruction(chosen, active, baseText, allowCoreShift)
         ? ` Their feelings have been unraveling for a long time now, unresolved — something this significant would happen regardless. If it's truly earned, you may format this instead as "《${chosen}, [one-word-emotion], core-shift: new lasting truth.》" to replace their old anchor.`
         : ` Their feelings have been genuinely shifting for a while now, not settling back — if this moment plays into that and something has truly changed how they see themselves, you may format this instead as "《${chosen}, [one-word-emotion], core-shift: new lasting truth.》" to replace their old anchor. Only do this if it's really earned.`)
       : "";
-    instruction = `\n[${chosen}'s private thought — 1–2 concise sentences inside the required 《 》 marker: how they really feel right now, and what they secretly want. Consistent with "${mind.core}" and their feeling of ${mind.feeling} unless this scene shifts it.${historyNote}${wantNote}${varietyNote}${shiftNote} Replace [one-word-emotion] with an actual single word (e.g. wary, hopeful) — do not write the words "feeling" or "emotion" literally. Format (keep the 《 》 characters exactly as shown, they're required, not decorative — no asterisks or other markdown, the 《 》 pair is the only formatting needed): "《${chosen}, [one-word-emotion]: thought.》" No one else perceives it.]\n`;
+    instruction = `\n[${chosen}'s private thought — 1–2 concise sentences inside the required 《 》 marker: how they really feel right now, and what they secretly want. Consistent with "${mind.core}" and their feeling of ${mind.feeling} unless this scene shifts it.${historyNote}${wantNote}${varietyNote}${shiftNote} Replace [one-word-emotion] with an actual single word (e.g. wary, hopeful) — do not write the words "feeling" or "emotion" literally.${scenarioNote} Format (keep the 《 》 characters exactly as shown, they're required, not decorative — no asterisks or other markdown, the 《 》 pair is the only formatting needed): "《${chosen}, [one-word-emotion]: thought.》" No one else perceives it.]\n`;
   } else {
-    instruction = `\n[This is ${chosen}'s very first private thought — once revealed, it becomes a lasting truth about who they fundamentally are, something real and significant enough to define them going forward, not a fleeting reaction to this moment. Use 1–2 concise sentences inside the required 《 》 marker: what this deep truth is, and what they secretly want because of it. Replace [one-word-emotion] with an actual single word (e.g. wary, hopeful) — do not write the words "feeling" or "emotion" literally. Format (keep the 《 》 characters exactly as shown, they're required, not decorative — no asterisks or other markdown, the 《 》 pair is the only formatting needed): "《${chosen}, [one-word-emotion]: thought.》" No one else perceives it.]\n`;
+    instruction = `\n[This is ${chosen}'s very first private thought — once revealed, it becomes a lasting psychological anchor about who they fundamentally are, not a fleeting reaction and not an excuse to invent unsupported biography. Base it on what the story has actually shown about them so far. Use 1–2 concise sentences inside the required 《 》 marker: what this deep truth is, and what they secretly want because of it. Replace [one-word-emotion] with an actual single word (e.g. wary, hopeful) — do not write the words "feeling" or "emotion" literally.${scenarioNote} Format (keep the 《 》 characters exactly as shown, they're required, not decorative — no asterisks or other markdown, the 《 》 pair is the only formatting needed): "《${chosen}, [one-word-emotion]: thought.》" No one else perceives it.]\n`;
   }
 
   return fitInstructionToBudget(baseText, instruction);
@@ -3490,8 +4303,23 @@ function isCharacterLikeCard(name) {
   if (typeof storyCards === "undefined" || !storyCards) return true;
   const existingCard = findStoryCardForEntity(name);
   if (!existingCard) return true;
+
   const cardType = (existingCard.type || "").trim().toLowerCase();
-  return !cardType || cardType === "character";
+  if (!cardType) return true;
+  if (/^(?:character|npc|person|companion|ally|rival|protagonist|antagonist|crewmate|crew member|student|teacher|agent|officer|doctor|patient|athlete|coach|employee|resident)$/i.test(cardType)) {
+    return true;
+  }
+  if (/^(?:location|place|item|object|vehicle|weapon|faction|organization|organisation|business|restaurant|building|city|country|planet|world|class|event|lore)$/i.test(cardType)) {
+    return false;
+  }
+
+  // Custom Story Card types are common in scenario-specific packs. If the
+  // fields themselves clearly describe a person/sapient character, honor
+  // that shape instead of rejecting the card solely because the author
+  // called its type "Crew", "Resident", "Detective", etc.
+  const entry = String(existingCard.entry || "");
+  const signals = (entry.match(/^\s*(?:Race|Species|Nature|Strength Level|Personality|Background|Appearance|Abilities|Weaknesses|Relationships)\s*[:=]/gim) || []).length;
+  return signals >= 2;
 }
 
 function linkTwistPayoffToReveal(entity, tier) {
