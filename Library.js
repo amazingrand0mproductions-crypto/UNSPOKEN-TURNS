@@ -28,6 +28,7 @@ var CP_DEFAULTS = {
   twistRetryCooldown: 2,
   scenarioAdaptation: true,
   scenarioOverride: "",
+  crossSystemSynergy: true,
 
   categoryBias: ""
 
@@ -1163,6 +1164,10 @@ var Library = (() => {
       if (typeof t.lastSeedTurn !== "number" || !isFinite(t.lastSeedTurn)) t.lastSeedTurn = t.originTurn;
       if (typeof t.confirmMisses !== "number") t.confirmMisses = 0;
       if (typeof t.seedConfirmMisses !== "number") t.seedConfirmMisses = 0;
+      if (typeof t.psychologyLinked !== "boolean") t.psychologyLinked = false;
+      if (typeof t.psychologyTouches !== "number") t.psychologyTouches = 0;
+      if (typeof t.lastPsychologyTurn !== "number") t.lastPsychologyTurn = -999;
+      if (typeof t.codexLinked !== "boolean") t.codexLinked = false;
       t.mature = isMatureCategory(t.category);
       if (t.mature && typeof t.adultConfirmed !== "boolean") {
         t.adultConfirmed = isEntityConfirmedAdult(t.entity, "");
@@ -1561,8 +1566,15 @@ var Library = (() => {
       for (let i = startIndex; i < matches.length; i++) {
         const w = stripPossessive(matches[i][0]);
         if (CP_STOPWORDS.has(w.toLowerCase()) || w.length <= 1) continue;
-        const result = bridge(i);
+        let result = bridge(i);
         if (result.indexOf(" ") === -1 && typeof CODEX_TITLE_WORDS !== "undefined" && CODEX_TITLE_WORDS.has(result.toLowerCase())) continue;
+        try {
+          if (typeof normalizeCodexCandidate === "function") {
+            const normalized = normalizeCodexCandidate(result, sentence);
+            if (!normalized) continue;
+            result = normalized;
+          }
+        } catch (e) {}
         return result;
       }
       return null;
@@ -1587,9 +1599,13 @@ var Library = (() => {
 
   function findKnownEntityInSentence(sentence, titles) {
     try {
-      const list = titles || eligibleCardTitles();
+      const list = (titles || eligibleCardTitles()).filter(Boolean).slice()
+        .sort((a,b) => String(b).length - String(a).length);
+      const source = String(sentence || "");
       for (let i = 0; i < list.length; i++) {
-        if (list[i] && sentence.indexOf(list[i]) !== -1) return list[i];
+        const title = String(list[i]);
+        const escaped = title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        if (new RegExp(`(?:^|[^A-Za-z0-9])${escaped}(?=$|[^A-Za-z0-9])`, "i").test(source)) return list[i];
       }
     } catch (e) {}
     return null;
@@ -1702,6 +1718,10 @@ var Library = (() => {
       lastSeedTurn: typeof c.turn === "number" ? c.turn : originTurn,
       confirmMisses: 0,
       seedConfirmMisses: 0,
+      psychologyLinked: false,
+      psychologyTouches: 0,
+      lastPsychologyTurn: -999,
+      codexLinked: false,
       mature: isMatureCategory(cat),
       adultConfirmed: isMatureCategory(cat) ? isEntityConfirmedAdult(entity, evidenceText || "") : false,
       priorTwistCount: priorTwistCountFor(c, entity)
@@ -1724,6 +1744,171 @@ var Library = (() => {
     if (seedTouches >= 6) return CP_TIER_MAJOR;
     if (seedTouches >= 3) return CP_TIER_MODERATE;
     return CP_TIER_MINOR;
+  }
+
+
+  // Shared bridge between the two original systems. It is intentionally
+  // evidence-conservative: an UNSAID suspicion may reinforce a thread that
+  // already exists, but cannot create an objective betrayal/secret by itself.
+  function mindKeyForEntity(entity) {
+    try {
+      if (!entity || !state || !state.unsaid || !state.unsaid.minds) return null;
+      const keys = Object.keys(state.unsaid.minds);
+      const exact = keys.find(k => k.toLowerCase() === String(entity).toLowerCase());
+      if (exact) return exact;
+      if (typeof isSameCardEntity === "function") {
+        const fuzzy = keys.find(k => isSameCardEntity(k, entity));
+        if (fuzzy) return fuzzy;
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  function mindForEntity(entity) {
+    const key = mindKeyForEntity(entity);
+    return key && state.unsaid && state.unsaid.minds ? state.unsaid.minds[key] : null;
+  }
+
+  function bridgeClip(value, maxLen) {
+    return String(value || "").replace(/\s+/g, " ").trim().slice(0, maxLen || 150);
+  }
+
+  function psychologyContextForTwist(entity) {
+    try {
+      const cfg = state && state.contingencyConfig ? state.contingencyConfig : CP_DEFAULTS;
+      if (!cfg.crossSystemSynergy) return "";
+      const mind = mindForEntity(entity);
+      if (!mind) return "";
+      const bits = [];
+      if (mind.core) bits.push(`core belief: "${bridgeClip(mind.core, 120)}"`);
+      if (mind.feeling) bits.push(`current feeling: ${bridgeClip(mind.feeling, 32)}`);
+      if (mind.want) bits.push(`private want: "${bridgeClip(mind.want, 120)}"`);
+      if (mind.relationOrder && mind.relationOrder.length && mind.relations) {
+        const other = mind.relationOrder[mind.relationOrder.length - 1];
+        if (other && mind.relations[other]) bits.push(`toward ${bridgeClip(other, 45)}: ${bridgeClip(mind.relations[other], 32)}`);
+      }
+      if (!bits.length) return "";
+      return " Private continuity for " + entity + ": " + bits.slice(0, 3).join("; ") +
+        ". Use this only for motive/emotional continuity. Do not quote private notes in visible prose, and never make a fear or suspicion objectively true unless visible story evidence supports it.";
+    } catch (e) { return ""; }
+  }
+
+  function twistPressureForMind(entity) {
+    try {
+      const cfg = state && state.contingencyConfig ? state.contingencyConfig : CP_DEFAULTS;
+      if (!cfg.crossSystemSynergy || !state || !state.contingency) return "";
+      const active = (state.contingency.threads || []).filter(t =>
+        t && t.status !== "resolved" &&
+        (String(t.entity || "").toLowerCase() === String(entity || "").toLowerCase() ||
+         (typeof isSameCardEntity === "function" && isSameCardEntity(t.entity, entity)))
+      );
+      const mind = mindForEntity(entity);
+      const impacts = mind && Array.isArray(mind.recentTwistImpacts) ? mind.recentTwistImpacts : [];
+      const latest = impacts.length ? impacts[impacts.length - 1] : null;
+      const notes = [];
+      if (active.length) {
+        const ready = active.filter(t => t.status === "ready").length;
+        const linked = active.filter(t => t.psychologyLinked).length;
+        notes.push(`${active.length} unresolved plot pressure${active.length === 1 ? "" : "s"}${ready ? ` (${ready} close to surfacing)` : ""}${linked ? `, ${linked} linked to their psychology` : ""}`);
+      }
+      if (latest && typeof latest.turn === "number" && state.unsaid) {
+        const age = Math.max(0, state.unsaid.turn - latest.turn);
+        if (age <= 4) notes.push(`a ${latest.tier || "significant"} confirmed twist affected them ${age === 0 ? "just now" : age + " turn" + (age === 1 ? "" : "s") + " ago"}`);
+      }
+      if (!notes.length) return "";
+      return " Live plot pressure: " + notes.join("; ") +
+        ". Let the private reaction respond only to what this character could know. Do not reveal a tracked twist early or turn suspicion into certainty.";
+    } catch (e) { return ""; }
+  }
+
+  function mindPriorityForThread(thread) {
+    try {
+      const cfg = state && state.contingencyConfig ? state.contingencyConfig : CP_DEFAULTS;
+      if (!cfg.crossSystemSynergy || !thread) return 0;
+      const mind = mindForEntity(thread.entity);
+      if (!mind) return thread.psychologyLinked ? 1 : 0;
+      const tension = Math.max(0, Math.min(6, Number(mind.tensionLevel) || 0));
+      const fresh = typeof mind.lastTurn === "number" && state.unsaid
+        ? Math.max(0, 3 - Math.min(3, state.unsaid.turn - mind.lastTurn)) : 0;
+      return tension + fresh + (thread.psychologyLinked ? 2 : 0);
+    } catch (e) { return 0; }
+  }
+
+  function reinforceThreadFromPsychology(thread, c, cfg, sourceTag) {
+    if (!thread || !c || thread.status !== "brewing") return false;
+    if (thread.lastPsychologyTurn === c.turn) return false;
+    thread.lastPsychologyTurn = c.turn;
+    thread.psychologyLinked = true;
+    thread.psychologyTouches = (thread.psychologyTouches || 0) + 1;
+    thread.seedTouches += 1;
+    thread.lastSeedTurn = c.turn;
+    thread.tier = tierFor(thread.seedTouches);
+    if (!thread.source || thread.source === "live") thread.source = sourceTag || "unsaid";
+    if (isEligible(thread, c, cfg)) thread.status = "ready";
+    return true;
+  }
+
+  function absorbUnsaidSignal(c, cfg, entity, mind, thought, about) {
+    try {
+      if (!c || !cfg || !cfg.enabled || !cfg.crossSystemSynergy || !entity || !mind) return false;
+      if (isPlayerEntity(c, entity) && !cfg.involvePlayer) return false;
+      const active = (c.threads || []).filter(t =>
+        t && t.status === "brewing" &&
+        (String(t.entity || "").toLowerCase() === String(entity).toLowerCase() ||
+         (typeof isSameCardEntity === "function" && isSameCardEntity(t.entity, entity)))
+      );
+      if (!active.length) return false;
+      const signal = [thought, mind.feeling, mind.want, about].filter(Boolean).join(" ");
+      const matchedCategory = matchScenarioCategory(signal, entity, cfg);
+      let target = matchedCategory ? active.find(t => t.category === matchedCategory) : null;
+      if (!target && /\b(secret|hide|hidden|afraid|fear|terrified|guilt|guilty|regret|betray|betrayed|owe|debt|doubt|distrust|suspect|suspicious|lie|lying|jealous|obsess|escape|protect|revenge|confess|ashamed|desperate|blackmail|threat|trapped)\b/i.test(signal)) {
+        target = active.slice().sort((a,b) => b.seedTouches - a.seedTouches || a.originTurn - b.originTurn)[0];
+      }
+      return target ? reinforceThreadFromPsychology(target, c, cfg, "unsaid") : false;
+    } catch (e) { return false; }
+  }
+
+  function applyTwistImpactToMind(entity, category, tier, partnerName) {
+    try {
+      const cfg = state && state.contingencyConfig ? state.contingencyConfig : CP_DEFAULTS;
+      if (!cfg.crossSystemSynergy || !entity) return false;
+      const key = mindKeyForEntity(entity);
+      if (!key) return false;
+      const mind = state.unsaid.minds[key];
+      const pressure = ({minor:1, moderate:1, major:2, cataclysmic:3})[tier] || 1;
+      const cap = typeof TENSION_THRESHOLD === "number" ? TENSION_THRESHOLD * 2 : 6;
+      mind.tensionLevel = Math.min(cap, Math.max(0, Number(mind.tensionLevel) || 0) + pressure);
+      if (!Array.isArray(mind.recentTwistImpacts)) mind.recentTwistImpacts = [];
+      mind.recentTwistImpacts.push({
+        turn: state.unsaid ? state.unsaid.turn : (state.contingency ? state.contingency.turn : 0),
+        category: category, tier: tier, partner: partnerName || null
+      });
+      if (mind.recentTwistImpacts.length > 4) mind.recentTwistImpacts = mind.recentTwistImpacts.slice(-4);
+      return true;
+    } catch (e) { return false; }
+  }
+
+  function bridgeCodexEvidenceToTwists(c, cfg, entity, type, evidenceText) {
+    try {
+      if (!c || !cfg || !cfg.enabled || !cfg.crossSystemSynergy || !entity || !evidenceText) return null;
+      if (isPlayerEntity(c, entity) && !cfg.involvePlayer) return null;
+      const category = matchScenarioCategory(evidenceText, entity, cfg);
+      if (!category) return null;
+      let thread = findThread(c, entity, category);
+      if (thread) {
+        if (thread.status === "brewing" && thread.lastSeedTurn !== c.turn) {
+          thread.seedTouches += 1;
+          thread.lastSeedTurn = c.turn;
+          thread.tier = tierFor(thread.seedTouches);
+          thread.codexLinked = true;
+          if (isEligible(thread, c, cfg)) thread.status = "ready";
+        }
+        return thread;
+      }
+      thread = createThread(c, entity, category, c.turn, cfg, evidenceText);
+      if (thread) { thread.source = "codex"; thread.codexLinked = true; }
+      return thread;
+    } catch (e) { return null; }
   }
 
   function reinforceFromCoreShift(c, cfg, entity) {
@@ -1944,6 +2129,7 @@ var Library = (() => {
     if (brewing.length === 0) return null;
     brewing.sort((a, b) =>
       a.seedTouches - b.seedTouches ||
+      mindPriorityForThread(b) - mindPriorityForThread(a) ||
       a.originTurn - b.originTurn ||
       String(a.entity).localeCompare(String(b.entity))
     );
@@ -1972,6 +2158,7 @@ var Library = (() => {
     // not starve everything behind it forever.
     ready.sort((a, b) =>
       a.originTurn - b.originTurn ||
+      mindPriorityForThread(b) - mindPriorityForThread(a) ||
       (a.confirmMisses || 0) - (b.confirmMisses || 0) ||
       b.seedTouches - a.seedTouches ||
       String(a.entity).localeCompare(String(b.entity))
@@ -2009,10 +2196,11 @@ var Library = (() => {
       ? " (this ties to something already true about them in this world, not something new)"
       : "";
     const adapt = scenarioGuidance("", state && state.contingencyConfig ? state.contingencyConfig : CP_DEFAULTS);
+    const psyche = psychologyContextForTwist(thread.entity);
     return "[Subtle texture only, never explained or drawn attention to: plant one small, " +
       "easy-to-overlook detail connected to " + thread.entity + sourceNote + " that would make sense in " +
       "hindsight if it turned out that " + desc + ". Do not resolve or hint at this being " +
-      "important. It should read as ordinary for this scenario right now." + memoryNote(thread) + adapt +
+      "important. It should read as ordinary for this scenario right now." + memoryNote(thread) + psyche + adapt +
       " If you actually include that setup detail in this response, append the exact hidden marker " +
       "【UT-SEED:" + thread.id + "】 at the very end. Do not mention or explain the marker.]";
   }
@@ -2021,11 +2209,12 @@ var Library = (() => {
     const desc = CP_CATEGORIES[thread.category];
     const marker = "【UT-TWIST:" + thread.id + "】";
     const adapt = scenarioGuidance("", state && state.contingencyConfig ? state.contingencyConfig : CP_DEFAULTS);
+    const psyche = psychologyContextForTwist(thread.entity);
     if (thread.wildcard) {
       return "[A sudden but coherent twist involving " + thread.entity + " happens now: " + desc +
         ". This one doesn't need prior setup, but it still must fit the current scenario. Invent a believable, specific reason it's true, " +
         "consistent with everything already established about " + thread.entity +
-        "." + memoryNote(thread) + adapt + " Let the story react to it honestly. Only if the twist actually lands " +
+        "." + memoryNote(thread) + psyche + adapt + " Let the story react to it honestly. Only if the twist actually lands " +
         "in this response, append the exact hidden marker " + marker +
         " at the very end. Do not mention or explain the marker.]";
     }
@@ -2036,7 +2225,7 @@ var Library = (() => {
       "as a logical consequence of details already established about " + thread.entity +
       " in this story — not a random event, not out of nowhere." + sourceNote +
       " Scale it as a " + CP_TIER_LABELS[thread.tier] + " revelation relative to this scenario's normal stakes." +
-      memoryNote(thread) + adapt +
+      memoryNote(thread) + psyche + adapt +
       " Let the story react to it honestly. Only if the twist actually lands in this response, append the exact " +
       "hidden marker " + marker + " at the very end. Do not mention or explain the marker.]";
   }
@@ -2046,12 +2235,14 @@ var Library = (() => {
     const descB = CP_CATEGORIES[threadB.category];
     const scaleTier = (tierRank(threadA.tier) >= tierRank(threadB.tier)) ? threadA.tier : threadB.tier;
     const adapt = scenarioGuidance("", state && state.contingencyConfig ? state.contingencyConfig : CP_DEFAULTS);
+    const psycheA = psychologyContextForTwist(threadA.entity);
+    const psycheB = psychologyContextForTwist(threadB.entity);
     return "[Two threads resolve together right now, as one connected twist: " +
       threadA.entity + " — " + descA + " — turns out to be tied to " + threadB.entity +
       " — " + descB + ". Invent a specific, logical connection between them built on what's " +
       "already established about each, so the two revelations land as a single discovery, not " +
       "two coincidences. Scale it as a " + CP_TIER_LABELS[scaleTier] + " revelation relative to this scenario's normal stakes." +
-      memoryNote(threadA) + memoryNote(threadB) + adapt +
+      memoryNote(threadA) + memoryNote(threadB) + psycheA + psycheB + adapt +
       " Let the story react honestly. Only if both parts actually land in this response, append the exact " +
       "hidden markers 【UT-TWIST:" + threadA.id + "】 and 【UT-TWIST:" + threadB.id +
       "】 at the very end. Do not mention or explain the markers.]";
@@ -2212,6 +2403,9 @@ var Library = (() => {
     const scenarioOverrideMatch = section.match(/Scenario override, blank for automatic detection:[ \t]*(.*)/i);
     if (scenarioOverrideMatch) cfg.scenarioOverride = scenarioOverrideMatch[1].trim().slice(0, 180);
 
+    const synergyMatch = section.match(/Link UNSAID psychology with twist threads:\s*(true|false)/i);
+    if (synergyMatch) cfg.crossSystemSynergy = synergyMatch[1].toLowerCase() === "true";
+
     const capMatch = section.match(/How many resolved twists Established Facts keeps:\s*(\d+)/i);
     if (capMatch) {
       const n = parseInt(capMatch[1], 10);
@@ -2270,9 +2464,10 @@ var Library = (() => {
       "- Threads per entity: prevents one name from collecting an unlimited pile of unrelated twists.\n" +
       "- Automatic scenario adaptation: reads the current story/lore and keeps generated cards, private-thought prompts, wildcard twists, tone, era, and stakes appropriate to THIS scenario.\n" +
       "- Scenario override: optional free-text guidance such as 'grounded Victorian detective', 'hard sci-fi with no magic', or any custom setting description. Blank = automatic.\n" +
+      "- UNSAID ↔ Twists link: private psychology can reinforce compatible active threads, while confirmed twists feed emotional pressure back into characters. Suspicions never become factual twists just because a character thinks them.\n" +
       "- Established Facts cap: how many recent confirmed twists stay visible to the AI at once.\n" +
       "- Theme bias: lean toward certain themes without overriding what the story has established. Themes: " + CP_CLUSTER_NAMES.join(", ") + "\n\n" +
-      "Commands: /twist, /twist <name>, /plant <name> [category], /twistlog, /threads, /twisttypes, /mature <on|off>, /scenario, /scenario auto|off|<custom guidance>, /intensity <low|medium|high>, /rescan, /twists";
+      "Commands: /twist, /twist <name>, /plant <name> [category], /twistlog, /threads, /twisttypes, /mature <on|off>, /scenario, /scenario auto|off|<custom guidance>, /synergy <on|off>, /intensity <low|medium|high>, /rescan, /twists";
 
     card.description = spliceConfigSection(card.description, CONFIG_SECTION_TWIST, notes);
   }
@@ -2352,6 +2547,7 @@ var Library = (() => {
     scanPlotEssentialsForThreads, scanAuthorsNoteForThreads, pickForeshadowThread, pickMostBuiltUpBrewingThread, pickPayoffThread, pickCompoundPayoffThreads, pickWildcardEntity,
     foreshadowHint, payoffHint, compoundPayoffHint, safeSetCard, createTwistStoryCard, safeLog, applyEntryConfig,
     updateCacheEfficiencyWarning, updateNudgeCard, updateConfigCard, updateTwistLogCard, updateThreadsOverview, updateCategoryCatalog, reinforceFromCoreShift,
+    psychologyContextForTwist, twistPressureForMind, absorbUnsaidSignal, applyTwistImpactToMind, bridgeCodexEvidenceToTwists, mindPriorityForThread,
     isMatureCategory, isCategoryAllowed, isEntityConfirmedAdult, isThreadAllowed,
     detectScenarioProfile, updateScenarioProfile, currentScenarioProfile, scenarioGuidance, categoryFitsScenario,
     CP_ALWAYS_MATCH_KEYS
@@ -2766,7 +2962,7 @@ var SENTENCE_ABBREVIATIONS = new Set([
 // can no longer drift out of sync the way they already have three times.
 var CODEX_NAME_TOKEN = `[A-Z][${NAME_ALPHANUM}]*(?:['\u2019-][${NAME_ALPHANUM}]+)*`;
 var CODEX_TITLE_ABBREV_REGEX = new RegExp(
-  `\\b(?:(?:${[...SENTENCE_ABBREVIATIONS].filter(w => w.length > 1).join("|")})\\.\\s+)?${CODEX_NAME_TOKEN}(?:\\s+of\\s+${CODEX_NAME_TOKEN}|\\s+${CODEX_NAME_TOKEN}){0,2}\\b`,
+  `\\b(?:(?:${[...SENTENCE_ABBREVIATIONS].filter(w => w.length > 1).join("|")})\\.\\s+)?${CODEX_NAME_TOKEN}(?:\\s+of\\s+${CODEX_NAME_TOKEN}|\\s+${CODEX_NAME_TOKEN}){0,3}\\b`,
   "g"
 );
 
@@ -2805,7 +3001,12 @@ function hasExplicitCodexNamingCue(name, text) {
     "priestess", "captain", "doctor", "nurse", "merchant", "officer",
     "detective", "pilot", "engineer", "teacher", "professor", "student",
     "lawyer", "attorney", "judge", "athlete", "coach", "musician", "singer",
-    "actor", "artist", "scientist", "researcher", "agent", "android", "robot",
+    "actor", "artist", "scientist", "researcher", "agent", "server", "waiter",
+    "waitress", "barista", "cashier", "clerk", "receptionist", "chef", "cook",
+    "mechanic", "driver", "courier", "medic", "therapist", "counselor",
+    "counsellor", "neighbor", "neighbour", "roommate", "coworker", "colleague",
+    "manager", "boss", "assistant", "owner", "parent", "mother", "father",
+    "sister", "brother", "wife", "husband", "partner", "friend", "android", "robot",
     "synthetic", "ai", "alien", "creature", "spirit", "ghost", "vampire",
     "werewolf", "superhero", "hero", "villain", "elf", "dwarf", "orc", "fae",
     "demon", "angel", "dragon", "deity", "god", "goddess", "dog", "cat",
@@ -2954,6 +3155,10 @@ function isEstablishedExplicitCodexCharacter(name) {
 function isClearlyJunkCodexName(name) {
   const raw = String(name || "").trim();
   if (!raw) return true;
+  try {
+    if (state && state.unsaid && state.unsaid.codex && state.unsaid.codex.trustedEntities &&
+        state.unsaid.codex.trustedEntities[raw]) return false;
+  } catch (e) {}
   const evidenceText = codexEvidenceTextFor(raw);
   if (hasExplicitCodexNamingCue(raw, evidenceText)) return false;
 
@@ -3111,6 +3316,11 @@ function initUnsaid() {
         evidence: {},
         lastMentionTurn: {},
         lastAttemptTurn: {},
+        candidateScores: {},
+        typeVotes: {},
+        trustedEntities: {},
+        lastConfidenceTurn: {},
+        lastTypeVoteTurn: {},
         pendingNames: [],
         pendingTypes: {},
         pendingForced: false,
@@ -3145,6 +3355,11 @@ function initUnsaid() {
       evidence: {},
       lastMentionTurn: {},
       lastAttemptTurn: {},
+      candidateScores: {},
+      typeVotes: {},
+      trustedEntities: {},
+      lastConfidenceTurn: {},
+      lastTypeVoteTurn: {},
       pendingNames: [],
       pendingTypes: {},
       pendingForced: false,
@@ -3162,6 +3377,11 @@ function initUnsaid() {
   if (!state.unsaid.codex.evidence || typeof state.unsaid.codex.evidence !== "object") state.unsaid.codex.evidence = {};
   if (!state.unsaid.codex.lastMentionTurn || typeof state.unsaid.codex.lastMentionTurn !== "object") state.unsaid.codex.lastMentionTurn = {};
   if (!state.unsaid.codex.lastAttemptTurn || typeof state.unsaid.codex.lastAttemptTurn !== "object") state.unsaid.codex.lastAttemptTurn = {};
+  if (!state.unsaid.codex.candidateScores || typeof state.unsaid.codex.candidateScores !== "object") state.unsaid.codex.candidateScores = {};
+  if (!state.unsaid.codex.typeVotes || typeof state.unsaid.codex.typeVotes !== "object") state.unsaid.codex.typeVotes = {};
+  if (!state.unsaid.codex.trustedEntities || typeof state.unsaid.codex.trustedEntities !== "object") state.unsaid.codex.trustedEntities = {};
+  if (!state.unsaid.codex.lastConfidenceTurn || typeof state.unsaid.codex.lastConfidenceTurn !== "object") state.unsaid.codex.lastConfidenceTurn = {};
+  if (!state.unsaid.codex.lastTypeVoteTurn || typeof state.unsaid.codex.lastTypeVoteTurn !== "object") state.unsaid.codex.lastTypeVoteTurn = {};
   if (!Array.isArray(state.unsaid.codex.pendingNames)) state.unsaid.codex.pendingNames = [];
   if (!state.unsaid.codex.pendingTypes || typeof state.unsaid.codex.pendingTypes !== "object") state.unsaid.codex.pendingTypes = {};
   if (typeof state.unsaid.codex.pendingForced !== "boolean") state.unsaid.codex.pendingForced = false;
@@ -3320,6 +3540,7 @@ function renderTwistSection(cfg) {
     `> Maximum active twist threads per entity: ${cfg.maxThreadsPerEntity}\n` +
     `> Automatically adapt twists/cards to the current scenario: ${cfg.scenarioAdaptation}\n` +
     `> Scenario override, blank for automatic detection: ${cfg.scenarioOverride || ""}\n` +
+    `> Link UNSAID psychology with twist threads: ${cfg.crossSystemSynergy}\n` +
     `> How many resolved twists Established Facts keeps: ${cfg.establishedFactsCap}\n` +
     `> Theme bias, comma-separated, blank for none: ${cfg.categoryBias || ""}\n`;
 }
@@ -3725,6 +3946,76 @@ function fitInstructionToBudget(baseText, instruction) {
 // introductions, speech/action attribution, a person noun attached to the
 // name, or a possessive body/voice cue. Locations/items/factions still use
 // the normal mention-threshold path.
+
+var CODEX_NONCHAR_MIN_CONFIDENCE = 7;
+var CODEX_NONCHAR_MIN_TYPE_VOTES = 4;
+
+function codexTypedEntityCue(name, source, type) {
+  const n = escapeForRegex(String(name || "").trim());
+  if (!n || !source) return false;
+  const types = {
+    location: "city|town|village|kingdom|realm|district|region|planet|world|station|base|facility|school|academy|college|university|hospital|hotel|tavern|inn|house|building|street|road|river|mountain|forest|island|courtroom|courthouse|office|farm|ranch|arena|stadium|prison|laboratory|museum|library|beach|cave|mine|cemetery",
+    item: "item|object|artifact|relic|weapon|sword|blade|gun|device|tool|book|document|letter|contract|map|vehicle|car|ship|starship|phone|computer|medicine|dish|meal|drink|cocktail|dessert|recipe",
+    faction: "faction|organization|organisation|group|guild|order|clan|company|corporation|agency|team|club|league|union|association|department|bureau|committee|party|band|crew|government|police|restaurant|store|shop|brand|network"
+  };
+  const words = types[type];
+  if (!words) return false;
+  return new RegExp(
+    `\\b(?:${words})\\s+(?:called|named|known\\s+as|dubbed)\\s+["“”'‘’]?${n}\\b|` +
+    `\\b${n}\\b\\s+(?:is|was)\\s+(?:an?\\s+|the\\s+)?(?:${words})\\b`,
+    "i"
+  ).test(source);
+}
+
+function codexEvidenceStrength(name, source, type, isPresence) {
+  if (!name || !source) return 0;
+  if (hasExplicitCodexNamingCue(name, source)) return 6;
+  if (isPresence) return 6;
+  if (codexTypedEntityCue(name, source, type)) return 5;
+
+  try {
+    if (typeof storyCards !== "undefined" && storyCards.some(c =>
+      c && c.title && isSameCardEntity(c.title, name))) return 6;
+  } catch (e) {}
+
+  const n = escapeForRegex(name);
+  const occurrences = (String(source).match(new RegExp(`(?:^|[^A-Za-z0-9])${n}(?=$|[^A-Za-z0-9])`, "gi")) || []).length;
+  const wordCount = String(name).trim().split(/\s+/).length;
+  if (wordCount >= 2 && occurrences >= 2) return 3;
+  if (wordCount >= 2) return 2;
+  return 1;
+}
+
+function recordCodexConfidence(name, type, strength, actionEpoch) {
+  const codex = state.unsaid.codex;
+  if (!name || !type || !strength) return;
+
+  if (codex.lastConfidenceTurn[name] !== actionEpoch) {
+    codex.candidateScores[name] = Math.min(30, (codex.candidateScores[name] || 0) + strength);
+    codex.lastConfidenceTurn[name] = actionEpoch;
+  }
+
+  if (!codex.typeVotes[name] || typeof codex.typeVotes[name] !== "object") {
+    codex.typeVotes[name] = { character: 0, location: 0, item: 0, faction: 0 };
+  }
+  if (codex.lastTypeVoteTurn[name] !== actionEpoch && strength >= 2) {
+    codex.typeVotes[name][type] = (codex.typeVotes[name][type] || 0) + strength;
+    codex.lastTypeVoteTurn[name] = actionEpoch;
+  }
+}
+
+function dominantCodexType(name) {
+  const votes = state.unsaid.codex.typeVotes && state.unsaid.codex.typeVotes[name];
+  if (!votes || typeof votes !== "object") return state.unsaid.codex.observedTypes[name] || "character";
+  const types = ["character", "location", "item", "faction"];
+  return types.slice().sort((a,b) => (votes[b] || 0) - (votes[a] || 0))[0];
+}
+
+function codexTypeVoteScore(name, type) {
+  const votes = state.unsaid.codex.typeVotes && state.unsaid.codex.typeVotes[name];
+  return votes && typeof votes === "object" ? (votes[type] || 0) : 0;
+}
+
 function isLikelyCharacterIntroduction(name, text) {
   const source = typeof text === "string" ? text : "";
   if (!source || !name) return false;
@@ -3745,7 +4036,7 @@ function isLikelyCharacterIntroduction(name, text) {
     new RegExp(`\\b(?:you|he|she|they|we)\\s+(?:see|spot|notice|meet|find|face|approach|watch|hear)\\s+(?:the\\s+|a\\s+|an\\s+)?${n}\\b`, "i"),
     new RegExp(`\\b${n}(?:'s|’s)\\s+(?:eyes?|voice|hands?|face|expression|smile|gaze|shoulders?|breath|hair|fingers?|arms?|feet|heart|cheeks?|lips?|posture|jaw|stance|grip|step|footsteps?)\\b`, "i"),
     new RegExp(`\\b${n}\\b[^\\n.!?]{0,64}\\b(?:steps?|stepped|walks?|walked|approaches?|approached|enters?|entered|arrives?|arrived|comes?|came|sits?|sat|stands?|stood|leans?|leaned|reaches?|reached|turns?|turned|looks?|looked|glances?|glanced|stares?|stared|smiles?|smiled|frowns?|frowned|nods?|nodded|shrugs?|shrugged|runs?|ran|follows?|followed|kneels?|knelt|rises?|rose|flinches?|flinched|grabs?|grabbed|takes?|took|places?|placed|pushes?|pushed|pulls?|pulled|moves?|moved|laughs?|laughed|sighs?|sighed|winces?|winced|swallows?|swallowed|gestures?|gestured|speaks?|spoke)\\b`, "i"),
-    new RegExp(`\\b(?:a|an|the)\\s+(?:young\\s+|old\\s+|elderly\\s+)?(?:girl|boy|woman|man|person|lady|gentleman|teenager|teen|child|youth|guard|soldier|knight|mage|wizard|witch|priest|priestess|captain|doctor|merchant|stranger|traveler|traveller|officer|detective|pilot|engineer|nurse|bartender|teacher|professor|student|lawyer|attorney|judge|athlete|coach|musician|singer|actor|artist|scientist|researcher|agent|android|robot|synthetic|AI|alien|creature|spirit|ghost|vampire|werewolf|superhero|hero|villain|elf|dwarf|orc|fae|demon|angel|dragon|deity|god|goddess|dog|cat|horse|animal|companion)\\s+(?:named|called)\\s+${n}\\b`, "i"),
+    new RegExp(`\\b(?:a|an|the)\\s+(?:young\\s+|old\\s+|elderly\\s+)?(?:girl|boy|woman|man|person|lady|gentleman|teenager|teen|child|youth|guard|soldier|knight|mage|wizard|witch|priest|priestess|captain|doctor|merchant|stranger|traveler|traveller|officer|detective|pilot|engineer|nurse|bartender|server|waiter|waitress|barista|cashier|clerk|receptionist|chef|cook|mechanic|driver|courier|medic|therapist|counselor|counsellor|neighbor|neighbour|roommate|coworker|colleague|manager|boss|assistant|owner|parent|mother|father|sister|brother|wife|husband|partner|friend|teacher|professor|student|lawyer|attorney|judge|athlete|coach|musician|singer|actor|artist|scientist|researcher|agent|android|robot|synthetic|AI|alien|creature|spirit|ghost|vampire|werewolf|superhero|hero|villain|elf|dwarf|orc|fae|demon|angel|dragon|deity|god|goddess|dog|cat|horse|animal|companion)\\s+(?:named|called)\\s+${n}\\b`, "i"),
     new RegExp(`\\b${n}\\b\\s+(?:says?|asks?|replies?|answers?|whispers?|murmurs?|shouts?|calls?|adds?|admits?|explains?|insists?|snaps?|growls?|mutters?|laughs?|sighs?)\\s*[,.:!?-]?\\s*["“]`, "i"),
     new RegExp(`["”][^\\n]{0,40}\\b${n}\\b\\s+(?:says?|asks?|replies?|answers?|whispers?|murmurs?|shouts?|adds?|admits?|explains?|insists?|snaps?|growls?|mutters?)\\b`, "i")
   ];
@@ -3820,9 +4111,12 @@ function trackMentions(text, observeIntroductions) {
     // resurrect old junk candidates that lack such evidence.
     if (!name) {
       const rawName = stripPossessive(String(raw || "").trim());
-      const established = Object.keys(state.unsaid.codex.likelyCharacters || {})
+      const establishedCharacter = Object.keys(state.unsaid.codex.likelyCharacters || {})
         .find(k => isEstablishedExplicitCodexCharacter(k) && isSameCardEntity(k, rawName));
-      if (established) name = established;
+      const establishedEntity = Object.keys(state.unsaid.codex.trustedEntities || {})
+        .find(k => isSameCardEntity(k, rawName));
+      if (establishedCharacter) name = establishedCharacter;
+      else if (establishedEntity) name = establishedEntity;
     }
     if (!name) return;
 
@@ -3844,9 +4138,18 @@ function trackMentions(text, observeIntroductions) {
     }
 
     const presence = canConfirmIntroductions && isLikelyCharacterIntroduction(key, source);
-    const observedType = presence ? "character" : classifyCodexEntry(key, source);
-    if (!state.unsaid.codex.observedTypes[key] || observedType !== "character") {
-      state.unsaid.codex.observedTypes[key] = observedType;
+    const trustedType = state.unsaid.codex.trustedEntities[key] || null;
+    const observedType = presence ? "character" : (trustedType || classifyCodexEntry(key, source));
+    const evidenceStrength = codexEvidenceStrength(key, source, observedType, presence);
+    if (!presence && hasExplicitCodexNamingCue(key, source) && observedType !== "character") {
+      state.unsaid.codex.trustedEntities[key] = observedType;
+    }
+    recordCodexConfidence(key, observedType, evidenceStrength, actionEpoch);
+
+    if (presence || state.unsaid.codex.likelyCharacters[key]) {
+      state.unsaid.codex.observedTypes[key] = "character";
+    } else {
+      state.unsaid.codex.observedTypes[key] = dominantCodexType(key);
     }
 
     if (presence) {
@@ -3860,11 +4163,10 @@ function trackMentions(text, observeIntroductions) {
       // Once a person has genuinely appeared, later references are still
       // useful evidence even if this specific sentence is off-screen.
       recordCodexEvidence(key, source, false);
-    } else if (canConfirmIntroductions && observedType !== "character") {
-      // Non-character entities need their own evidence too. Without this,
-      // an automatically detected item/location/faction could reach the
-      // mention threshold with no targeted context saved for the card prompt,
-      // making nearby objects or foods much easier for the model to confuse.
+    } else if (canConfirmIntroductions && state.unsaid.codex.observedTypes[key] !== "character" && evidenceStrength >= 2) {
+      // Keep non-character evidence only when the sentence provides more
+      // than capitalization alone. This prevents repeated common prose from
+      // becoming a durable item/location/faction candidate.
       recordCodexEvidence(key, source, false);
     }
   });
@@ -4084,6 +4386,17 @@ function findCodexCandidates(threshold, excludeNames, maxAttempts, maxCount) {
     }
 
     if (!introducedCharacter && counts[name] < threshold) continue;
+
+    if (!introducedCharacter) {
+      const stableType = dominantCodexType(name);
+      const confidence = (state.unsaid.codex.candidateScores && state.unsaid.codex.candidateScores[name]) || 0;
+      const typeScore = codexTypeVoteScore(name, stableType);
+      const explicit = hasExplicitCodexNamingCue(name, codexEvidenceTextFor(name));
+      if (!explicit && (confidence < CODEX_NONCHAR_MIN_CONFIDENCE || typeScore < CODEX_NONCHAR_MIN_TYPE_VOTES)) continue;
+      if (stableType === "character") continue;
+      state.unsaid.codex.observedTypes[name] = stableType;
+    }
+
     if (exclude.some(ex => isSameCardEntity(ex, name))) continue;
     if (storyCards.some(c => isSameCardEntity(c.title, name))) continue;
 
@@ -4229,6 +4542,7 @@ function buildStatusReport(cfg) {
     const twistCfg = state.contingencyConfig || Library.CP_DEFAULTS;
     const profile = Library.currentScenarioProfile("", twistCfg);
     lines.push(`Scenario adaptation: ${twistCfg.scenarioAdaptation ? "enabled" : "off"}  |  ${profile.tags.join(", ")}  |  era: ${profile.era}  |  reality: ${profile.reality}  |  stakes: ${profile.scale}${twistCfg.scenarioOverride ? `  |  override: ${twistCfg.scenarioOverride}` : ""}`);
+    lines.push(`UNSAID ↔ Twists link: ${twistCfg.crossSystemSynergy ? "enabled" : "off"}`);
   } catch (e) {}
 
   const cacheCard = storyCards.find(c => c.title === "UNSAID — Important, Read This ⚠️");
@@ -4276,13 +4590,18 @@ function buildStatusReport(cfg) {
     !alreadyCarded.includes(n) &&
     (observedTypes[n] || "character") === "character"
   );
-  const nonCharacterEligible = tracked.filter(n =>
-    !likelyCharacters[n] &&
-    !alreadyCarded.includes(n) &&
-    observedTypes[n] && observedTypes[n] !== "character" &&
-    counts[n] >= cfg.mentionThreshold &&
-    (attempts[n] || 0) < cfg.codexMaxAttempts
-  );
+  const nonCharacterEligible = tracked.filter(n => {
+    const stableType = dominantCodexType(n);
+    const confidence = (codex.candidateScores && codex.candidateScores[n]) || 0;
+    const typeScore = codexTypeVoteScore(n, stableType);
+    const explicit = hasExplicitCodexNamingCue(n, codexEvidenceTextFor(n));
+    return !likelyCharacters[n] &&
+      !alreadyCarded.includes(n) &&
+      stableType && stableType !== "character" &&
+      counts[n] >= cfg.mentionThreshold &&
+      (explicit || (confidence >= CODEX_NONCHAR_MIN_CONFIDENCE && typeScore >= CODEX_NONCHAR_MIN_TYPE_VOTES)) &&
+      (attempts[n] || 0) < cfg.codexMaxAttempts;
+  });
   const exhausted = tracked.filter(n =>
     observedTypes[n] && observedTypes[n] !== "character" &&
     (attempts[n] || 0) >= cfg.codexMaxAttempts
@@ -4306,7 +4625,11 @@ function buildStatusReport(cfg) {
     lines.push(`  referenced but not introduced on-screen: ${hearsayCharacters.slice(0, 10).map(n => `${n} (${counts[n]} mention(s))`).join(", ")}${hearsayCharacters.length > 10 ? ", ..." : ""}`);
   }
   if (nonCharacterEligible.length > 0) {
-    lines.push(`  eligible non-character entities: ${nonCharacterEligible.slice(0, 10).map(n => `${n} (${observedTypes[n]}, ${counts[n]} mention(s))`).join(", ")}${nonCharacterEligible.length > 10 ? ", ..." : ""}`);
+    lines.push(`  eligible non-character entities: ${nonCharacterEligible.slice(0, 10).map(n => {
+      const stableType = dominantCodexType(n);
+      const score = (codex.candidateScores && codex.candidateScores[n]) || 0;
+      return `${n} (${stableType}, ${counts[n]} mention(s), evidence ${score})`;
+    }).join(", ")}${nonCharacterEligible.length > 10 ? ", ..." : ""}`);
   }
   if (introduced.length > 0) {
     lines.push(`  character gate: ${minObserve} full turn(s) + ${minAppearances} on-screen appearance(s); hard deadline ${deadline} turn(s)`);
@@ -4435,7 +4758,8 @@ function syncMindToCard(name, allowCoreShift, useJson) {
       lastThought: mind.lastThoughtText || null,
       want: mind.want || null,
       relations,
-      revealCount: mind.revealCount || 0
+      revealCount: mind.revealCount || 0,
+      recentTwistImpacts: Array.isArray(mind.recentTwistImpacts) ? mind.recentTwistImpacts.slice(-4) : []
     };
     const base = (card.description || "").split(MIND_NOTES_MARKER)[0].replace(/\s+$/, "");
     card.description = `${base}\n\n${MIND_NOTES_MARKER}\n${JSON.stringify(jsonBody, null, 2)}`.trim();
@@ -4454,6 +4778,12 @@ function syncMindToCard(name, allowCoreShift, useJson) {
   }
   if (mind.lastThoughtText) sections.push(`Last private thought:\n${mind.lastThoughtText}`);
   if (mind.want) sections.push(`Wants: ${mind.want}`);
+  if (Array.isArray(mind.recentTwistImpacts) && mind.recentTwistImpacts.length > 0) {
+    const impact = mind.recentTwistImpacts[mind.recentTwistImpacts.length - 1];
+    if (impact && impact.category) {
+      sections.push(`Recent confirmed plot impact: ${impact.category} (${impact.tier || "significant"})${impact.partner ? `, connected to ${impact.partner}` : ""}`);
+    }
+  }
   if (mind.relationOrder && mind.relationOrder.length > 0) {
     const relLines = mind.relationOrder.map(other => {
       const hist = mind.relationHistory && mind.relationHistory[other];
@@ -4500,6 +4830,11 @@ function forgetMentionTracking(name) {
   delete state.unsaid.codex.evidence[name];
   delete state.unsaid.codex.lastMentionTurn[name];
   delete state.unsaid.codex.lastAttemptTurn[name];
+  delete state.unsaid.codex.candidateScores[name];
+  delete state.unsaid.codex.typeVotes[name];
+  delete state.unsaid.codex.trustedEntities[name];
+  delete state.unsaid.codex.lastConfidenceTurn[name];
+  delete state.unsaid.codex.lastTypeVoteTurn[name];
 }
 
 function createMind() {
@@ -4516,6 +4851,7 @@ function createMind() {
     relations: {},
     relationOrder: [],
     relationHistory: {},
+    recentTwistImpacts: [],
     lastTurn: state.unsaid.turn
   };
 }
@@ -4537,6 +4873,9 @@ function loadMindFromCard(card) {
       if (typeof parsed.lastThought === "string") mind.lastThoughtText = parsed.lastThought;
       if (typeof parsed.want === "string") mind.want = parsed.want;
       if (typeof parsed.revealCount === "number" && parsed.revealCount >= 0) mind.revealCount = parsed.revealCount;
+      if (Array.isArray(parsed.recentTwistImpacts)) {
+        mind.recentTwistImpacts = parsed.recentTwistImpacts.filter(x => x && typeof x === "object").slice(-4);
+      }
       // Both of these are written (coreStableSince, formerlyBelieved) but
       // were never read back on reload, in either format — coreStableSince
       // actually stores an *elapsed turn count* (state.unsaid.turn minus
@@ -4603,6 +4942,18 @@ function loadMindFromCard(card) {
   if (feelingMatch) { mind.feeling = feelingMatch[1].trim(); found = true; }
   const wantMatch = body.match(/Wants:\s*([^\n]+)/);
   if (wantMatch) { mind.want = wantMatch[1].trim(); found = true; }
+  const impactMatch = body.match(/Recent confirmed plot impact:\s*([^\n]+)/);
+  if (impactMatch) {
+    const rawImpact = impactMatch[1].trim();
+    const im = rawImpact.match(/^([^()]+?)\s*\(([^)]+)\)(?:,\s*connected to\s*(.+))?$/);
+    mind.recentTwistImpacts = [{
+      turn: state.unsaid.turn,
+      category: im ? im[1].trim() : rawImpact,
+      tier: im ? im[2].trim() : "significant",
+      partner: im && im[3] ? im[3].trim() : null
+    }];
+    found = true;
+  }
   const lastThoughtMatch = body.match(/Last private thought:\n([\s\S]*?)(?:\n\n|$)/);
   if (lastThoughtMatch && lastThoughtMatch[1].trim()) { mind.lastThoughtText = lastThoughtMatch[1].trim(); found = true; }
   const countMatch = body.match(/(\d+) private moments? recorded/);
@@ -4702,12 +5053,14 @@ function buildCoreCheckInstruction(chosen, mind) {
       : " Their feelings have been fairly steady lately, for what that's worth.")
     : "";
   const scenarioNote = compactMindScenarioGuard();
-  return `\n[Consider whether recent events have genuinely, permanently changed how ${chosen} sees themselves — not just a passing mood.${coreNote}${tensionNote}${scenarioNote} If yes, reveal it (keep the 《 》 characters exactly as shown, they're required, not decorative — no asterisks or other markdown, the 《 》 pair is the only formatting needed) as "《${chosen}, [one-word-emotion], core-shift: new lasting truth.》" (replace [one-word-emotion] with an actual word, not the literal placeholder) (1–2 concise sentences inside the required 《 》 marker). If nothing that significant has happened, don't force it — continue the story normally with no reveal at all.]\n`;
+  const twistBridgeNote = Library.twistPressureForMind ? Library.twistPressureForMind(chosen) : "";
+  return `\n[Consider whether recent events have genuinely, permanently changed how ${chosen} sees themselves — not just a passing mood.${coreNote}${tensionNote}${scenarioNote}${twistBridgeNote} If yes, reveal it (keep the 《 》 characters exactly as shown, they're required, not decorative — no asterisks or other markdown, the 《 》 pair is the only formatting needed) as "《${chosen}, [one-word-emotion], core-shift: new lasting truth.》" (replace [one-word-emotion] with an actual word, not the literal placeholder) (1–2 concise sentences inside the required 《 》 marker). If nothing that significant has happened, don't force it — continue the story normally with no reveal at all.]\n`;
 }
 
 function buildAndFitThoughtInstruction(chosen, active, baseText, allowCoreShift) {
   const mind = state.unsaid.minds[chosen];
   const scenarioNote = compactMindScenarioGuard();
+  const twistBridgeNote = Library.twistPressureForMind ? Library.twistPressureForMind(chosen) : "";
 
   const others = (active || []).filter(n => n !== chosen);
   const withHistory = others.filter(n => mind && mind.relations && mind.relations[n]);
@@ -4744,7 +5097,7 @@ function buildAndFitThoughtInstruction(chosen, active, baseText, allowCoreShift)
       : (mind && mind.relations && mind.relations[target]
         ? ` Feels ${mind.relations[target]} toward ${target} unless this scene shifts it.`
         : "");
-    instruction = `\n[${chosen}'s unspoken reaction to ${target} — 1–2 concise sentences inside the required 《 》 marker: how they really feel about ${target} right now, and what they secretly want from this moment. ${target} can't perceive it.${coreNote}${relationNote}${historyNote}${wantNote}${varietyNote} Replace [one-word-emotion] with an actual single word (e.g. wary, hopeful) — do not write the words "feeling" or "emotion" literally.${scenarioNote} Format (keep the 《 》 characters exactly as shown, they're required, not decorative — no asterisks or other markdown, the 《 》 pair is the only formatting needed): "《${chosen}, [one-word-emotion], about ${target}: thought.》"]\n`;
+    instruction = `\n[${chosen}'s unspoken reaction to ${target} — 1–2 concise sentences inside the required 《 》 marker: how they really feel about ${target} right now, and what they secretly want from this moment. ${target} can't perceive it.${coreNote}${relationNote}${historyNote}${wantNote}${varietyNote} Replace [one-word-emotion] with an actual single word (e.g. wary, hopeful) — do not write the words "feeling" or "emotion" literally.${scenarioNote}${twistBridgeNote} Format (keep the 《 》 characters exactly as shown, they're required, not decorative — no asterisks or other markdown, the 《 》 pair is the only formatting needed): "《${chosen}, [one-word-emotion], about ${target}: thought.》"]\n`;
   } else if (mind && mind.core) {
     const atThreshold = allowCoreShift && typeof mind.tensionLevel === "number" &&
       mind.tensionLevel >= TENSION_THRESHOLD;
@@ -4757,9 +5110,9 @@ function buildAndFitThoughtInstruction(chosen, active, baseText, allowCoreShift)
         ? ` Their feelings have been unraveling for a long time now, unresolved — something this significant would happen regardless. If it's truly earned, you may format this instead as "《${chosen}, [one-word-emotion], core-shift: new lasting truth.》" to replace their old anchor.`
         : ` Their feelings have been genuinely shifting for a while now, not settling back — if this moment plays into that and something has truly changed how they see themselves, you may format this instead as "《${chosen}, [one-word-emotion], core-shift: new lasting truth.》" to replace their old anchor. Only do this if it's really earned.`)
       : "";
-    instruction = `\n[${chosen}'s private thought — 1–2 concise sentences inside the required 《 》 marker: how they really feel right now, and what they secretly want. Consistent with "${mind.core}" and their feeling of ${mind.feeling} unless this scene shifts it.${historyNote}${wantNote}${varietyNote}${shiftNote} Replace [one-word-emotion] with an actual single word (e.g. wary, hopeful) — do not write the words "feeling" or "emotion" literally.${scenarioNote} Format (keep the 《 》 characters exactly as shown, they're required, not decorative — no asterisks or other markdown, the 《 》 pair is the only formatting needed): "《${chosen}, [one-word-emotion]: thought.》" No one else perceives it.]\n`;
+    instruction = `\n[${chosen}'s private thought — 1–2 concise sentences inside the required 《 》 marker: how they really feel right now, and what they secretly want. Consistent with "${mind.core}" and their feeling of ${mind.feeling} unless this scene shifts it.${historyNote}${wantNote}${varietyNote}${shiftNote} Replace [one-word-emotion] with an actual single word (e.g. wary, hopeful) — do not write the words "feeling" or "emotion" literally.${scenarioNote}${twistBridgeNote} Format (keep the 《 》 characters exactly as shown, they're required, not decorative — no asterisks or other markdown, the 《 》 pair is the only formatting needed): "《${chosen}, [one-word-emotion]: thought.》" No one else perceives it.]\n`;
   } else {
-    instruction = `\n[This is ${chosen}'s very first private thought — once revealed, it becomes a lasting psychological anchor about who they fundamentally are, not a fleeting reaction and not an excuse to invent unsupported biography. Base it on what the story has actually shown about them so far. Use 1–2 concise sentences inside the required 《 》 marker: what this deep truth is, and what they secretly want because of it. Replace [one-word-emotion] with an actual single word (e.g. wary, hopeful) — do not write the words "feeling" or "emotion" literally.${scenarioNote} Format (keep the 《 》 characters exactly as shown, they're required, not decorative — no asterisks or other markdown, the 《 》 pair is the only formatting needed): "《${chosen}, [one-word-emotion]: thought.》" No one else perceives it.]\n`;
+    instruction = `\n[This is ${chosen}'s very first private thought — once revealed, it becomes a lasting psychological anchor about who they fundamentally are, not a fleeting reaction and not an excuse to invent unsupported biography. Base it on what the story has actually shown about them so far. Use 1–2 concise sentences inside the required 《 》 marker: what this deep truth is, and what they secretly want because of it. Replace [one-word-emotion] with an actual single word (e.g. wary, hopeful) — do not write the words "feeling" or "emotion" literally.${scenarioNote}${twistBridgeNote} Format (keep the 《 》 characters exactly as shown, they're required, not decorative — no asterisks or other markdown, the 《 》 pair is the only formatting needed): "《${chosen}, [one-word-emotion]: thought.》" No one else perceives it.]\n`;
   }
 
   return fitInstructionToBudget(baseText, instruction);

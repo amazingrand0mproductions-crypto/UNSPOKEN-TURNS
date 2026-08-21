@@ -42,6 +42,25 @@ var twistsModifier = (text) => {
         compoundWith: partnerName || null
       });
       Library.createTwistStoryCard(c, cfg, thread, partnerName || null);
+
+      // Feed confirmed plot consequences back into UNSAID. This happens only
+      // after the model supplied the twist confirmation marker, so private
+      // psychology never reacts to an event that did not actually occur.
+      try {
+        if (Library.applyTwistImpactToMind) {
+          const impacted = Library.applyTwistImpactToMind(thread.entity, thread.category, thread.tier, partnerName || null);
+          if (impacted && typeof syncMindToCard === "function") {
+            const ucfg = readUnsaidConfig();
+            syncMindToCard(thread.entity, ucfg.allowCoreShift, ucfg.jsonNotes);
+          }
+        }
+        if (state.unsaid && state.unsaid.codex &&
+            state.unsaid.codex.mentionCounts &&
+            state.unsaid.codex.mentionCounts[thread.entity] &&
+            typeof recordCodexEvidence === "function") {
+          recordCodexEvidence(thread.entity, text, false);
+        }
+      } catch (e) {}
     }
 
     if (c.pendingPayoffId) {
@@ -405,6 +424,16 @@ var unsaidModifier = (text) => {
           card.entry = builtEntry;
         }
 
+        // A completed Story Card is now canon evidence. Let TWISTS AND TURNS
+        // inspect it immediately instead of waiting for a later rescan, but
+        // only through evidence-backed category matching.
+        try {
+          const { c: tc, cfg: tcfg } = Library.initState();
+          if (Library.bridgeCodexEvidenceToTwists) {
+            Library.bridgeCodexEvidenceToTwists(tc, tcfg, name, type, builtEntry);
+          }
+        } catch (e) {}
+
         logCodexCard(name, type, state.unsaid.codex.mentionCounts[name] || 0);
         forgetMentionTracking(name);
 
@@ -701,6 +730,18 @@ var unsaidModifier = (text) => {
         if (about) {
           recordRelation(name, about, feeling);
         }
+
+        // Let established private psychology reinforce an already-existing
+        // compatible story thread. The bridge never creates a betrayal or
+        // secret from a mere fear/suspicion; ordinary core-shift creation is
+        // still handled separately by reinforceFromCoreShift above.
+        try {
+          const { c: tc, cfg: tcfg } = Library.initState();
+          if (Library.absorbUnsaidSignal) {
+            Library.absorbUnsaidSignal(tc, tcfg, name, mind, thought, about);
+          }
+        } catch (e) {}
+
         const synced = syncMindToCard(name, cfg.allowCoreShift, cfg.jsonNotes);
 
         if (!synced) {

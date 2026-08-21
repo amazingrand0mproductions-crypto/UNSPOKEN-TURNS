@@ -120,6 +120,19 @@ var twistsModifier = (text) => {
         }
         Library.updateConfigCard(cfg, c);
         text = "(A quiet moment passes.)";
+      } else if (head === "synergy" || head === "link") {
+        const val = (parts[1] || "").toLowerCase();
+        if (["on", "true", "yes", "enable", "enabled"].includes(val)) {
+          cfg.crossSystemSynergy = true;
+          pushMessage("🔗 UNSAID ↔ TWISTS AND TURNS link enabled. Established psychology can reinforce compatible active threads, and confirmed twists can feed emotional aftermath back into characters.");
+        } else if (["off", "false", "no", "disable", "disabled"].includes(val)) {
+          cfg.crossSystemSynergy = false;
+          pushMessage("🔗 UNSAID ↔ TWISTS AND TURNS link disabled. Both systems still run independently.");
+        } else {
+          pushMessage(`🔗 Cross-system link is currently ${cfg.crossSystemSynergy ? "ON" : "OFF"}. Use "/synergy on" or "/synergy off".`);
+        }
+        Library.updateConfigCard(cfg, c);
+        text = "(A quiet moment passes.)";
       } else if (head === "twisttypes" || head === "twistcategories") {
         Library.updateCategoryCatalog(cfg);
         pushMessage("🗂️ Twist category catalog written — check the \"Twists and Turns — Twist Catalog\" card.");
