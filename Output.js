@@ -60,6 +60,20 @@ var twistsModifier = (text) => {
             typeof recordCodexEvidence === "function") {
           recordCodexEvidence(thread.entity, text, false);
         }
+
+        // A confirmed twist is high-value new canon for an existing Codex
+        // card. Feed the visible payoff prose into that card's refresh bank
+        // so relationships/status/weaknesses/significance can catch up later.
+        // The hidden twist category itself is not exposed as card evidence.
+        if (typeof recordCodexCardUpdateEvidence === "function") {
+          const impactedCard = findStoryCardForEntity(thread.entity);
+          if (impactedCard) {
+            const epoch = (typeof info !== "undefined" && info && Number.isInteger(info.actionCount))
+              ? info.actionCount
+              : (state.unsaid ? state.unsaid.turn : 0);
+            recordCodexCardUpdateEvidence(thread.entity, impactedCard, text, epoch, 4);
+          }
+        }
       } catch (e) {}
     }
 
@@ -144,6 +158,11 @@ var unsaidModifier = (text) => {
     const cardCloseSource = "(?:【\\/CARD】|〖\\/CARD〗|\\[\\/CARD\\]|<\\/CARD>)";
     const blockPattern = new RegExp(cardOpenSource + "([\\s\\S]*?)" + cardCloseSource, "gi");
     const pendingForcedCodex = !!state.unsaid.codex.pendingForced;
+    const pendingRefreshNames = new Set(
+      Array.isArray(state.unsaid.codex.pendingRefreshNames)
+        ? state.unsaid.codex.pendingRefreshNames
+        : []
+    );
     const rawExpectedNames = Array.isArray(state.unsaid.codex.pendingNames)
       ? state.unsaid.codex.pendingNames.slice()
       : [];
@@ -153,7 +172,9 @@ var unsaidModifier = (text) => {
     // a junk Story Card after the new scanner has been installed.
     const expectedNames = pendingForcedCodex
       ? rawExpectedNames
-      : rawExpectedNames.filter(name => !isClearlyJunkCodexName(name));
+      : rawExpectedNames.filter(name =>
+          pendingRefreshNames.has(name) || !isClearlyJunkCodexName(name)
+        );
     const expectedTypes = state.unsaid.codex.pendingTypes || {};
     const maxFieldLength = 420;
     // Never strip arbitrary CARD-looking prose unless this turn actually
@@ -199,8 +220,51 @@ var unsaidModifier = (text) => {
       return found;
     }
 
+    function buildBoundedCardEntry(order, fields) {
+      const fieldOrder = order.filter(f => fields[f]);
+      if (fieldOrder.length === 0) return "";
+
+      const renderWithCap = (cap) => fieldOrder.map(field => {
+        let value = String(fields[field] || "").trim();
+        // Name is the identity lock and should remain exact. Other values are
+        // compacted evenly only when the complete card would exceed the
+        // platform's entry-size budget.
+        if (field !== "Name" && cap && value.length > cap) {
+          value = value.slice(0, Math.max(1, cap - 1)).trimEnd() + "…";
+        }
+        return `${field}: ${value}`;
+      }).join("\n");
+
+      const full = renderWithCap(null);
+      if (full.length <= MAX_CARD_ENTRY_LENGTH) return full;
+
+      // Binary-search the largest per-field value cap that keeps every field
+      // represented instead of bluntly chopping the final Relationships /
+      // Significance line off the card.
+      let low = 24;
+      let high = maxFieldLength;
+      let best = renderWithCap(low);
+      while (low <= high) {
+        const mid = Math.floor((low + high) / 2);
+        const candidate = renderWithCap(mid);
+        if (candidate.length <= MAX_CARD_ENTRY_LENGTH) {
+          best = candidate;
+          low = mid + 1;
+        } else {
+          high = mid - 1;
+        }
+      }
+
+      // This should be unreachable with the current templates, but keep a
+      // final hard guard for platform safety if fields are added later.
+      return best.length <= MAX_CARD_ENTRY_LENGTH
+        ? best
+        : best.slice(0, MAX_CARD_ENTRY_LENGTH - 1).trimEnd() + "…";
+    }
+
     function tryBuildCard(blockContent, name, upfrontType) {
       try {
+        const isRefresh = pendingRefreshNames.has(name);
         let type = upfrontType || expectedTypes[name] || "character";
         const fields = {};
         const allCanonicalFields = [
@@ -310,6 +374,8 @@ var unsaidModifier = (text) => {
           .replace(/^(?:the|a|an)\s+/, "");
         const evidenceForType = [
           (typeof codexEvidenceTextFor === "function" ? codexEvidenceTextFor(name) : ""),
+          (isRefresh && typeof codexUpdateEvidenceTextFor === "function" ? codexUpdateEvidenceTextFor(name, false) : ""),
+          (isRefresh && findStoryCardForEntity(name) ? findStoryCardForEntity(name).entry : ""),
           blockContent
         ].filter(Boolean).join(" ");
         const reconciledExpectedKind =
@@ -402,9 +468,10 @@ var unsaidModifier = (text) => {
           faction: factionShapeScore + nameFactionHint + (typeLooksLikeFaction ? 4 : 0)
         };
 
-        const externalEvidence = typeof codexEvidenceTextFor === "function"
-          ? codexEvidenceTextFor(name)
-          : "";
+        const externalEvidence = [
+          (typeof codexEvidenceTextFor === "function" ? codexEvidenceTextFor(name) : ""),
+          (isRefresh && typeof codexUpdateEvidenceTextFor === "function" ? codexUpdateEvidenceTextFor(name, false) : "")
+        ].filter(Boolean).join(" ");
         const explicitPersonLock = typeof explicitCodexCharacterCue === "function" &&
           explicitCodexCharacterCue(name, externalEvidence);
         const strongExternalNonCharacter = typeof strongCodexNonCharacterEvidence === "function"
@@ -441,31 +508,38 @@ var unsaidModifier = (text) => {
           card.title = name;
           card.keys = name.toLowerCase();
         }
-        // Only set the type for a genuinely new card, or one that never had
-        // a real type — an existing card's type (whether the platform's
-        // standard four or a player's own custom one like "Business" or
-        // "Restaurant") is a deliberate choice. A later /card refresh or
-        // organic Codex re-visit shouldn't silently overwrite it with the
-        // script's closest built-in guess just because that guess differs.
-        if (isNewCard || !card.type || !card.type.trim()) {
+
+        // Automatic refresh protects player edits. A card generated by older
+        // builds is first adopted with its current entry as the baseline; any
+        // later manual entry edit pauses future automatic refreshes. Manual
+        // /card is an explicit overwrite request and intentionally bypasses
+        // this protection.
+        if (isRefresh && !isNewCard &&
+            typeof codexCardHasManualEdit === "function" &&
+            codexCardHasManualEdit(name, card, cfg)) {
+          return false;
+        }
+
+        // New cards receive the detected standard type. Existing custom card
+        // types are preserved. For Codex-managed standard cards, a refresh may
+        // repair a proven old misclassification (e.g. Character -> Location).
+        const rawExistingType = String(card.type || "").trim().toLowerCase();
+        const standardExistingType = /^(?:character|location|item|faction)$/.test(rawExistingType);
+        if (isNewCard || !card.type || !card.type.trim() ||
+            ((isRefresh || pendingForcedCodex) && standardExistingType)) {
           card.type = platformType(type);
         }
+
+        const order = CARD_TEMPLATES[type] || CHARACTER_CARD_FIELDS;
+        const builtEntry = buildBoundedCardEntry(order, fields);
+
+        if (isNewCard || !card.entry || !card.entry.trim() || isRefresh || pendingForcedCodex) {
+          card.entry = builtEntry;
+        }
+
         cardWasNew[name] = isNewCard;
         builtTypes[name] = type;
         succeededNames.add(name);
-
-        const order = CARD_TEMPLATES[type] || CHARACTER_CARD_FIELDS;
-        let builtEntry = order
-          .filter(f => fields[f])
-          .map(f => `${f}: ${fields[f]}`)
-          .join("\n");
-        if (builtEntry.length > MAX_CARD_ENTRY_LENGTH) {
-          builtEntry = builtEntry.slice(0, MAX_CARD_ENTRY_LENGTH - 3) + "...";
-        }
-
-        if (isNewCard || !card.entry || !card.entry.trim()) {
-          card.entry = builtEntry;
-        }
 
         // Let TWISTS AND TURNS react immediately, but only to evidence that
         // existed *before* the model filled the card. Inferred Codex fields
@@ -481,7 +555,15 @@ var unsaidModifier = (text) => {
           }
         } catch (e) {}
 
-        logCodexCard(name, type, state.unsaid.codex.mentionCounts[name] || 0);
+        if (typeof markCodexCardGenerated === "function") {
+          markCodexCardGenerated(name, type, builtEntry, isRefresh || (!isNewCard && pendingForcedCodex));
+        }
+        logCodexCard(
+          name,
+          type,
+          state.unsaid.codex.mentionCounts[name] || 0,
+          isRefresh || (!isNewCard && pendingForcedCodex)
+        );
         forgetMentionTracking(name);
 
         if (type === "character") {
@@ -567,29 +649,36 @@ var unsaidModifier = (text) => {
     const messageParts = [];
     if (succeededNames.size > 0) {
       const names = [...succeededNames];
-      const allNew = names.every(n => cardWasNew[n]);
-      const allExisting = names.every(n => !cardWasNew[n]);
+      const refreshed = names.filter(n => pendingRefreshNames.has(n) || (!cardWasNew[n] && pendingForcedCodex));
+      const created = names.filter(n => cardWasNew[n]);
+
       if (names.length === 1) {
-        messageParts.push(cardWasNew[names[0]]
-          ? `📇 Codex created a ${builtTypes[names[0]] || expectedTypes[names[0]] || "Story"} card for ${names[0]}.`
-          : `📇 Codex matched ${names[0]}'s existing Story Card; its written entry was left untouched.`);
-      } else if (allNew) {
-        messageParts.push(`📇 Codex created ${names.length} cards: ${names.join(", ")}.`);
-      } else if (allExisting) {
-        messageParts.push(`📇 Codex matched ${names.length} existing Story Cards: ${names.join(", ")} (written entries left untouched).`);
+        const n = names[0];
+        if (cardWasNew[n]) {
+          messageParts.push(`📇 Codex created a ${builtTypes[n] || expectedTypes[n] || "Story"} card for ${n}.`);
+        } else if (pendingRefreshNames.has(n)) {
+          messageParts.push(`📇 Codex refreshed ${n}'s Story Card from newer story evidence.`);
+        } else if (pendingForcedCodex) {
+          messageParts.push(`📇 Codex refreshed ${n}'s Story Card by request.`);
+        } else {
+          messageParts.push(`📇 Codex matched ${n}'s existing Story Card.`);
+        }
       } else {
-        const created = names.filter(n => cardWasNew[n]);
-        const existing = names.filter(n => !cardWasNew[n]);
-        messageParts.push(`📇 Codex created ${created.length} card(s) (${created.join(", ")}) and matched ${existing.length} existing card(s) (${existing.join(", ")}), leaving their written entries untouched.`);
+        if (created.length > 0) messageParts.push(`📇 Codex created ${created.length} card(s): ${created.join(", ")}.`);
+        if (refreshed.length > 0) messageParts.push(`📇 Codex refreshed ${refreshed.length} card(s): ${refreshed.join(", ")}.`);
       }
     }
 
-    const exhausted = expectedNames.filter(name => {
+    // Periodic refresh misses are not "new entity" failures and should not
+    // consume retry budgets or pollute the consecutive-failure diagnostic.
+    const failureTrackedNames = expectedNames.filter(name => !pendingRefreshNames.has(name));
+
+    const exhausted = failureTrackedNames.filter(name => {
       if (succeededNames.has(name)) return false;
       if (state.unsaid.codex.likelyCharacters && state.unsaid.codex.likelyCharacters[name]) return false;
       return (state.unsaid.codex.attempts[name] || 0) >= cfg.codexMaxAttempts;
     });
-    const characterRetryMilestone = expectedNames.filter(name =>
+    const characterRetryMilestone = failureTrackedNames.filter(name =>
       !succeededNames.has(name) &&
       state.unsaid.codex.likelyCharacters &&
       state.unsaid.codex.likelyCharacters[name] &&
@@ -597,8 +686,8 @@ var unsaidModifier = (text) => {
     );
 
     if (!state.unsaid.codex.consecutiveFailedNames) state.unsaid.codex.consecutiveFailedNames = [];
-    if (expectedNames.length > 0 && succeededNames.size === 0) {
-      expectedNames.forEach(n => {
+    if (failureTrackedNames.length > 0 && succeededNames.size === 0) {
+      failureTrackedNames.forEach(n => {
         if (!state.unsaid.codex.consecutiveFailedNames.includes(n)) {
           state.unsaid.codex.consecutiveFailedNames.push(n);
         }
@@ -609,6 +698,17 @@ var unsaidModifier = (text) => {
     } else if (succeededNames.size > 0) {
       state.unsaid.codex.consecutiveFailedNames = [];
     }
+
+    pendingRefreshNames.forEach(name => {
+      if (succeededNames.has(name)) return;
+      const meta = state.unsaid.codex.cardMeta && state.unsaid.codex.cardMeta[name];
+      if (meta) {
+        meta.refreshFailures = (meta.refreshFailures || 0) + 1;
+        // Do not retry every turn; evidence is kept, but the scheduler will
+        // honor the normal Codex cooldown before asking again.
+      }
+    });
+
     const strugglingCount = state.unsaid.codex.consecutiveFailedNames.length;
     if (strugglingCount >= 3 && exhausted.length === 0 && succeededNames.size === 0) {
       messageParts.push(`📇 Codex has attempted ${strugglingCount} different names in a row without a single card succeeding — this pattern usually means something broader than any one name, not bad luck on a few names specifically. Check "/unsaid status" and, if you're on a model prone to it, the cache-efficient warning card.`);
@@ -628,6 +728,7 @@ var unsaidModifier = (text) => {
     state.unsaid.codex.pendingNames = [];
     state.unsaid.codex.pendingTypes = {};
     state.unsaid.codex.pendingForced = false;
+    state.unsaid.codex.pendingRefreshNames = [];
 
     trackMentions(text, true);
 
@@ -841,6 +942,18 @@ var unsaidModifier = (text) => {
     return { text };
   } catch (e) {
     if (typeof log === "function") log("UNSAID Output error: " + (e && e.message));
+    // Never let a parser/runtime exception leave a stale structured task
+    // attached to the next unrelated model response. Creation candidates
+    // remain discoverable and refresh evidence remains stored, so clearing
+    // only the pending envelope is safe and allows a clean retry later.
+    try {
+      if (state.unsaid && state.unsaid.codex) {
+        state.unsaid.codex.pendingNames = [];
+        state.unsaid.codex.pendingTypes = {};
+        state.unsaid.codex.pendingForced = false;
+        state.unsaid.codex.pendingRefreshNames = [];
+      }
+    } catch (_) {}
     return { text: originalText };
   }
 };

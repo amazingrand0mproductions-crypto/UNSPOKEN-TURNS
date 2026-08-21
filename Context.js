@@ -214,7 +214,8 @@ var unsaidModifier = (text) => {
       state.unsaid.pendingCoreShiftAllowed = false;
       state.unsaid.pendingCoreCheck = false;
       state.unsaid.codex.pendingNames = [];
-      state.unsaid.codex.pendingForced = false;
+    state.unsaid.codex.pendingForced = false;
+    state.unsaid.codex.pendingRefreshNames = [];
       syncFrontMemoryHint(false);
       updateUnsaidBackupCard(cacheEfficient, "");
       return { text };
@@ -226,7 +227,8 @@ var unsaidModifier = (text) => {
       state.unsaid.pendingCoreShiftAllowed = false;
       state.unsaid.pendingCoreCheck = false;
       state.unsaid.codex.pendingNames = [];
-      state.unsaid.codex.pendingForced = false;
+    state.unsaid.codex.pendingForced = false;
+    state.unsaid.codex.pendingRefreshNames = [];
       updateUnsaidBackupCard(cacheEfficient, "");
       return { text };
     }
@@ -245,7 +247,8 @@ var unsaidModifier = (text) => {
       state.unsaid.pendingCoreShiftAllowed = false;
       state.unsaid.pendingCoreCheck = false;
       state.unsaid.codex.pendingNames = [];
-      state.unsaid.codex.pendingForced = false;
+    state.unsaid.codex.pendingForced = false;
+    state.unsaid.codex.pendingRefreshNames = [];
       updateUnsaidBackupCard(cacheEfficient, "");
       return { text };
     }
@@ -258,7 +261,8 @@ var unsaidModifier = (text) => {
         state.unsaid.pendingCoreShiftAllowed = true;
         state.unsaid.pendingCoreCheck = true;
         state.unsaid.codex.pendingNames = [];
-      state.unsaid.codex.pendingForced = false;
+    state.unsaid.codex.pendingForced = false;
+    state.unsaid.codex.pendingRefreshNames = [];
         updateUnsaidBackupCard(cacheEfficient, fitted);
         return { text: text + fitted };
       }
@@ -270,7 +274,8 @@ var unsaidModifier = (text) => {
         state.unsaid.pendingCoreShiftAllowed = naturalCoreShiftEligible(state.unsaid.minds[forcedPeek], cfg.allowCoreShift);
         state.unsaid.pendingCoreCheck = false;
         state.unsaid.codex.pendingNames = [];
-      state.unsaid.codex.pendingForced = false;
+    state.unsaid.codex.pendingForced = false;
+    state.unsaid.codex.pendingRefreshNames = [];
         updateUnsaidBackupCard(cacheEfficient, fitted);
         return { text: text + fitted };
       }
@@ -289,6 +294,7 @@ var unsaidModifier = (text) => {
         state.unsaid.codex.pendingNames = [forcedCodex];
         state.unsaid.codex.pendingTypes = { [forcedCodex]: type };
         state.unsaid.codex.pendingForced = true;
+        state.unsaid.codex.pendingRefreshNames = [];
         state.unsaid.codex.lastTriggerTurn = state.unsaid.turn;
         state.unsaid.pending = null;
         state.unsaid.pendingCoreShiftAllowed = false;
@@ -383,13 +389,17 @@ var unsaidModifier = (text) => {
       });
 
       const nonCharacters = available.filter(name => !state.unsaid.codex.likelyCharacters[name]);
+      const refreshPreview = (cfg.codexAutoRefresh && sinceLastCodex >= cfg.codexCooldown)
+        ? pickCodexRefreshCandidate(cfg)
+        : null;
+      const refreshVeryOverdue = !!refreshPreview &&
+        refreshPreview.since >= Math.max(1, cfg.codexRefreshInterval || 20) * 2;
 
       // Automatic character generation is intentionally one profile at a
-      // time. Models comply much more reliably with one structured card than
-      // a batch, and it gives each profile more room to use accumulated
-      // evidence. Deadline characters go first; otherwise use a normally
-      // mature character. Non-character entities keep the ordinary global
-      // Codex cooldown and may still be batched.
+      // time. Introduced characters always outrank maintenance. A refresh
+      // that has been waiting for twice its configured interval may outrank
+      // a new non-character card so long-running busy scenarios cannot starve
+      // existing cards forever.
       let candidates = [];
       let hardDeadline = false;
       if (deadlineCharacters.length > 0) {
@@ -397,7 +407,7 @@ var unsaidModifier = (text) => {
         hardDeadline = true;
       } else if (matureCharacters.length > 0) {
         candidates = matureCharacters.slice(0, 1);
-      } else if (sinceLastCodex >= cfg.codexCooldown) {
+      } else if (sinceLastCodex >= cfg.codexCooldown && !refreshVeryOverdue) {
         // One automatic card task per story turn. Multiple hidden profiles in
         // the same model response substantially increase the chance that the
         // model outputs only metadata and forgets the visible story.
@@ -431,6 +441,7 @@ var unsaidModifier = (text) => {
           state.unsaid.codex.pendingNames = candidates;
           state.unsaid.codex.pendingTypes = types;
           state.unsaid.codex.pendingForced = false;
+      state.unsaid.codex.pendingRefreshNames = [];
           state.unsaid.codex.lastTriggerTurn = state.unsaid.turn;
           state.unsaid.pending = null;
           state.unsaid.pendingCoreShiftAllowed = false;
@@ -446,10 +457,48 @@ var unsaidModifier = (text) => {
           candidates.length === 1 ? candidates[0] : candidates.length + " eligible names"
         } right now — Codex will retry automatically later.`);
       }
+
+      // Periodic refreshes are intentionally lower priority than creating a
+      // genuinely new card. They run only when no new-card candidate was due
+      // this turn, respect the normal Codex task cooldown, and refresh at most
+      // one existing Codex-made card at a time.
+      if (candidates.length === 0 && sinceLastCodex >= cfg.codexCooldown && cfg.codexAutoRefresh) {
+        const refresh = refreshPreview || pickCodexRefreshCandidate(cfg);
+        if (refresh && refresh.name) {
+          const card = findStoryCardForEntity(refresh.name);
+          const refreshType = card
+            ? (reconcileCodexEntityType(refresh.name, codexUpdateEvidenceTextFor(refresh.name, false)) ||
+               codexKindFromExistingCard(card, refresh.name))
+            : refresh.type;
+          const fitted = buildAndFitCodexInstruction(
+            [refresh.name],
+            text,
+            false,
+            0,
+            false,
+            true
+          );
+
+          if (fitted) {
+            state.unsaid.codex.pendingNames = [refresh.name];
+            state.unsaid.codex.pendingTypes = { [refresh.name]: refreshType || refresh.type || "character" };
+            state.unsaid.codex.pendingForced = false;
+            state.unsaid.codex.pendingRefreshNames = [refresh.name];
+            state.unsaid.codex.lastTriggerTurn = state.unsaid.turn;
+            state.unsaid.codex.lastRefreshTriggerTurn = state.unsaid.turn;
+            state.unsaid.pending = null;
+            state.unsaid.pendingCoreShiftAllowed = false;
+            state.unsaid.pendingCoreCheck = false;
+            updateUnsaidBackupCard(cacheEfficient, fitted);
+            return { text: text + fitted };
+          }
+        }
+      }
     }
 
     state.unsaid.codex.pendingNames = [];
-      state.unsaid.codex.pendingForced = false;
+    state.unsaid.codex.pendingForced = false;
+    state.unsaid.codex.pendingRefreshNames = [];
 
     if (cfg.cast.length > 0) {
       const eligible = active.filter(name => {
@@ -486,6 +535,17 @@ var unsaidModifier = (text) => {
     return { text };
   } catch (e) {
     if (typeof log === "function") log("UNSAID Context error: " + (e && e.message));
+    try {
+      if (state.unsaid && state.unsaid.codex) {
+        state.unsaid.codex.pendingNames = [];
+        state.unsaid.codex.pendingTypes = {};
+        state.unsaid.codex.pendingForced = false;
+        state.unsaid.codex.pendingRefreshNames = [];
+      }
+      state.unsaid.pending = null;
+      state.unsaid.pendingCoreShiftAllowed = false;
+      state.unsaid.pendingCoreCheck = false;
+    } catch (_) {}
     return { text: originalText };
   }
 };

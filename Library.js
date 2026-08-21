@@ -2618,11 +2618,20 @@ var UNSAID_DEFAULTS = {
   codexCharacterMinTurns: 3,
   codexCharacterMinAppearances: 2,
   codexCharacterDeadline: 5,
+  // Existing Codex-made cards can refresh from later story evidence.
+  // Refreshes are deliberately slow, evidence-gated, and hand-edit safe.
+  codexAutoRefresh: true,
+  codexRefreshInterval: 20,
+  codexRefreshMinEvidence: 3,
+  codexProtectManualEdits: true,
   playerName: ""
 };
 
 var CONTEXT_SAFETY_MARGIN = 20;
-var MAX_CARD_ENTRY_LENGTH = 1800;
+// AI Dungeon's Story Card entry editor is capped at roughly 1000
+// characters. Leave a small safety margin so scripted cards do not depend on
+// UI-side truncation.
+var MAX_CARD_ENTRY_LENGTH = 980;
 // Generous enough that no normal game ever notices it, low enough to
 // bound the per-turn cost of scanning the cast list for who's currently
 // "active" — see readUnsaidConfig for the full reasoning.
@@ -2649,6 +2658,10 @@ var CODEX_MAX_CANDIDATES_PER_TURN = 3;
 var CODEX_CHARACTER_RETRY_INTERVAL = 1;
 var CODEX_EVIDENCE_PER_NAME = 6;
 var CODEX_EVIDENCE_SNIPPET_LENGTH = 260;
+var CODEX_CARD_UPDATE_EVIDENCE_LIMIT = 10;
+var CODEX_CARD_META_LIMIT = 300;
+var CODEX_CARD_UPDATE_SCAN_LIMIT = 120;
+var CODEX_CARD_UPDATE_SNIPPET_LENGTH = 300;
 var MAX_ACTIVE_TWIST_THREADS = 120;
 
 // Built from the same COMMON_CAPITALIZED_STOPWORDS base TWISTS AND TURNS'
@@ -3396,11 +3409,16 @@ function initUnsaid() {
         trustedEntities: {},
         lastConfidenceTurn: {},
         lastTypeVoteTurn: {},
+        cardMeta: {},
+        cardUpdateEvidence: {},
+        cardUpdateLastSeenTurn: {},
         pendingNames: [],
         pendingTypes: {},
         pendingForced: false,
+        pendingRefreshNames: [],
         consecutiveFailedNames: [],
-        lastTriggerTurn: 0
+        lastTriggerTurn: 0,
+        lastRefreshTriggerTurn: 0
       }
     };
   }
@@ -3435,11 +3453,16 @@ function initUnsaid() {
       trustedEntities: {},
       lastConfidenceTurn: {},
       lastTypeVoteTurn: {},
+      cardMeta: {},
+      cardUpdateEvidence: {},
+      cardUpdateLastSeenTurn: {},
       pendingNames: [],
       pendingTypes: {},
       pendingForced: false,
+      pendingRefreshNames: [],
       consecutiveFailedNames: [],
-      lastTriggerTurn: 0
+      lastTriggerTurn: 0,
+      lastRefreshTriggerTurn: 0
     };
   }
   if (!state.unsaid.codex.mentionCounts || typeof state.unsaid.codex.mentionCounts !== "object") state.unsaid.codex.mentionCounts = {};
@@ -3457,11 +3480,16 @@ function initUnsaid() {
   if (!state.unsaid.codex.trustedEntities || typeof state.unsaid.codex.trustedEntities !== "object") state.unsaid.codex.trustedEntities = {};
   if (!state.unsaid.codex.lastConfidenceTurn || typeof state.unsaid.codex.lastConfidenceTurn !== "object") state.unsaid.codex.lastConfidenceTurn = {};
   if (!state.unsaid.codex.lastTypeVoteTurn || typeof state.unsaid.codex.lastTypeVoteTurn !== "object") state.unsaid.codex.lastTypeVoteTurn = {};
+  if (!state.unsaid.codex.cardMeta || typeof state.unsaid.codex.cardMeta !== "object") state.unsaid.codex.cardMeta = {};
+  if (!state.unsaid.codex.cardUpdateEvidence || typeof state.unsaid.codex.cardUpdateEvidence !== "object") state.unsaid.codex.cardUpdateEvidence = {};
+  if (!state.unsaid.codex.cardUpdateLastSeenTurn || typeof state.unsaid.codex.cardUpdateLastSeenTurn !== "object") state.unsaid.codex.cardUpdateLastSeenTurn = {};
   if (!Array.isArray(state.unsaid.codex.pendingNames)) state.unsaid.codex.pendingNames = [];
   if (!state.unsaid.codex.pendingTypes || typeof state.unsaid.codex.pendingTypes !== "object") state.unsaid.codex.pendingTypes = {};
   if (typeof state.unsaid.codex.pendingForced !== "boolean") state.unsaid.codex.pendingForced = false;
+  if (!Array.isArray(state.unsaid.codex.pendingRefreshNames)) state.unsaid.codex.pendingRefreshNames = [];
   if (!Array.isArray(state.unsaid.codex.consecutiveFailedNames)) state.unsaid.codex.consecutiveFailedNames = [];
   if (typeof state.unsaid.codex.lastTriggerTurn !== "number") state.unsaid.codex.lastTriggerTurn = 0;
+  if (typeof state.unsaid.codex.lastRefreshTriggerTurn !== "number") state.unsaid.codex.lastRefreshTriggerTurn = 0;
   if (typeof state.unsaid.lastActionCount !== "number") state.unsaid.lastActionCount = -1;
   ensureSharedConfigCard();
 }
@@ -3642,6 +3670,10 @@ function renderUnsaidSection(cfg) {
     `> Minimum story turns to observe a newly introduced character before carding: ${cfg.codexCharacterMinTurns}\n` +
     `> Minimum on-screen appearances before normal character carding: ${cfg.codexCharacterMinAppearances}\n` +
     `> Maximum turns before a newly introduced character card is forced: ${cfg.codexCharacterDeadline}\n` +
+    `> Automatically refresh Codex-made cards: ${cfg.codexAutoRefresh}\n` +
+    `> Minimum turns between automatic refreshes of the same card: ${cfg.codexRefreshInterval}\n` +
+    `> New evidence mentions needed before automatic refresh: ${cfg.codexRefreshMinEvidence}\n` +
+    `> Protect hand-edited Story Card entries from automatic refresh: ${cfg.codexProtectManualEdits}\n` +
     `> Reset Codex tracking now: false\n` +
     `> Player character (skip when Codexing): ${cfg.playerName}\n`;
 }
@@ -3672,6 +3704,10 @@ var CONFIG_DEFAULT_UNSAID_NOTES_SECTION =
   "- Minimum story turns to observe a newly introduced character before carding: automatic character cards cannot be requested before this many full story turns have passed after the character actually appears on-screen. Default 3.\n" +
   "- Minimum on-screen appearances before normal character carding: how many separate output turns should show the character before Codex normally writes them. Default 2. The hard deadline can still override this so a quiet character is not stuck forever.\n" +
   "- Maximum turns before a newly introduced character card is forced: after this many turns, Codex escalates the profile request. The deadline is never allowed below the observation minimum.\n" +
+  "- Automatically refresh Codex-made cards: periodically revisits cards this script created when later story evidence has actually accumulated.\n" +
+  "- Minimum turns between automatic refreshes of the same card: prevents constant rewrites; default 20 turns.\n" +
+  "- New evidence mentions needed before automatic refresh: how much post-card evidence must accumulate; ordinary unchanged mentions need even more than this.\n" +
+  "- Protect hand-edited Story Card entries from automatic refresh: on by default. If you edit a Codex-generated entry yourself, automatic refresh pauses for that card. Manual /card still overrides intentionally.\n" +
   "- Reset Codex tracking now: set true to clear failed attempts/cooldowns and introduction timing; flips back to false on its own.\n" +
   "- Player character (skip when Codexing): your own name, so Codex skips writing a profile for you.\n\n" +
   "Characters who can have private thoughts, one per line — Codex adds newly discovered ones automatically:\n" +
@@ -3755,10 +3791,14 @@ function resetCodexTrackingState() {
   codex.appearanceTurns = {};
   codex.evidence = {};
   codex.lastMentionTurn = {};
+  codex.cardUpdateEvidence = {};
+  codex.cardUpdateLastSeenTurn = {};
   codex.pendingNames = [];
   codex.pendingTypes = {};
+  codex.pendingRefreshNames = [];
   codex.consecutiveFailedNames = [];
   codex.lastTriggerTurn = 0;
+  codex.lastRefreshTriggerTurn = 0;
 }
 
 function readUnsaidConfig() {
@@ -3781,6 +3821,20 @@ function readUnsaidConfig() {
     unsaidNotes = unsaidNotes.includes(cardLine)
       ? unsaidNotes.replace(cardLine, cardLine + "\n\n" + preAuthoringNote)
       : unsaidNotes.replace(CONFIG_SECTION_UNSAID + "\n", CONFIG_SECTION_UNSAID + "\n" + preAuthoringNote + "\n\n");
+  }
+
+  // Migrate the refresh help text into older combined config cards without
+  // replacing any player's notes or cast list.
+  if (!unsaidNotes.includes("- Automatically refresh Codex-made cards:")) {
+    const refreshHelp =
+      "- Automatically refresh Codex-made cards: periodically revisits cards this script created when later story evidence has actually accumulated.\n" +
+      "- Minimum turns between automatic refreshes of the same card: prevents constant rewrites; default 20 turns.\n" +
+      "- New evidence mentions needed before automatic refresh: how much post-card evidence must accumulate; routine unchanged mentions need extra evidence.\n" +
+      "- Protect hand-edited Story Card entries from automatic refresh: on by default. Manual /card intentionally overrides this protection.\n";
+    const castHeading = "Characters who can have private thoughts, one per line — Codex adds newly discovered ones automatically:";
+    unsaidNotes = unsaidNotes.includes(castHeading)
+      ? unsaidNotes.replace(castHeading, refreshHelp + "\n" + castHeading)
+      : unsaidNotes.replace(CAST_LIST_MARKER, refreshHelp + "\n" + CAST_LIST_MARKER);
   }
   card.description = spliceConfigSection(card.description, CONFIG_SECTION_UNSAID, unsaidNotes);
 
@@ -3864,6 +3918,24 @@ function readUnsaidConfig() {
   cfg.codexCharacterMinTurns = Math.min(100, Math.max(0, cfg.codexCharacterMinTurns));
   cfg.codexCharacterDeadline = Math.min(200, Math.max(cfg.codexCharacterMinTurns, cfg.codexCharacterDeadline));
 
+  const autoRefreshMatch = entrySection.match(/Automatically refresh Codex-made cards:\s*(true|false)/i);
+  if (autoRefreshMatch) cfg.codexAutoRefresh = autoRefreshMatch[1].toLowerCase() === "true";
+
+  const refreshIntervalMatch = entrySection.match(/Minimum turns between automatic refreshes of the same card:\s*(\d+)/i);
+  if (refreshIntervalMatch) {
+    const parsed = parseInt(refreshIntervalMatch[1], 10);
+    if (!isNaN(parsed)) cfg.codexRefreshInterval = Math.min(500, Math.max(1, parsed));
+  }
+
+  const refreshEvidenceMatch = entrySection.match(/New evidence mentions needed before automatic refresh:\s*(\d+)/i);
+  if (refreshEvidenceMatch) {
+    const parsed = parseInt(refreshEvidenceMatch[1], 10);
+    if (!isNaN(parsed)) cfg.codexRefreshMinEvidence = Math.min(CODEX_CARD_UPDATE_EVIDENCE_LIMIT, Math.max(1, parsed));
+  }
+
+  const protectEditsMatch = entrySection.match(/Protect hand-edited Story Card entries from automatic refresh:\s*(true|false)/i);
+  if (protectEditsMatch) cfg.codexProtectManualEdits = protectEditsMatch[1].toLowerCase() === "true";
+
   const resetMatch = entrySection.match(/Reset Codex tracking now:\s*(true|false)/i);
   if (resetMatch && resetMatch[1].toLowerCase() === "true") {
     resetCodexTrackingState();
@@ -3892,13 +3964,31 @@ function readUnsaidConfig() {
   const markerIdx = unsaidNotes.indexOf(CAST_LIST_MARKER);
   const castSection = markerIdx >= 0 ? unsaidNotes.slice(markerIdx + CAST_LIST_MARKER.length) : "";
 
-  cfg.cast = castSection
+  const listedCast = castSection
     .split("\n")
     .map(line => line.trim().replace(/^[-•*]\s*/, "").slice(0, 80))
     .filter(Boolean)
     .filter((name, index, arr) =>
       arr.findIndex(other => isSameCardEntity(other, name)) === index
     );
+
+  cfg.cast = listedCast.filter(name => {
+    const cardForName = findStoryCardForEntity(name);
+    if (!cardForName) return true;
+    // Repair stale cast entries when an older Codex build accidentally
+    // typed a place/item/faction as Character. Do not let a settlement
+    // keep receiving private thoughts merely because the bad card remains.
+    return codexKindFromExistingCard(cardForName, name) === "character" &&
+      isCharacterLikeCard(name);
+  });
+
+  if (cfg.cast.length !== listedCast.length) {
+    const castMarker = unsaidNotes.indexOf(CAST_LIST_MARKER);
+    if (castMarker !== -1) {
+      const head = unsaidNotes.slice(0, castMarker + CAST_LIST_MARKER.length);
+      unsaidNotes = `${head}\n${cfg.cast.join("\n")}`;
+    }
+  }
 
   const knownLower = cfg.cast.map(n => n.toLowerCase());
   let adopted = false;
@@ -3907,20 +3997,13 @@ function readUnsaidConfig() {
     if (adoptedThisPass >= 20) return;
     if (!c.title) return;
 
-    // Opt-IN on type, not opt-out: only adopt a card whose type is blank
-    // (common for casually-made character cards) or literally "character"
-    // in any casing. Enumerating known non-character types (location,
-    // faction, item, class, and whatever else) can never keep up with
-    // scenarios that use their own rich custom typing — a real game
-    // observed via user report had "Business", "Restaurant", "Vehicle",
-    // "Clothing", "Animal Spirit" card types, none of which matched the
-    // old exclusion list, so a fried chicken restaurant and a 1965 Mustang
-    // ended up in the cast getting private thoughts generated for them.
-    // A card explicitly typed as anything other than blank/"character" is
-    // a clear, deliberate signal from the player that it isn't a person.
-    const rawType = (c.type || "").trim().toLowerCase();
-    if (rawType && rawType !== "character") return;
+    // Adopt only cards that are character-like by both type/field shape
+    // and semantic content. This keeps scenario-specific types such as
+    // "Detective" or "Crewmate" working while rejecting a Character card
+    // whose own fields clearly describe a village, vehicle, restaurant, etc.
     if (isOwnCard(c.title)) return;
+    if (!isCharacterLikeCard(c.title)) return;
+    if (codexKindFromExistingCard(c, c.title) !== "character") return;
     if (cfg.playerName && isSameCardEntity(c.title, cfg.playerName)) return;
     if (cfg.cast.some(existing => isSameCardEntity(c.title, existing))) return;
     cfg.cast.push(c.title);
@@ -4414,6 +4497,21 @@ function trackMentions(text, observeIntroductions) {
     if (seenThisPass.has(key)) return;
     seenThisPass.add(key);
 
+    // If this resolves unambiguously to an existing Codex-managed card,
+    // preserve the exact sentence as future refresh evidence. This also
+    // catches safe aliases such as "Harlan" -> "Harlan Voss", which a
+    // full-title-only scan would otherwise miss.
+    if (canConfirmIntroductions) {
+      const existingCard = findStoryCardForEntity(name) || findStoryCardForEntity(key);
+      if (existingCard &&
+          (state.unsaid.codex.cardMeta[existingCard.title] || codexLogHasEntity(existingCard.title))) {
+        const aliasSnippets = codexEvidenceSentences(name, source);
+        aliasSnippets.forEach(snippet =>
+          recordCodexCardUpdateEvidence(existingCard.title, existingCard, snippet, actionEpoch)
+        );
+      }
+    }
+
     // Count at most once per action epoch. Repeating a name five times in one
     // paragraph should not make it look five turns more established.
     if (state.unsaid.codex.lastMentionTurn[key] !== actionEpoch) {
@@ -4472,6 +4570,13 @@ function trackMentions(text, observeIntroductions) {
       recordCodexEvidence(key, source, false);
     }
   });
+
+  // Existing Codex-made cards keep collecting a small, separate evidence
+  // bank so they can refresh later without re-entering "new card" tracking.
+  // Only Output/story passes confirm this evidence; raw commands/input do not.
+  if (canConfirmIntroductions) {
+    trackCodexCardUpdateEvidence(source, actionEpoch);
+  }
 
   pruneMentionCounts();
 }
@@ -4680,6 +4785,358 @@ function excludedNames(cfg) {
   return names;
 }
 
+
+function normalizeCodexGeneratedEntry(value) {
+  return String(value || "")
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map(line => line.replace(/[ \t]+/g, " ").trim())
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+}
+
+function codexLoggedEntityNameSet() {
+  const names = new Set();
+  if (typeof storyCards === "undefined" || !Array.isArray(storyCards)) return names;
+  storyCards.forEach(card => {
+    if (!card || typeof card.title !== "string" || card.title.indexOf("UNSAID Codex Log — ") !== 0) return;
+    String(card.description || "").split("\n").forEach(line => {
+      const loggedName = line.split(" — ")[0].trim().toLowerCase();
+      if (loggedName) names.add(loggedName);
+    });
+  });
+  return names;
+}
+
+function codexLogHasEntity(name) {
+  if (!name || typeof storyCards === "undefined" || !Array.isArray(storyCards)) return false;
+  const wanted = String(name).toLowerCase().trim();
+  return storyCards.some(card => {
+    if (!card || typeof card.title !== "string" || card.title.indexOf("UNSAID Codex Log — ") !== 0) return false;
+    return String(card.description || "")
+      .split("\n")
+      .map(line => line.split(" — ")[0].trim().toLowerCase())
+      .some(entryName => entryName === wanted);
+  });
+}
+
+function codexKindFromExistingCard(card, name) {
+  if (!card) return "character";
+  const raw = String(card.type || "").trim().toLowerCase();
+  const rawCharacter = raw === "character";
+  if (raw === "location") return "location";
+  if (raw === "item") return "item";
+  if (raw === "faction") return "faction";
+
+  const entry = String(card.entry || "");
+  const semanticNonCharacter = strongCodexNonCharacterEvidence(name || card.title, entry);
+  if (semanticNonCharacter && semanticNonCharacter.type) return semanticNonCharacter.type;
+
+  // Repair the common "place generated with Character labels" failure even
+  // when the entity name itself is ambiguous. The content is decisive here:
+  // Race: Human settlement / Background: A remote village are not person
+  // traits, regardless of the platform type currently stored on the card.
+  const placeAsCharacterSignal =
+    /^\s*(?:Race|Species|Nature)\s*[:=]\s*[^\n]*(?:settlement|village|town|city|hamlet|kingdom|realm|district|region|colony|outpost|tavern|inn|hotel|castle|fortress|temple|school|campus|station|port|harbou?r|forest|woods|island|mountain|valley|building|neighbou?rhood|suburb|farm|ranch|arena|stadium|hospital|clinic)\b/im.test(entry) ||
+    /^\s*(?:Background|Appearance|Description)\s*[:=]\s*(?:an?\s+|the\s+)?(?:remote\s+|small\s+|large\s+|ancient\s+|old\s+|modern\s+|isolated\s+|coastal\s+|rural\s+|urban\s+|walled\s+|hidden\s+|quiet\s+|grim\s+|ruined\s+|abandoned\s+|sprawling\s+)*(?:settlement|village|town|city|hamlet|district|region|kingdom|realm|colony|outpost|tavern|inn|forest|woods|island|station|port|building)\b/im.test(entry);
+  if (placeAsCharacterSignal) return "location";
+
+  const locationFields = (entry.match(/^\s*(?:Location|Key Locations|Historical Events)\s*[:=]/gim) || []).length;
+  const itemFields = (entry.match(/^\s*(?:Properties|Origin)\s*[:=]/gim) || []).length;
+  const characterFields = (entry.match(/^\s*(?:Race|Species|Nature|Strength Level|Personality|Background|Appearance|Abilities|Weaknesses|Relationships)\s*[:=]/gim) || []).length;
+  if (locationFields >= 2) return "location";
+  if (itemFields >= 2) return "item";
+  if (characterFields >= 2 || rawCharacter) return "character";
+
+  const inferred = reconcileCodexEntityType(name || card.title, entry) ||
+    resolveCodexEntityType(name || card.title, entry);
+  return inferred || "faction";
+}
+
+function ensureCodexCardMeta(name, card, type) {
+  if (!state.unsaid || !state.unsaid.codex || !name || !card) return null;
+  const codex = state.unsaid.codex;
+  if (!codex.cardMeta || typeof codex.cardMeta !== "object") codex.cardMeta = {};
+
+  let key = name;
+  if (!codex.cardMeta[key]) {
+    const exactExisting = Object.keys(codex.cardMeta).find(k => k.toLowerCase() === String(name).toLowerCase());
+    if (exactExisting) key = exactExisting;
+  }
+
+  if (!codex.cardMeta[key]) {
+    // Only adopt an old card into automatic refresh tracking when the Codex
+    // log says this script created it. Hand-authored Story Cards are never
+    // silently enrolled into overwrite behavior.
+    if (!codexLogHasEntity(name)) return null;
+    codex.cardMeta[key] = {
+      type: type || codexKindFromExistingCard(card, name),
+      lastGeneratedEntry: String(card.entry || ""),
+      lastGeneratedCardType: String(card.type || ""),
+      lastGeneratedTurn: state.unsaid.turn,
+      lastRefreshTurn: state.unsaid.turn,
+      updateCount: 0,
+      manualEditProtected: false,
+      adoptedBaseline: true
+    };
+  }
+
+  const meta = codex.cardMeta[key];
+  if (!meta.type) meta.type = type || codexKindFromExistingCard(card, name);
+  if (typeof meta.lastGeneratedEntry !== "string") meta.lastGeneratedEntry = String(card.entry || "");
+  if (typeof meta.lastGeneratedCardType !== "string") meta.lastGeneratedCardType = String(card.type || "");
+  if (typeof meta.lastGeneratedTurn !== "number") meta.lastGeneratedTurn = state.unsaid.turn;
+  if (typeof meta.lastRefreshTurn !== "number") meta.lastRefreshTurn = meta.lastGeneratedTurn;
+  if (typeof meta.updateCount !== "number") meta.updateCount = 0;
+  if (typeof meta.manualEditProtected !== "boolean") meta.manualEditProtected = false;
+  return meta;
+}
+
+function codexCardHasManualEdit(name, card, cfg) {
+  const meta = ensureCodexCardMeta(name, card);
+  if (!meta) return false;
+  if (!cfg || !cfg.codexProtectManualEdits) return false;
+
+  const current = normalizeCodexGeneratedEntry(card.entry);
+  const generated = normalizeCodexGeneratedEntry(meta.lastGeneratedEntry);
+  const currentType = String(card.type || "").trim().toLowerCase();
+  const generatedType = String(meta.lastGeneratedCardType || "").trim().toLowerCase();
+  const entryChanged = !!generated && current !== generated;
+  const typeChanged = !!generatedType && currentType !== generatedType;
+  if (entryChanged || typeChanged) {
+    meta.manualEditProtected = true;
+    return true;
+  }
+
+  // If a player restores both the script-generated entry and type exactly,
+  // automatic refresh can safely resume without requiring a reset command.
+  if (meta.manualEditProtected && current === generated && currentType === generatedType) {
+    meta.manualEditProtected = false;
+  }
+  return !!meta.manualEditProtected;
+}
+
+function codexRefreshEvidenceWeight(text, type) {
+  const source = String(text || "");
+  let weight = 1;
+
+  // General state-changing language. This list deliberately favors verbs
+  // that imply new canon rather than ordinary movement/dialogue.
+  if (/\b(?:now|no longer|becomes?|became|changes?|changed|reveals?|revealed|discovers?|discovered|learns?|learned|admits?|admitted|confesses?|confessed|remembers?|remembered|forgets?|forgot|joins?|joined|leaves?|left|returns?|returned|arrives?|arrived|departs?|departed|moves?|moved|renamed|opens?|opened|closes?|closed|destroyed|damaged|rebuilt|restored|lost|loses?|gains?|gained|acquires?|acquired|inherits?|inherited|promoted|demoted|betrays?|betrayed|allies?|allied|breaks?\s+up|married|engaged|pregnant|injured|wounded|scarred|healed|dies?|died|killed|missing|captured|freed|rescued|arrested|released|exiled|crowned|elected|appointed|fired|hired|quits?|retired)\b/i.test(source)) {
+    weight += 2;
+  }
+
+  if (type === "character" && /\b(?:feels?|wants?|fears?|trusts?|distrusts?|loves?|hates?|resents?|forgives?|relationship|friend|ally|enemy|partner|sibling|parent|child|mentor|rival)\b/i.test(source)) {
+    weight += 1;
+  } else if (type === "location" && /\b(?:population|owner|controlled|occupied|abandoned|ruined|rebuilt|district|landmark|opened|closed|burned|flooded|siege|battle|renovated)\b/i.test(source)) {
+    weight += 1;
+  } else if (type === "item" && /\b(?:broken|repaired|upgraded|enchanted|activated|deactivated|stolen|recovered|owner|belongs|property|function|ability|power|damaged)\b/i.test(source)) {
+    weight += 1;
+  } else if (type === "faction" && /\b(?:leader|leadership|member|members|alliance|enemy|war|merger|split|revolt|coup|founded|dissolved|recruits?|expels?|promotes?|policy|goal)\b/i.test(source)) {
+    weight += 1;
+  }
+
+  return Math.min(5, weight);
+}
+
+function recordCodexCardUpdateEvidence(name, card, snippet, actionEpoch, forcedWeight) {
+  if (!state.unsaid || !state.unsaid.codex || !name || !card || !snippet) return false;
+  const codex = state.unsaid.codex;
+  const meta = ensureCodexCardMeta(name, card);
+  if (!meta) return false;
+
+  if (!codex.cardUpdateEvidence[name]) codex.cardUpdateEvidence[name] = [];
+  const list = codex.cardUpdateEvidence[name];
+  const clean = String(snippet).replace(/\s+/g, " ").trim().slice(0, CODEX_CARD_UPDATE_SNIPPET_LENGTH);
+  if (!clean) return false;
+
+  const normalized = clean.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  if (list.some(item => item && item.normalized === normalized)) return false;
+
+  const storyTurn = state.unsaid.turn;
+  const epoch = typeof actionEpoch === "number" ? actionEpoch : storyTurn;
+  // Never count the same response that created/refreshed the card as "new"
+  // evidence for its next refresh. Keep story-turn age separate from the
+  // platform actionCount used only for duplicate-call protection.
+  if (typeof meta.lastRefreshTurn === "number" && storyTurn <= meta.lastRefreshTurn) return false;
+  if (codex.cardUpdateLastSeenTurn[name] === epoch && list.some(item => item && item.epoch === epoch)) return false;
+
+  list.push({
+    turn: storyTurn,
+    epoch: epoch,
+    text: clean,
+    normalized: normalized,
+    weight: Math.max(
+      codexRefreshEvidenceWeight(clean, meta.type || codexKindFromExistingCard(card, name)),
+      typeof forcedWeight === "number" ? forcedWeight : 0
+    )
+  });
+  if (list.length > CODEX_CARD_UPDATE_EVIDENCE_LIMIT) {
+    list.splice(0, list.length - CODEX_CARD_UPDATE_EVIDENCE_LIMIT);
+  }
+  codex.cardUpdateLastSeenTurn[name] = epoch;
+  return true;
+}
+
+function codexCardTitleContainedIn(longerTitle, shorterTitle) {
+  const normalize = value => String(value || "")
+    .toLowerCase()
+    .replace(/[“”"'‘’.,:;!?()[\]{}]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const longer = normalize(longerTitle);
+  const shorter = normalize(shorterTitle);
+  if (!longer || !shorter || longer === shorter) return false;
+  return (` ${longer} `).indexOf(` ${shorter} `) !== -1;
+}
+
+function trackCodexCardUpdateEvidence(source, actionEpoch) {
+  if (!state.unsaid || !state.unsaid.codex || !source ||
+      typeof storyCards === "undefined" || !Array.isArray(storyCards)) return;
+
+  const loggedNames = codexLoggedEntityNameSet();
+  const candidates = storyCards
+    .filter(card => card && card.title && !isOwnCard(card.title))
+    .filter(card =>
+      state.unsaid.codex.cardMeta[card.title] ||
+      loggedNames.has(String(card.title).toLowerCase().trim())
+    )
+    .sort((a, b) => String(b.title).length - String(a.title).length)
+    .slice(0, CODEX_CARD_UPDATE_SCAN_LIMIT);
+
+  if (candidates.length === 0) return;
+  const sentences = (typeof Library !== "undefined" && Library.splitSentences)
+    ? Library.splitSentences(String(source))
+    : String(source).replace(/([.!?])\s+/g, "$1\n").split("\n");
+
+  sentences.forEach(sentence => {
+    const matched = candidates.filter(card => nameAppears(card.title, sentence));
+    if (matched.length === 0) return;
+
+    // If both "Rose" and "Rose Garden" exist and the sentence only refers to
+    // the longer entity, do not give the shorter card update evidence too.
+    const accepted = matched.filter(card =>
+      !matched.some(other =>
+        other !== card &&
+        String(other.title).length > String(card.title).length &&
+        codexCardTitleContainedIn(other.title, card.title) &&
+        nameAppears(other.title, sentence)
+      )
+    );
+
+    accepted.forEach(card => {
+      const type = codexKindFromExistingCard(card, card.title);
+      ensureCodexCardMeta(card.title, card, type);
+      recordCodexCardUpdateEvidence(card.title, card, sentence, actionEpoch);
+    });
+  });
+}
+
+function codexUpdateEvidenceTextFor(name, compact) {
+  const list = (state.unsaid && state.unsaid.codex &&
+    state.unsaid.codex.cardUpdateEvidence &&
+    state.unsaid.codex.cardUpdateEvidence[name]) || [];
+  const take = compact ? 2 : 5;
+  const clip = compact ? 140 : 220;
+  return list.slice(-take)
+    .map(item => item && item.text ? item.text.replace(/\s+/g, " ").trim().slice(0, clip) : "")
+    .filter(Boolean)
+    .join(" | ");
+}
+
+function pickCodexRefreshCandidate(cfg) {
+  if (!cfg || !cfg.codexEnabled || !cfg.codexAutoRefresh ||
+      !state.unsaid || !state.unsaid.codex) return null;
+
+  const codex = state.unsaid.codex;
+  const interval = Math.max(1, cfg.codexRefreshInterval || 20);
+  const minEvidence = Math.max(1, cfg.codexRefreshMinEvidence || 3);
+  const candidates = [];
+
+  Object.keys(codex.cardMeta || {}).forEach(name => {
+    const card = findStoryCardForEntity(name);
+    if (!card || isOwnCard(card.title)) {
+      delete codex.cardMeta[name];
+      delete codex.cardUpdateEvidence[name];
+      delete codex.cardUpdateLastSeenTurn[name];
+      return;
+    }
+
+    const meta = ensureCodexCardMeta(name, card);
+    if (!meta) return;
+    if (codexCardHasManualEdit(name, card, cfg)) return;
+
+    const since = state.unsaid.turn - (meta.lastRefreshTurn || meta.lastGeneratedTurn || 0);
+    if (since < interval) return;
+
+    const evidence = (codex.cardUpdateEvidence && codex.cardUpdateEvidence[name]) || [];
+    const meaningful = evidence.filter(item => item && (item.weight || 1) >= 2).length;
+    const totalWeight = evidence.reduce((sum, item) => sum + ((item && item.weight) || 1), 0);
+
+    // Three useful pieces with at least one real change cue are enough.
+    // Otherwise require twice the configured evidence count so a frequently
+    // mentioned but unchanged entity does not waste model/context budget.
+    if (evidence.length < minEvidence) return;
+    if (meaningful === 0 && evidence.length < Math.min(CODEX_CARD_UPDATE_EVIDENCE_LIMIT, minEvidence * 2)) return;
+
+    candidates.push({
+      name,
+      since,
+      meaningful,
+      totalWeight,
+      type: meta.type || codexKindFromExistingCard(card, name)
+    });
+  });
+
+  candidates.sort((a, b) =>
+    (b.meaningful - a.meaningful) ||
+    (b.totalWeight - a.totalWeight) ||
+    (b.since - a.since)
+  );
+  return candidates.length ? candidates[0] : null;
+}
+
+function markCodexCardGenerated(name, type, entry, refreshed) {
+  if (!state.unsaid || !state.unsaid.codex || !name) return;
+  const codex = state.unsaid.codex;
+  if (!codex.cardMeta || typeof codex.cardMeta !== "object") codex.cardMeta = {};
+  const previous = codex.cardMeta[name] || {};
+  codex.cardMeta[name] = {
+    type: type || previous.type || "character",
+    lastGeneratedEntry: String(entry || ""),
+    lastGeneratedCardType: platformType(type || previous.type || "character"),
+    lastGeneratedTurn: typeof previous.lastGeneratedTurn === "number"
+      ? previous.lastGeneratedTurn
+      : state.unsaid.turn,
+    lastRefreshTurn: state.unsaid.turn,
+    updateCount: (previous.updateCount || 0) + (refreshed ? 1 : 0),
+    manualEditProtected: false,
+    adoptedBaseline: false
+  };
+  codex.cardUpdateEvidence[name] = [];
+  codex.cardUpdateLastSeenTurn[name] = state.unsaid.turn;
+
+  // Keep long-running adventures bounded. Old managed cards can be safely
+  // re-adopted later from the Codex log if they become relevant again.
+  const metaKeys = Object.keys(codex.cardMeta);
+  if (metaKeys.length > CODEX_CARD_META_LIMIT) {
+    metaKeys
+      .sort((a, b) => {
+        const am = codex.cardMeta[a] || {};
+        const bm = codex.cardMeta[b] || {};
+        return (am.lastRefreshTurn || am.lastGeneratedTurn || 0) -
+          (bm.lastRefreshTurn || bm.lastGeneratedTurn || 0);
+      })
+      .slice(0, metaKeys.length - CODEX_CARD_META_LIMIT)
+      .forEach(oldName => {
+        delete codex.cardMeta[oldName];
+        delete codex.cardUpdateEvidence[oldName];
+        delete codex.cardUpdateLastSeenTurn[oldName];
+      });
+  }
+}
+
 function findCodexCandidates(threshold, excludeNames, maxAttempts, maxCount) {
   const exclude = excludeNames || [];
   const cap = typeof maxAttempts === "number" ? maxAttempts : CODEX_MAX_ATTEMPTS;
@@ -4752,7 +5209,7 @@ function findCodexCandidates(threshold, excludeNames, maxAttempts, maxCount) {
 }
 
 
-function buildCodexInstruction(names, text, forced, priorFailures, hardDeadline, compact) {
+function buildCodexInstruction(names, text, forced, priorFailures, hardDeadline, compact, refreshMode) {
   const failures = typeof priorFailures === "number" ? priorFailures : 0;
   const scenarioNote = Library.scenarioGuidance(text);
 
@@ -4783,22 +5240,41 @@ function buildCodexInstruction(names, text, forced, priorFailures, hardDeadline,
       ? ` Observed for ${observedTurns} full story turn${observedTurns === 1 ? "" : "s"} across ${appearances} on-screen appearance${appearances === 1 ? "" : "s"}.`
       : "";
 
-    const evidenceItems = (state.unsaid.codex.evidence && state.unsaid.codex.evidence[name]) || [];
-    const evidenceLimit = compact ? 1 : 3;
-    const evidenceClip = compact ? 140 : 190;
+    const evidenceItems = refreshMode
+      ? ((state.unsaid.codex.cardUpdateEvidence && state.unsaid.codex.cardUpdateEvidence[name]) || [])
+      : ((state.unsaid.codex.evidence && state.unsaid.codex.evidence[name]) || []);
+    const evidenceLimit = compact ? (refreshMode ? 2 : 1) : (refreshMode ? 5 : 3);
+    const evidenceClip = compact ? 140 : (refreshMode ? 220 : 190);
     const evidenceText = evidenceItems.slice(-evidenceLimit)
       .map(item => item && item.text ? item.text.replace(/\s+/g, " ").trim().slice(0, evidenceClip) : "")
       .filter(Boolean)
       .join(" | ");
     const evidenceNote = evidenceText
-      ? ` Story evidence to weigh before inferring anything: ${evidenceText}`
+      ? (refreshMode
+          ? ` New story evidence since the current card was written: ${evidenceText}`
+          : ` Story evidence to weigh before inferring anything: ${evidenceText}`)
       : "";
 
-    return `Profile ${i + 1} — "${name}":${knownNote}${correctionNote}${observationNote}${evidenceNote}\nIdentity lock: this block is ONLY for "${name}". Do not substitute a nearby person, food, object, place, brand, or similarly named entity. The Name field must stay "${name}".\n【CARD】\n${body}\n【/CARD】`;
+    let refreshNote = "";
+    if (refreshMode) {
+      const existingCard = findStoryCardForEntity(name);
+      const existingEntry = existingCard && existingCard.entry
+        ? String(existingCard.entry).replace(/\s+/g, " ").trim().slice(0, compact ? 700 : 1400)
+        : "";
+      refreshNote =
+        ` This is an UPDATE of an existing Story Card, not a new profile. Preserve established facts that are still true; revise only details that later story evidence changed, clarified, or made more specific. ` +
+        `Current card snapshot: ${existingEntry || "(empty)"}.`;
+    }
+
+    return `Profile ${i + 1} — "${name}":${refreshNote}${knownNote}${correctionNote}${observationNote}${evidenceNote}\nIdentity lock: this block is ONLY for "${name}". Do not substitute a nearby person, food, object, place, brand, or similarly named entity. The Name field must stay "${name}".\n【CARD】\n${body}\n【/CARD】`;
   }).join("\n\n");
 
   let priorityLine;
-  if (forced) {
+  if (refreshMode) {
+    priorityLine =
+      `This is a low-priority periodic Story Card refresh. Continue the visible story normally FIRST, then append the hidden refreshed profile block at the very end. ` +
+      `Do not interrupt, summarize, or shorten the story just to perform the refresh.`;
+  } else if (forced) {
     priorityLine =
       `The player explicitly requested ${names.length > 1 ? "these cards" : "this card"}. ` +
       `Write the hidden profile block${names.length > 1 ? "s" : ""} now. This is a control-command turn, so visible story prose is optional.`;
@@ -4817,12 +5293,13 @@ function buildCodexInstruction(names, text, forced, priorFailures, hardDeadline,
   }
 
   const rules = compact
-    ? `Rules: keep the CARD markers exactly; one short concrete line per field; no blanks, "...", Unknown, N/A or TBD. The Name field must stay the exact requested entity; never substitute a nearby food/object/person/place/business. Use established evidence first and infer missing details conservatively without contradicting the story. Fit every field to the actual scenario: Race means species/nature/kind; Strength Level means relevant capability, not automatically combat; Abilities may be skills/expertise/powers/resources; Relationships must be evidence-based. Do not mention this task outside the hidden block.${forced ? " Visible story prose is optional on this manual command turn." : " OUTPUT ORDER: visible story prose first, hidden CARD block last. Never return only the CARD block."}`
+    ? `Rules: keep the CARD markers exactly; one short concrete line per field; no blanks, "...", Unknown, N/A or TBD. The Name field must stay the exact requested entity; never substitute a nearby food/object/person/place/business. ${refreshMode ? "This is a refresh: keep every established fact that is still true, change only what new evidence genuinely updates, and do not reset a developed character/place/item/faction to a generic description. " : ""}Use established evidence first and infer missing details conservatively without contradicting the story. Fit every field to the actual scenario: Race means species/nature/kind; Strength Level means relevant capability, not automatically combat; Abilities may be skills/expertise/powers/resources; Relationships must be evidence-based. Do not mention this task outside the hidden block.${forced ? " Visible story prose is optional on this manual command turn." : " OUTPUT ORDER: visible story prose first, hidden CARD block last. Never return only the CARD block."}`
     : `Rules:
 - Keep the 【CARD】 and 【/CARD】 markers exactly.
 - Output exactly one short line per listed field.
 - Replace every "..." with a concrete, specific value. Never leave "...", "unknown", "N/A", "TBD", or a blank field.
 - The Name field must identify exactly the requested entity. Never substitute a nearby food, object, person, place, business, or similarly named thing.
+${refreshMode ? "- This is a REFRESH. Preserve facts that remain true, update only facts that later evidence changed/clarified, keep durable history/background intact, and never flatten a developed card back into a generic first-impression profile.\n- Prefer current-state wording for fields like Relationships, Personality, Abilities, Weaknesses, ownership/control, status, significance, or condition when the story has changed them." : ""}
 - Analyze all supplied story evidence before filling fields. Repeated behavior and explicit facts outrank first impressions.
 - Use established facts first. Infer only what is still missing, and keep those inferences conservative, specific, and compatible with the story.
 - Do not turn hearsay into an on-screen event, invent a relationship that contradicts the text, or overstate abilities that have not been demonstrated.
@@ -4839,12 +5316,12 @@ ${rules}]
 `;
 }
 
-function buildAndFitCodexInstruction(names, baseText, forced, priorFailures, hardDeadline) {
-  const full = buildCodexInstruction(names, baseText, forced, priorFailures, hardDeadline, false);
+function buildAndFitCodexInstruction(names, baseText, forced, priorFailures, hardDeadline, refreshMode) {
+  const full = buildCodexInstruction(names, baseText, forced, priorFailures, hardDeadline, false, !!refreshMode);
   return fitInstructionToBudget(baseText, full) ||
     fitInstructionToBudget(
       baseText,
-      buildCodexInstruction(names, baseText, forced, priorFailures, hardDeadline, true)
+      buildCodexInstruction(names, baseText, forced, priorFailures, hardDeadline, true, !!refreshMode)
     );
 }
 
@@ -4962,6 +5439,26 @@ function buildStatusReport(cfg) {
 
   const turnsSinceCodex = state.unsaid.turn - (codex.lastTriggerTurn || 0);
   lines.push(`  Codex cooldown: ${turnsSinceCodex}/${cfg.codexCooldown} turns`);
+
+  const managedCards = Object.keys(codex.cardMeta || {}).filter(name => !!findStoryCardForEntity(name));
+  const protectedCards = [];
+  const evidenceWaiting = [];
+  managedCards.forEach(name => {
+    const card = findStoryCardForEntity(name);
+    const meta = card ? ensureCodexCardMeta(name, card) : null;
+    if (!meta) return;
+    if (card && codexCardHasManualEdit(name, card, cfg)) protectedCards.push(name);
+    const ev = (codex.cardUpdateEvidence && codex.cardUpdateEvidence[name]) || [];
+    if (ev.length > 0) evidenceWaiting.push(`${name} (${ev.length})`);
+  });
+  lines.push(`  periodic card refresh: ${cfg.codexAutoRefresh ? "enabled" : "off"}; ${managedCards.length} managed card(s); interval ${cfg.codexRefreshInterval} turn(s); evidence gate ${cfg.codexRefreshMinEvidence}`);
+  if (evidenceWaiting.length > 0) {
+    lines.push(`  refresh evidence waiting: ${evidenceWaiting.slice(0, 10).join(", ")}${evidenceWaiting.length > 10 ? ", ..." : ""}`);
+  }
+  if (protectedCards.length > 0) {
+    lines.push(`  hand-edited cards protected from auto-refresh: ${protectedCards.slice(0, 10).join(", ")}${protectedCards.length > 10 ? ", ..." : ""}`);
+  }
+
   const strugglingCount = (codex.consecutiveFailedNames || []).length;
   if (strugglingCount > 0) {
     lines.push(`  unsuccessful-name streak: ${strugglingCount}${strugglingCount >= 3 ? " — likely a formatting/model-compliance issue" : ""}`);
@@ -5000,20 +5497,51 @@ function ensureCodexLogCard(type) {
     card.title = title;
     card.keys = keys;
     card.type = "Class";
-    card.entry = `Every ${type} card Codex has made, with how many times it was mentioned before the card was created. Delete a card from the story to have Codex redo it — this entry can stay.`;
+    card.entry = `Every ${type} card Codex has made, with its initial mention count and later automatic refresh history when applicable. Codex-made cards can refresh from newer story evidence; hand-edited entries are protected by default.`;
     card.description = "";
   }
   return card;
 }
 
-function logCodexCard(name, type, mentionCount) {
+function logCodexCard(name, type, mentionCount, refreshed) {
   const card = ensureCodexLogCard(type);
   if (!card) return;
+
+  // If a later refresh repairs an old entity type, remove the stale copy
+  // from the previous type log so diagnostics do not claim the same entity
+  // is both a Character and a Location/Item/Faction.
+  storyCards.forEach(other => {
+    if (!other || other === card || typeof other.title !== "string" ||
+        other.title.indexOf("UNSAID Codex Log — ") !== 0) return;
+    const lines = String(other.description || "").split("\n");
+    const kept = lines.filter(line => {
+      const loggedName = line.split(" — ")[0].trim();
+      return loggedName.toLowerCase() !== String(name).toLowerCase();
+    });
+    if (kept.length !== lines.length) other.description = kept.join("\n");
+  });
+
   const entries = card.description.split("\n").map(l => l.trim()).filter(Boolean);
-  const line = `${name} — mentioned ${mentionCount}x before card created`;
   const existingIdx = entries.findIndex(l => l.startsWith(`${name} —`));
-  if (existingIdx >= 0) entries[existingIdx] = line;
-  else entries.push(line);
+
+  if (refreshed) {
+    const meta = state.unsaid && state.unsaid.codex && state.unsaid.codex.cardMeta
+      ? state.unsaid.codex.cardMeta[name]
+      : null;
+    const count = meta && typeof meta.updateCount === "number" ? meta.updateCount : 1;
+    const suffix = `; refreshed ${count}x, last turn ${state.unsaid ? state.unsaid.turn : "?"}`;
+    if (existingIdx >= 0) {
+      const base = entries[existingIdx].replace(/; refreshed \d+x, last turn \d+\s*$/i, "");
+      entries[existingIdx] = base + suffix;
+    } else {
+      entries.push(`${name} — Codex-managed card${suffix}`);
+    }
+  } else {
+    const line = `${name} — mentioned ${mentionCount}x before card created`;
+    if (existingIdx >= 0) entries[existingIdx] = line;
+    else entries.push(line);
+  }
+
   if (entries.length > 500) entries.splice(0, entries.length - 500);
   card.description = entries.join("\n");
 }
@@ -5507,7 +6035,18 @@ function isCharacterLikeCard(name) {
   if (!existingCard) return true;
 
   const cardType = (existingCard.type || "").trim().toLowerCase();
+
+  // Semantic evidence can repair an old bad card type. A Character card
+  // whose own entry says "Race: Human settlement" / "a remote village"
+  // should not receive private thoughts just because an older detector gave
+  // it the wrong platform type.
+  const strongNonCharacter = strongCodexNonCharacterEvidence(name, String(existingCard.entry || ""));
+  if (strongNonCharacter && strongNonCharacter.type) return false;
+
   if (!cardType) return true;
+  if (cardType === "character" && codexKindFromExistingCard(existingCard, name) !== "character") {
+    return false;
+  }
   if (/^(?:character|npc|person|companion|ally|rival|protagonist|antagonist|crewmate|crew member|student|teacher|agent|officer|doctor|patient|athlete|coach|employee|resident)$/i.test(cardType)) {
     return true;
   }
