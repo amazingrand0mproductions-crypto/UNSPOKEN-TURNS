@@ -110,6 +110,7 @@ var twistsModifier = (text) => {
       if (thread && thread.status === "brewing") {
         if (confirmedSeeds.has(thread.id)) {
           thread.seedTouches += 1;
+          thread.storyEvidenceTouches = (thread.storyEvidenceTouches || 0) + 1;
           thread.seedConfirmMisses = 0;
           thread.lastSeedTurn = c.turn;
           thread.tier = Library.tierFor(thread.seedTouches);
@@ -424,13 +425,17 @@ var unsaidModifier = (text) => {
           card.entry = builtEntry;
         }
 
-        // A completed Story Card is now canon evidence. Let TWISTS AND TURNS
-        // inspect it immediately instead of waiting for a later rescan, but
-        // only through evidence-backed category matching.
+        // Let TWISTS AND TURNS react immediately, but only to evidence that
+        // existed *before* the model filled the card. Inferred Codex fields
+        // become useful continuity once saved, but they must not instantly
+        // bootstrap a new twist and amplify one model guess into another.
         try {
           const { c: tc, cfg: tcfg } = Library.initState();
-          if (Library.bridgeCodexEvidenceToTwists) {
-            Library.bridgeCodexEvidenceToTwists(tc, tcfg, name, type, builtEntry);
+          const bridgeEvidence = (typeof codexEvidenceTextFor === "function")
+            ? codexEvidenceTextFor(name)
+            : "";
+          if (bridgeEvidence && Library.bridgeCodexEvidenceToTwists) {
+            Library.bridgeCodexEvidenceToTwists(tc, tcfg, name, type, bridgeEvidence);
           }
         } catch (e) {}
 

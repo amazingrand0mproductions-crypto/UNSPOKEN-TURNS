@@ -1167,6 +1167,12 @@ var Library = (() => {
       if (typeof t.psychologyLinked !== "boolean") t.psychologyLinked = false;
       if (typeof t.psychologyTouches !== "number") t.psychologyTouches = 0;
       if (typeof t.lastPsychologyTurn !== "number") t.lastPsychologyTurn = -999;
+      if (typeof t.storyEvidenceTouches !== "number" || !isFinite(t.storyEvidenceTouches)) {
+        // Best-effort migration for old saves. Ordinary scanned threads had
+        // objective story evidence; wildcard/manual-only threads did not.
+        t.storyEvidenceTouches = t.wildcard ? 0 : Math.min(1, t.seedTouches || 0);
+      }
+      t.storyEvidenceTouches = Math.max(0, Math.floor(t.storyEvidenceTouches));
       if (typeof t.codexLinked !== "boolean") t.codexLinked = false;
       t.mature = isMatureCategory(t.category);
       if (t.mature && typeof t.adultConfirmed !== "boolean") {
@@ -1537,6 +1543,29 @@ var Library = (() => {
 
 
   function findEntityInSentence(sentence) {
+    // Reuse Codex's richer proper-name grammar when available so TWISTS AND
+    // TURNS does not truncate longer names such as "Jean Luc Picard",
+    // "New Avalon Station", or "Order of the Silver Hand" to two tokens.
+    try {
+      if (typeof CODEX_TITLE_ABBREV_REGEX !== "undefined" &&
+          typeof normalizeCodexCandidate === "function") {
+        const richRx = new RegExp(CODEX_TITLE_ABBREV_REGEX.source, "g");
+        const richMatches = Array.from(String(sentence || "").matchAll(richRx));
+        if (richMatches.length) {
+          const ordered = richMatches.length > 1
+            ? richMatches.slice(1).concat(richMatches.slice(0, 1))
+            : richMatches;
+          for (const m of ordered) {
+            const normalized = normalizeCodexCandidate(m[0], sentence);
+            if (!normalized) continue;
+            const firstWord = normalized.split(/\s+/)[0].toLowerCase();
+            if (CP_STOPWORDS.has(firstWord) && normalized.indexOf(" ") === -1) continue;
+            return normalized;
+          }
+        }
+      }
+    } catch (e) {}
+
     const matches = Array.from(sentence.matchAll(new RegExp(`\\b[A-Z][${NAME_ALPHANUM}'-]*\\b`, "g")));
     if (!matches.length) return null;
 
@@ -1613,13 +1642,20 @@ var Library = (() => {
 
   function splitSentences(text) {
     if (!text) return [];
-    const rawSentences = text.split(/(?<=[.!?])\s+/).filter(s => s.trim().length > 0);
+    const source = String(text).replace(/\r\n?/g, "\n");
+    // Portable sentence splitting: avoids lookbehind so the script also works
+    // in JavaScript runtimes that lag behind current desktop browsers.
+    const rawSentences = (source.match(/[^.!?\n]+(?:[.!?]+(?:["”’')\]]+)?|$)/g) || [])
+      .map(s => s.trim())
+      .filter(Boolean);
     if (typeof SENTENCE_ABBREVIATIONS === "undefined") return rawSentences;
     const sentences = [];
     for (let i = 0; i < rawSentences.length; i++) {
       const s = rawSentences[i];
       const words = s.trim().split(/\s+/);
-      const lastWord = (words[words.length - 1] || "").replace(/\.$/, "");
+      const lastWord = (words[words.length - 1] || "")
+        .replace(/["”’')\]]+$/g, "")
+        .replace(/\.$/, "");
       if (SENTENCE_ABBREVIATIONS.has(lastWord) && i + 1 < rawSentences.length) {
         rawSentences[i + 1] = s + " " + rawSentences[i + 1];
         continue;
@@ -1721,6 +1757,10 @@ var Library = (() => {
       psychologyLinked: false,
       psychologyTouches: 0,
       lastPsychologyTurn: -999,
+      // Visible/established evidence is tracked separately from private
+      // psychology so UNSAID can influence *which* thread gets attention
+      // without secretly manufacturing factual setup.
+      storyEvidenceTouches: evidenceText && String(evidenceText).trim() ? 1 : 0,
       codexLinked: false,
       mature: isMatureCategory(cat),
       adultConfirmed: isMatureCategory(cat) ? isEntityConfirmedAdult(entity, evidenceText || "") : false,
@@ -1799,6 +1839,7 @@ var Library = (() => {
       if (!cfg.crossSystemSynergy || !state || !state.contingency) return "";
       const active = (state.contingency.threads || []).filter(t =>
         t && t.status !== "resolved" &&
+        (t.storyEvidenceTouches || 0) > 0 &&
         (String(t.entity || "").toLowerCase() === String(entity || "").toLowerCase() ||
          (typeof isSameCardEntity === "function" && isSameCardEntity(t.entity, entity)))
       );
@@ -1839,12 +1880,11 @@ var Library = (() => {
     if (thread.lastPsychologyTurn === c.turn) return false;
     thread.lastPsychologyTurn = c.turn;
     thread.psychologyLinked = true;
-    thread.psychologyTouches = (thread.psychologyTouches || 0) + 1;
-    thread.seedTouches += 1;
-    thread.lastSeedTurn = c.turn;
-    thread.tier = tierFor(thread.seedTouches);
-    if (!thread.source || thread.source === "live") thread.source = sourceTag || "unsaid";
-    if (isEligible(thread, c, cfg)) thread.status = "ready";
+    thread.psychologyTouches = Math.min(12, (thread.psychologyTouches || 0) + 1);
+    // Private thoughts affect priority and emotional fit, not objective proof.
+    // A fear, suspicion, wish, or core belief must never make a twist "ready"
+    // by itself. Readiness still comes from visible/established story seeds.
+    if (!thread.psychologySource) thread.psychologySource = sourceTag || "unsaid";
     return true;
   }
 
@@ -1898,6 +1938,7 @@ var Library = (() => {
       if (thread) {
         if (thread.status === "brewing" && thread.lastSeedTurn !== c.turn) {
           thread.seedTouches += 1;
+          thread.storyEvidenceTouches = (thread.storyEvidenceTouches || 0) + 1;
           thread.lastSeedTurn = c.turn;
           thread.tier = tierFor(thread.seedTouches);
           thread.codexLinked = true;
@@ -1912,30 +1953,20 @@ var Library = (() => {
   }
 
   function reinforceFromCoreShift(c, cfg, entity) {
-    // A core-shift (a character's fundamental self genuinely changing) is
-    // strong cross-system material — treat it the same as an ordinary scan
-    // hit reinforcing a thread, but from a stronger signal: bump whatever
-    // thread already exists on this character, or plant a fresh one biased
-    // toward Identity & Deception if none exists yet.
-    if (!c || !cfg || !entity) return;
-    // Same involvePlayer guard every other thread-creation path already
-    // has — in true multiplayer, isPlayerEntity checks against ALL
-    // characterNames, not just "you," so this is reachable whenever
-    // another player's character ends up in UNSAID's cast list (Codex
-    // auto-adds anyone mentioned enough, hand-authored cards get adopted
-    // too) and later has a core-shift reveal.
+    // A genuine core shift is excellent motive/priority material, but it is
+    // still private psychology. It may strengthen the connection to an
+    // already-existing thread; it must not invent an objective twist from
+    // nothing or count as factual foreshadowing.
+    if (!c || !cfg || !entity || !cfg.crossSystemSynergy) return;
     if (isPlayerEntity(c, entity) && !cfg.involvePlayer) return;
-    const existing = c.threads.find(t => t.entity === entity && t.status !== "resolved");
-    if (existing) {
-      if (existing.status === "brewing") {
-        existing.seedTouches += 1;
-        existing.lastSeedTurn = c.turn;
-        existing.tier = tierFor(existing.seedTouches);
-        if (isEligible(existing, c, cfg)) existing.status = "ready";
-      }
-    } else {
-      const biasedCfg = Object.assign({}, cfg, { categoryBias: "Identity & Deception" });
-      createThread(c, entity, null, c.turn, biasedCfg);
+    const existing = c.threads
+      .filter(t => t && t.status === "brewing" &&
+        (String(t.entity || "").toLowerCase() === String(entity).toLowerCase() ||
+         (typeof isSameCardEntity === "function" && isSameCardEntity(t.entity, entity))))
+      .sort((a, b) => b.seedTouches - a.seedTouches || a.originTurn - b.originTurn)[0];
+    if (!existing) return;
+    if (reinforceThreadFromPsychology(existing, c, cfg, "core-shift")) {
+      existing.psychologyTouches = Math.min(12, (existing.psychologyTouches || 0) + 1);
     }
   }
 
@@ -2001,6 +2032,7 @@ var Library = (() => {
       if (existing) {
         if (existing.status === "brewing" && existing.lastSeedTurn !== c.turn) {
           existing.seedTouches += 1;
+          existing.storyEvidenceTouches = (existing.storyEvidenceTouches || 0) + 1;
           existing.lastSeedTurn = c.turn;
           existing.tier = tierFor(existing.seedTouches);
           if (isEligible(existing, c, cfg)) existing.status = "ready";
@@ -2073,10 +2105,23 @@ var Library = (() => {
 
     const sentences = splitSentences(text);
     let lastEntity = null;
+    let carryRemaining = 0;
     for (const s of sentences) {
       const sentenceEntity = findKnownEntityInSentence(s, cardTitles) || findEntityInSentence(s);
-      if (sentenceEntity) lastEntity = sentenceEntity;
-      const entity = sentenceEntity || lastEntity;
+      let entity = sentenceEntity;
+      if (sentenceEntity) {
+        lastEntity = sentenceEntity;
+        carryRemaining = 1;
+      } else if (lastEntity && carryRemaining > 0) {
+        // Only carry an entity into the immediately-following sentence.
+        // Older builds could attach a later Author's Note / Plot Essentials
+        // twist to the last capitalized name seen many sentences earlier.
+        entity = lastEntity;
+        carryRemaining -= 1;
+      } else {
+        lastEntity = null;
+        carryRemaining = 0;
+      }
       if (!entity) continue;
 
       const category = matchScenarioCategory(s, entity, cfg);
@@ -2128,8 +2173,8 @@ var Library = (() => {
     if (cfg && !cfg.involvePlayer) brewing = brewing.filter(t => !isPlayerEntity(c, t.entity));
     if (brewing.length === 0) return null;
     brewing.sort((a, b) =>
-      a.seedTouches - b.seedTouches ||
       mindPriorityForThread(b) - mindPriorityForThread(a) ||
+      a.seedTouches - b.seedTouches ||
       a.originTurn - b.originTurn ||
       String(a.entity).localeCompare(String(b.entity))
     );
@@ -2895,7 +2940,7 @@ function isGenericCodexCommonNounCandidate(name, source) {
   return false;
 }
 
-var CODEX_LOCATION_HINTS = /\b(city|state|street|road|lane|avenue|boulevard|canyon|terminal|park|building|tower|island|country|nation|kingdom|realm|district|region|planet|world|base|facility|academy|university|school|campus|bridge|river|mountain|forest|desert|battleground|warzone|hall|tavern|inn|hotel|motel|castle|fortress|temple|church|mosque|shrine|level|sector|wing|chamber|vault|bay|deck|outpost|colony|settlement|village|town|hamlet|station|harbor|harbour|wharf|apartment|house|home|office|warehouse|factory|farm|ranch|arena|stadium|courtroom|courthouse|prison|jail|laboratory|lab|theater|theatre|cinema|museum|library|mall|market|beach|cave|mine|ruins?|cemetery|graveyard|neighborhood|neighbourhood|suburb|block)\b/i;
+var CODEX_LOCATION_HINTS = /\b(city|state|street|road|lane|avenue|boulevard|canyon|terminal|park|garden|grove|orchard|meadow|plaza|square|site|venue|location|place|building|tower|island|country|nation|kingdom|realm|district|region|planet|world|base|facility|academy|university|school|campus|bridge|river|mountain|forest|desert|battleground|warzone|hall|tavern|inn|hotel|motel|castle|fortress|temple|church|mosque|shrine|level|sector|wing|chamber|vault|bay|deck|outpost|colony|settlement|village|town|hamlet|station|harbor|harbour|wharf|apartment|house|home|office|warehouse|factory|farm|ranch|arena|stadium|courtroom|courthouse|prison|jail|laboratory|lab|theater|theatre|cinema|museum|library|mall|market|beach|cave|mine|ruins?|cemetery|graveyard|neighborhood|neighbourhood|suburb|block)\b/i;
 var CODEX_LOCATION_SUFFIX_HINTS = /(tower|keep|hold|spire|haven|hollow|reach|scraper)/i;
 
 // "Faction" doubles as the best fit for any organization — guild-and-empire
@@ -3051,6 +3096,28 @@ function codexLooksLikeSentenceStarterMorphology(name, source) {
   return new RegExp(`(?:^|[.!?]["'”’)]*\\s+|\\n+\\s*|["“]\\s*)${n}\\b`, "i").test(s);
 }
 
+function codexHasLowercaseCommonUsage(name, source) {
+  const clean = String(name || "").trim();
+  if (!clean || /\s/.test(clean) || !source) return false;
+  if (!/^[A-Za-z][A-Za-z0-9'’.-]*$/.test(clean)) return false;
+  const lower = clean.toLowerCase();
+  if (clean === lower) return false;
+  const s = String(source);
+  const rx = new RegExp(`\\b${escapeForRegex(lower)}\\b`, "g");
+  let m;
+  let lowercaseHits = 0;
+  while ((m = rx.exec(s))) {
+    // Regex is intentionally case-sensitive: only genuinely lowercase uses
+    // count as common-word evidence.
+    lowercaseHits += 1;
+    const before = s.slice(Math.max(0, m.index - 14), m.index);
+    if (/\b(?:a|an|the|some|any|this|that|my|your|his|her|their|our)\s+$/i.test(before)) return true;
+    if (lowercaseHits >= 2) return true;
+    if (rx.lastIndex === m.index) rx.lastIndex++;
+  }
+  return false;
+}
+
 function normalizeCodexCandidate(raw, source) {
   let name = stripPossessive(String(raw || "")
     .replace(/^[\s"'“”‘’([{<]+|[\s"'“”‘’)\]}>.,:;!?—–-]+$/g, "")
@@ -3091,6 +3158,14 @@ function normalizeCodexCandidate(raw, source) {
   }
 
   if (!explicit) {
+    // If a single capitalized token is also used as an ordinary lowercase
+    // noun in the same context, treat the lowercase usage as strong evidence
+    // that the sentence-start capitalization is grammatical rather than a
+    // proper name. Explicit naming still overrides this for characters like
+    // Summer, Coffee, Rose, etc.
+    if (keys.length === 1 && codexHasLowercaseCommonUsage(name, source)) {
+      return null;
+    }
     if (keys.length === 1 &&
         (CODEX_STOPWORDS.has(keys[0]) || CODEX_TITLE_WORDS.has(keys[0]))) {
       return null;
@@ -4090,6 +4165,32 @@ function codexAppearanceCount(name) {
   return Array.isArray(turns) ? turns.length : 0;
 }
 
+function resolveCodexTrackingKey(name, source) {
+  const codex = state && state.unsaid && state.unsaid.codex;
+  if (!codex || !name) return name;
+  const keys = Object.keys(codex.mentionCounts || {});
+  const exact = keys.find(k => k.toLowerCase() === String(name).toLowerCase());
+  if (exact) return exact;
+
+  const matches = keys.filter(k => isSameCardEntity(k, name));
+  if (matches.length !== 1) return name;
+
+  const existing = matches[0];
+  const newWords = String(name).trim().split(/\s+/).filter(Boolean).length;
+  const oldWords = String(existing).trim().split(/\s+/).filter(Boolean).length;
+  const oldType = (codex.likelyCharacters && codex.likelyCharacters[existing])
+    ? "character"
+    : ((codex.observedTypes && codex.observedTypes[existing]) || null);
+  const newType = classifyCodexEntry(name, source || "");
+
+  // A longer name that changes entity kind is usually a distinct entity,
+  // not an alias: Rose (character) vs Rose Garden (location), Phoenix
+  // (character) vs Phoenix Project (faction), etc.
+  if (newWords > oldWords && oldType && newType && oldType !== newType) return name;
+
+  return existing;
+}
+
 function trackMentions(text, observeIntroductions) {
   if (!state.unsaid || !state.unsaid.codex) return;
   const source = typeof text === "string" ? text : "";
@@ -4120,10 +4221,7 @@ function trackMentions(text, observeIntroductions) {
     }
     if (!name) return;
 
-    const keys = Object.keys(state.unsaid.codex.mentionCounts);
-    const exactKey = keys.find(k => k.toLowerCase() === name.toLowerCase());
-    const fuzzyKey = exactKey || keys.find(k => isSameCardEntity(k, name));
-    const key = fuzzyKey || name;
+    const key = resolveCodexTrackingKey(name, source) || name;
     if (seenThisPass.has(key)) return;
     seenThisPass.add(key);
 
@@ -4178,7 +4276,7 @@ function trackMentions(text, observeIntroductions) {
 function pruneMentionCounts() {
   const counts = state.unsaid.codex.mentionCounts;
   Object.keys(counts).forEach(name => {
-    if (storyCards.some(c => c.title && isSameCardEntity(c.title, name))) {
+    if (!!findStoryCardForEntity(name)) {
       forgetMentionTracking(name);
       return;
     }
@@ -4224,7 +4322,7 @@ function classifyCodexEntry(name, text) {
 
   const n = escapeForRegex(name);
   const nearLocation = new RegExp(`(in|inside|outside|through|into)\\s+(?:the\\s+)?${n}\\b`, "i");
-  const describedAsLocation = new RegExp(`\\b(?:city|town|village|hamlet|kingdom|realm|district|region|port|harbor|harbour|forest|woods|mountain|valley|island|station|outpost|colony|settlement|tavern|inn|hotel|motel|castle|fortress|temple|academy|school|college|university|campus|facility|base|office|apartment|house|home|warehouse|factory|farm|ranch|arena|stadium|courtroom|courthouse|prison|jail|theater|theatre|museum|library|mall|market|beach|cave|mine|ruins?|cemetery|graveyard|neighbou?rhood|suburb)\\s+(?:of|called|named)\\s+${n}\\b|\\b${n}\\b\\s+(?:is|was)\\s+(?:an?\\s+|the\\s+)?(?:city|town|village|hamlet|kingdom|realm|district|region|port|harbor|harbour|forest|station|outpost|colony|settlement|tavern|inn|hotel|motel|castle|fortress|temple|academy|school|college|university|campus|facility|base|office|apartment|house|home|warehouse|factory|farm|ranch|arena|stadium|courtroom|courthouse|prison|jail|theater|theatre|museum|library|mall|market|beach|cave|mine|ruins?|cemetery|graveyard|neighbou?rhood|suburb)\\b`, "i");
+  const describedAsLocation = new RegExp(`\\b(?:location|place|site|venue|garden|grove|park|plaza|square|city|town|village|hamlet|kingdom|realm|district|region|port|harbor|harbour|forest|woods|mountain|valley|island|station|outpost|colony|settlement|tavern|inn|hotel|motel|castle|fortress|temple|academy|school|college|university|campus|facility|base|office|apartment|house|home|warehouse|factory|farm|ranch|arena|stadium|courtroom|courthouse|prison|jail|theater|theatre|museum|library|mall|market|beach|cave|mine|ruins?|cemetery|graveyard|neighbou?rhood|suburb)\\s+(?:of|called|named)\\s+${n}\\b|\\b${n}\\b\\s+(?:is|was)\\s+(?:an?\\s+|the\\s+)?(?:location|place|site|venue|garden|grove|park|plaza|square|city|town|village|hamlet|kingdom|realm|district|region|port|harbor|harbour|forest|station|outpost|colony|settlement|tavern|inn|hotel|motel|castle|fortress|temple|academy|school|college|university|campus|facility|base|office|apartment|house|home|warehouse|factory|farm|ranch|arena|stadium|courtroom|courthouse|prison|jail|theater|theatre|museum|library|mall|market|beach|cave|mine|ruins?|cemetery|graveyard|neighbou?rhood|suburb)\\b`, "i");
   if (nearLocation.test(text) || describedAsLocation.test(text)) return "location";
 
   const nearItem = new RegExp(`(wields?|holds?|wearing|wears|wore|donned|dressed\\s+in|put\\s+on|slipped\\s+into|using|uses|draws?|grips?|picks?\\s+up|holsters?|drove|drives|driving|parked|rode|riding|climbed\\s+into|hopped\\s+into|flew|flying|piloted|piloting|boarded|boarding|launched|launching|docked|docking)\\s+(the\\s+|a\\s+|an\\s+|his\\s+|her\\s+|their\\s+)?${n}\\b`, "i");
@@ -4334,9 +4432,15 @@ function findStoryCardForEntity(name) {
   if (exact.length === 1) return exact[0];
   if (exact.length > 1) return exact[0];
 
-  const fuzzy = storyCards.filter(card =>
-    card && card.title && isSameCardEntity(card.title, name)
-  );
+  const wantedWordCount = clean(name).split(" ").filter(Boolean).length;
+  const fuzzy = storyCards.filter(card => {
+    if (!card || !card.title || !isSameCardEntity(card.title, name)) return false;
+    // Direction matters for lookup. "Harlan" may intentionally refer to an
+    // existing "Harlan Voss" card, but a longer new entity such as "Rose
+    // Garden" must not collapse onto an existing one-word "Rose" card.
+    const cardWordCount = clean(card.title).split(" ").filter(Boolean).length;
+    return cardWordCount >= wantedWordCount;
+  });
   return fuzzy.length === 1 ? fuzzy[0] : null;
 }
 
@@ -4398,7 +4502,7 @@ function findCodexCandidates(threshold, excludeNames, maxAttempts, maxCount) {
     }
 
     if (exclude.some(ex => isSameCardEntity(ex, name))) continue;
-    if (storyCards.some(c => isSameCardEntity(c.title, name))) continue;
+    if (!!findStoryCardForEntity(name)) continue;
 
     // Character-shaped names are NOT auto-carded from hearsay/backstory
     // mentions alone. They join automatic Codex only after Output has seen
@@ -4570,7 +4674,7 @@ function buildStatusReport(cfg) {
   const likelyCharacters = codex.likelyCharacters || {};
   const introducedTurn = codex.introducedTurn || {};
   const observedTypes = codex.observedTypes || {};
-  const alreadyCarded = tracked.filter(n => storyCards.some(c => c.title && isSameCardEntity(c.title, n)));
+  const alreadyCarded = tracked.filter(n => !!findStoryCardForEntity(n));
   const minObserve = Math.max(0, cfg.codexCharacterMinTurns || 0);
   const minAppearances = Math.max(1, cfg.codexCharacterMinAppearances || 1);
   const deadline = Math.max(minObserve, cfg.codexCharacterDeadline || 5);
@@ -4804,18 +4908,9 @@ function syncMindToCard(name, allowCoreShift, useJson) {
 }
 
 function splitThoughtSentences(thought) {
-  const rawSentences = thought.split(/(?<=[.!?])\s+/).filter(Boolean);
-  const sentences = [];
-  for (let i = 0; i < rawSentences.length; i++) {
-    const s = rawSentences[i];
-    const words = s.trim().split(/\s+/);
-    const lastWord = (words[words.length - 1] || "").replace(/\.$/, "");
-    if (SENTENCE_ABBREVIATIONS.has(lastWord) && i + 1 < rawSentences.length) {
-      rawSentences[i + 1] = s + " " + rawSentences[i + 1];
-      continue;
-    }
-    sentences.push(s);
-  }
+  const sentences = (typeof Library !== "undefined" && Library.splitSentences)
+    ? Library.splitSentences(String(thought || ""))
+    : [String(thought || "")].filter(Boolean);
   return { feelingSentence: sentences[0] || thought, wantSentence: sentences[1] || null };
 }
 
