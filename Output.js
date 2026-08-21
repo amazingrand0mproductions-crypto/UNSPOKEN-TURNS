@@ -201,7 +201,7 @@ var unsaidModifier = (text) => {
 
     function tryBuildCard(blockContent, name, upfrontType) {
       try {
-        let type = upfrontType || "character";
+        let type = upfrontType || expectedTypes[name] || "character";
         const fields = {};
         const allCanonicalFields = [
           ...new Set([
@@ -308,7 +308,15 @@ var unsaidModifier = (text) => {
           .replace(/\s+/g, " ")
           .trim()
           .replace(/^(?:the|a|an)\s+/, "");
-        const expectedKind = upfrontType || expectedTypes[name] || "character";
+        const evidenceForType = [
+          (typeof codexEvidenceTextFor === "function" ? codexEvidenceTextFor(name) : ""),
+          blockContent
+        ].filter(Boolean).join(" ");
+        const reconciledExpectedKind =
+          (typeof reconcileCodexEntityType === "function" ? reconcileCodexEntityType(name, evidenceForType) : null) ||
+          (typeof resolveCodexEntityType === "function" ? resolveCodexEntityType(name, evidenceForType) : null);
+        const expectedKind = reconciledExpectedKind || upfrontType || expectedTypes[name] || "character";
+        type = expectedKind;
         const exactNameMatch = modelClaimedName &&
           comparableName(modelClaimedName) === comparableName(name);
         const safeCharacterAliasMatch = expectedKind === "character" &&
@@ -352,31 +360,65 @@ var unsaidModifier = (text) => {
         const locationFieldCount = ["Location", "Key Locations", "Historical Events"].filter(f => fields[f]).length;
         const itemFieldCount = ["Properties", "Origin"].filter(f => fields[f]).length;
         const factionShapeScore = (fields["Type"] && !fields["Race"] && !fields["Personality"] && !fields["Background"]) ? 1 : 0;
-        const personSignal = /\b(girl|boy|woman|man|person|lady|gentlemen|gentleman|teenager|teens?|child|kids?|elderly|toddler|infant|maiden|youth|android|robot|synthetic|alien|spirit|ghost|sapient|sentient)\b|\byears?[\s-]old\b/i;
+        const personSignal = /\b(girl|boy|woman|man|person|lady|gentlemen|gentleman|teenager|teens?|child|kids?|elderly|toddler|infant|maiden|youth|android|robot|synthetic|alien|spirit|ghost|sapient|sentient|human|elf|dwarf|orc|fae|vampire|werewolf)\b|\byears?[\s-]old\b/i;
         // A person mentioned via "led by a scarred man" or "founded by a
         // young woman" is describing someone associated with the entity,
-        // not the entity itself — strip that kind of attribution before
-        // checking, so a gang or order isn't misread as a person just
-        // because its leader or founder gets a passing mention.
+        // not the entity itself.
         const attributionPattern = /\b(?:led|founded|formed|created|ruled|run|owned|operated|guarded|watched over|managed|built|established)\s+by\s+[^.!?]*/gi;
-        const readsLikeAPerson = [fields["Description"], fields["Background"], fields["Personality"], fields["Appearance"]]
-          .some(text => text && personSignal.test(text.replace(attributionPattern, "")));
+        const readsLikeAPerson = [fields["Description"], fields["Background"], fields["Personality"], fields["Appearance"], fields["Race"]]
+          .some(value => value && personSignal.test(value.replace(attributionPattern, "")));
+
+        // Template mistakes can be semantically obvious even when the model
+        // filled every requested field. The real failure that motivated this
+        // guard was a place receiving:
+        //   Race: Human settlement
+        //   Background: A remote village...
+        // which previously scored as a "character" simply because eight
+        // character-template labels were present.
+        const placeKindSignal = /\b(?:settlement|village|town|city|hamlet|place|location|district|region|kingdom|realm|country|nation|province|colony|outpost|tavern|inn|hotel|castle|fortress|temple|school|campus|station|port|harbou?r|forest|woods|island|mountain|valley|building|neighbou?rhood|suburb|farm|ranch|arena|stadium|hospital|clinic)\b/i;
+        const itemKindSignal = /\b(?:item|object|artifact|relic|device|weapon|tool|sword|blade|gun|rifle|pistol|staff|wand|amulet|ring|key|book|ship|vehicle|car|truck|robot|mech|phone|computer|document|map|medicine|dish|drink|recipe)\b/i;
+        const factionKindSignal = /\b(?:faction|organization|organisation|guild|order|company|corporation|agency|group|gang|cult|society|team|club|league|union|association|government|department|business|restaurant|brand|band|crew|fleet)\b/i;
+
+        const raceLooksLikePlace = !!fields["Race"] && placeKindSignal.test(fields["Race"]);
+        const typeLooksLikePlace = !!fields["Type"] && placeKindSignal.test(fields["Type"]);
+        const typeLooksLikeItem = !!fields["Type"] && itemKindSignal.test(fields["Type"]);
+        const typeLooksLikeFaction = !!fields["Type"] && factionKindSignal.test(fields["Type"]);
+        const descriptionLooksLikePlace = [fields["Description"], fields["Background"], fields["Appearance"]]
+          .some(value => value && (
+            /^\s*(?:a|an|the)?\s*(?:remote|small|large|ancient|old|modern|isolated|coastal|mountain|rural|urban|walled|hidden|quiet|grim|prosperous|ruined|abandoned|sprawling|clustered|cluster of|collection of)?\s*(?:settlement|village|town|city|hamlet|district|region|kingdom|realm|colony|outpost|tavern|inn|forest|woods|island|station|port|building)\b/i.test(value) ||
+            /\b(?:cluster|collection)\s+of\s+[^.!?]{0,60}\b(?:buildings?|houses?|structures?)\b/i.test(value)
+          ));
+
         // Independent, direct re-check of the name itself against the same
-        // hint patterns classifyCodexEntry uses upfront — deliberately not
-        // trusting upfrontType alone here, since that guess is exactly what
-        // can be wrong in the first place.
+        // hint patterns classifyCodexEntry uses upfront.
         const nameLocationHint = (CODEX_LOCATION_HINTS.test(name) || CODEX_LOCATION_SUFFIX_HINTS.test(name)) ? 1 : 0;
         const nameItemHint = CODEX_ITEM_HINTS.test(name) ? 1 : 0;
         const nameFactionHint = CODEX_FACTION_HINTS.test(name) ? 1 : 0;
 
         const scores = {
-          character: characterFieldCount + (readsLikeAPerson ? 1 : 0),
-          location: locationFieldCount + nameLocationHint,
-          item: itemFieldCount + nameItemHint,
-          faction: factionShapeScore + nameFactionHint
+          character: characterFieldCount + (readsLikeAPerson ? 2 : 0) - (raceLooksLikePlace ? 6 : 0),
+          location: locationFieldCount + nameLocationHint + (raceLooksLikePlace ? 6 : 0) + (typeLooksLikePlace ? 4 : 0) + (descriptionLooksLikePlace ? 3 : 0),
+          item: itemFieldCount + nameItemHint + (typeLooksLikeItem ? 4 : 0),
+          faction: factionShapeScore + nameFactionHint + (typeLooksLikeFaction ? 4 : 0)
         };
-        const best = Object.keys(scores).reduce((a, b) => (scores[b] > scores[a] ? b : a));
-        if (scores[best] > 0) type = best;
+
+        const externalEvidence = typeof codexEvidenceTextFor === "function"
+          ? codexEvidenceTextFor(name)
+          : "";
+        const explicitPersonLock = typeof explicitCodexCharacterCue === "function" &&
+          explicitCodexCharacterCue(name, externalEvidence);
+        const strongExternalNonCharacter = typeof strongCodexNonCharacterEvidence === "function"
+          ? strongCodexNonCharacterEvidence(name, externalEvidence)
+          : null;
+
+        if (explicitPersonLock) {
+          type = "character";
+        } else if (strongExternalNonCharacter) {
+          type = strongExternalNonCharacter.type;
+        } else {
+          const best = Object.keys(scores).reduce((a, b) => (scores[b] > scores[a] ? b : a));
+          if (scores[best] > 0) type = best;
+        }
 
         // A copied template full of "..." is not a successful card. Require
         // every field in the chosen template to contain a concrete value so
@@ -786,7 +828,14 @@ var unsaidModifier = (text) => {
     syncFrontMemoryHint(cfg.enabled && cfg.subtleHints && cfg.cast.length > 0);
 
     if (!text || !text.trim()) {
-      text = "*(A quiet moment passes.)*";
+      // Never inject synthetic narration into the adventure just because the
+      // model returned only hidden metadata. Automatic prompts now demand
+      // visible story prose first; this zero-width fallback merely keeps the
+      // Output hook valid if a model still ignores that requirement.
+      if (typeof log === "function") {
+        log("UNSAID Output: model returned only hidden script metadata; suppressed synthetic quiet-moment narration.");
+      }
+      text = "\u200B";
     }
 
     return { text };

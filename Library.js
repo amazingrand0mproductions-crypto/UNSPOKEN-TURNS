@@ -4091,9 +4091,198 @@ function codexTypeVoteScore(name, type) {
   return votes && typeof votes === "object" ? (votes[type] || 0) : 0;
 }
 
+
+// Strong entity typing sits between raw capitalization and full Codex
+// classification. It deliberately asks "what is this thing?" before a broad
+// movement/dialogue cue is allowed to call it a person. This is especially
+// important for place names such as Thornhaven: "Thornhaven's a quiet place"
+// is much stronger evidence than the fact that the same capitalized token
+// happens to occur at the start of a sentence.
+function explicitCodexCharacterCue(name, text) {
+  const source = typeof text === "string" ? text : "";
+  if (!source || !name) return false;
+  const n = escapeForRegex(name);
+  const personKinds =
+    "(?:girl|boy|woman|man|person|lady|gentleman|teenager|teen|child|youth|" +
+    "guard|soldier|knight|mage|wizard|witch|priest|priestess|captain|doctor|" +
+    "merchant|stranger|traveler|traveller|officer|detective|pilot|engineer|" +
+    "nurse|bartender|server|waiter|waitress|barista|cashier|clerk|receptionist|" +
+    "chef|cook|mechanic|driver|courier|medic|therapist|counselor|counsellor|" +
+    "neighbor|neighbour|roommate|coworker|colleague|manager|boss|assistant|" +
+    "owner|parent|mother|father|sister|brother|wife|husband|partner|friend|" +
+    "teacher|professor|student|lawyer|attorney|judge|athlete|coach|musician|" +
+    "singer|actor|artist|scientist|researcher|agent|android|robot|synthetic|" +
+    "AI|alien|creature|spirit|ghost|vampire|werewolf|superhero|hero|villain|" +
+    "elf|dwarf|orc|fae|demon|angel|dragon|deity|god|goddess|dog|cat|horse|" +
+    "animal|companion)";
+
+  const cues = [
+    new RegExp(`\\b(?:I\\s*(?:am|'m|’m)|my\\s+name\\s+is|name\\s*(?:is|'s|’s)|call\\s+me|this\\s+is|meet|known\\s+as|go\\s+by)\\s+["“”'‘’]?${n}\\b`, "i"),
+    new RegExp(`\\b(?:a|an|the)\\s+(?:young\\s+|old\\s+|elderly\\s+)?${personKinds}\\s+(?:named|called)\\s+["“”'‘’]?${n}\\b`, "i"),
+    new RegExp(`\\b${n}\\b\\s+(?:is|was)\\s+(?:a|an|the)\\s+(?:young\\s+|old\\s+|elderly\\s+)?${personKinds}\\b`, "i"),
+    new RegExp(`\\b${n}(?:'s|’s)\\s+(?:eyes?|voice|hands?|face|expression|smile|gaze|shoulders?|breath|hair|fingers?|arms?|feet|cheeks?|lips?|posture|jaw|stance|grip|footsteps?)\\b`, "i"),
+    new RegExp(`\\b${n}\\b\\s+(?:says?|asks?|replies?|answers?|whispers?|murmurs?|shouts?|adds?|admits?|explains?|insists?|snaps?|growls?|mutters?)\\b`, "i")
+  ];
+  return cues.some(re => re.test(source));
+}
+
+function strongCodexNonCharacterEvidence(name, text) {
+  const source = typeof text === "string" ? text : "";
+  if (!source || !name) return null;
+  const n = escapeForRegex(name);
+
+  const locationKinds =
+    "(?:location|place|site|venue|garden|grove|park|plaza|square|city|town|" +
+    "village|hamlet|settlement|kingdom|realm|country|nation|district|region|" +
+    "province|port|harbou?r|forest|woods|woodland|mountain|valley|island|" +
+    "station|outpost|colony|tavern|inn|hotel|motel|castle|fortress|temple|" +
+    "shrine|academy|school|college|university|campus|facility|base|office|" +
+    "apartment|house|home|warehouse|factory|farm|ranch|arena|stadium|" +
+    "courtroom|courthouse|prison|jail|theater|theatre|museum|library|mall|" +
+    "market|beach|cave|mine|ruins?|cemetery|graveyard|neighbou?rhood|suburb|" +
+    "street|road|lane|avenue|boulevard|bridge|river|lake|sea|ocean|desert|" +
+    "swamp|marsh|moor|barrow|barrow-mounds?|building|tower|hall|room|chamber)";
+
+  const itemKinds =
+    "(?:item|object|artifact|relic|device|weapon|tool|sword|blade|gun|rifle|" +
+    "pistol|staff|wand|amulet|ring|key|book|tome|ship|starship|vehicle|car|" +
+    "truck|motorcycle|train|boat|robot|android|mech|phone|computer|laptop|" +
+    "camera|instrument|guitar|document|letter|contract|map|medicine|medication|" +
+    "serum|dish|meal|drink|beverage|cocktail|dessert|recipe|special)";
+
+  const factionKinds =
+    "(?:order|guild|alliance|faction|clan|brotherhood|council|syndicate|" +
+    "coalition|company|corporation|agency|organization|organisation|group|" +
+    "gang|cult|society|restaurant|store|shop|brand|network|team|club|league|" +
+    "union|association|foundation|charity|department|bureau|committee|party|" +
+    "campaign|band|orchestra|label|school|college|university|crew|fleet|" +
+    "police|government|family|house|business|firm|studio|hospital|clinic)";
+
+  const scores = { location: 0, item: 0, faction: 0 };
+
+  // Name-shape hints are useful, but deliberately not decisive by themselves.
+  if (CODEX_LOCATION_HINTS.test(name)) scores.location += 2;
+  if (CODEX_LOCATION_SUFFIX_HINTS.test(name)) scores.location += 2;
+  if (CODEX_ITEM_HINTS.test(name)) scores.item += 2;
+  if (CODEX_FACTION_HINTS.test(name)) scores.faction += 2;
+
+  const locationExplicit = [
+    new RegExp(`\\b${locationKinds}\\s+(?:of\\s+|called\\s+|named\\s+|known\\s+as\\s+)?["“”'‘’]?${n}\\b`, "i"),
+    new RegExp(`\\b${n}\\b\\s+(?:is|was)\\s+(?:a|an|the)\\s+(?:[a-z-]+\\s+){0,3}${locationKinds}\\b`, "i"),
+    // Handles contractions such as "Thornhaven's a quiet place."
+    new RegExp(`\\b${n}(?:'s|’s)\\s+(?:a|an|the)\\s+(?:[a-z-]+\\s+){0,3}${locationKinds}\\b`, "i")
+  ];
+  if (locationExplicit.some(re => re.test(source))) scores.location += 6;
+  if (new RegExp(`\\b(?:in|inside|outside|into|through|near|around|toward|towards|from|within|across|beneath|above)\\s+(?:the\\s+)?${n}\\b`, "i").test(source)) {
+    scores.location += 1;
+  }
+
+  const itemExplicit = [
+    new RegExp(`\\b${itemKinds}\\s+(?:called|named|known\\s+as|dubbed)\\s+["“”'‘’]?${n}\\b`, "i"),
+    new RegExp(`\\b${n}\\b\\s+(?:is|was)\\s+(?:a|an|the)\\s+(?:[a-z-]+\\s+){0,2}${itemKinds}\\b`, "i")
+  ];
+  if (itemExplicit.some(re => re.test(source))) scores.item += 6;
+  if (new RegExp(`\\b(?:wields?|holds?|wears?|uses?|draws?|grips?|picks?\\s+up|carries?|opens?|reads?|drives?|pilots?|boards?)\\s+(?:the\\s+|a\\s+|an\\s+|his\\s+|her\\s+|their\\s+)?${n}\\b`, "i").test(source)) {
+    scores.item += 1;
+  }
+
+  const factionExplicit = [
+    new RegExp(`\\b${factionKinds}\\s+(?:called|named|known\\s+as)\\s+["“”'‘’]?${n}\\b`, "i"),
+    new RegExp(`\\b${n}\\b\\s+(?:is|was)\\s+(?:a|an|the)\\s+(?:[a-z-]+\\s+){0,2}${factionKinds}\\b`, "i"),
+    new RegExp(`\\b${n}\\s+${factionKinds}\\b`, "i")
+  ];
+  if (factionExplicit.some(re => re.test(source))) scores.faction += 6;
+  if (new RegExp(`\\b(?:works?|worked|employed|member|members|joined|joins|leads?|founded|owns?)\\s+(?:at|for|by|of)?\\s*(?:the\\s+)?${n}\\b`, "i").test(source)) {
+    scores.faction += 1;
+  }
+
+  const order = ["location", "faction", "item"];
+  const best = order.reduce((a, b) => scores[b] > scores[a] ? b : a);
+  const bestScore = scores[best];
+  const second = order.filter(t => t !== best).reduce((m, t) => Math.max(m, scores[t]), 0);
+
+  if (bestScore < 3) return null;
+  return { type: best, score: bestScore, margin: bestScore - second, scores };
+}
+
+function resolveCodexEntityType(name, text) {
+  const live = typeof text === "string" ? text : "";
+  const evidence = [codexEvidenceTextFor(name), live].filter(Boolean).join(" ");
+  const explicitCharacter = explicitCodexCharacterCue(name, evidence);
+  const strongNonCharacter = strongCodexNonCharacterEvidence(name, evidence);
+
+  // An explicit person introduction is the strongest signal. This preserves
+  // intentionally unusual names such as River, Castle, Angel, or Coffee.
+  if (explicitCharacter) return "character";
+  if (strongNonCharacter) return strongNonCharacter.type;
+
+  try {
+    const codex = state && state.unsaid && state.unsaid.codex;
+    if (codex) {
+      if (codex.trustedEntities && codex.trustedEntities[name]) {
+        return codex.trustedEntities[name];
+      }
+      if (codex.likelyCharacters && codex.likelyCharacters[name]) {
+        return "character";
+      }
+      const dominant = dominantCodexType(name);
+      if (dominant && dominant !== "character" && codexTypeVoteScore(name, dominant) >= 2) {
+        return dominant;
+      }
+    }
+  } catch (e) {}
+
+  return classifyCodexEntry(name, live);
+}
+
+function reconcileCodexEntityType(name, text) {
+  try {
+    const codex = state && state.unsaid && state.unsaid.codex;
+    if (!codex || !name) return null;
+    const evidence = [codexEvidenceTextFor(name), typeof text === "string" ? text : ""]
+      .filter(Boolean).join(" ");
+    const explicitCharacter = explicitCodexCharacterCue(name, evidence);
+    const strongNonCharacter = strongCodexNonCharacterEvidence(name, evidence);
+
+    if (explicitCharacter) {
+      // A real on-screen identity cue is allowed to recover an unusual
+      // character name that previously looked like a place/item word.
+      if (codex.trustedEntities && codex.trustedEntities[name]) {
+        delete codex.trustedEntities[name];
+      }
+      return "character";
+    }
+
+    if (strongNonCharacter) {
+      codex.trustedEntities[name] = strongNonCharacter.type;
+      codex.observedTypes[name] = strongNonCharacter.type;
+
+      // Self-heal old false character flags. These were sticky in previous
+      // builds and could make a place such as Thornhaven permanently use the
+      // Character template even after the story explicitly called it a place.
+      if (codex.likelyCharacters[name]) delete codex.likelyCharacters[name];
+      if (typeof codex.introducedTurn[name] !== "undefined") delete codex.introducedTurn[name];
+      if (typeof codex.appearanceTurns[name] !== "undefined") delete codex.appearanceTurns[name];
+      return strongNonCharacter.type;
+    }
+
+    return resolveCodexEntityType(name, evidence);
+  } catch (e) {
+    return null;
+  }
+}
+
 function isLikelyCharacterIntroduction(name, text) {
   const source = typeof text === "string" ? text : "";
   if (!source || !name) return false;
+
+  // Strong identity cues beat noun-shaped names ("I'm River"), while strong
+  // location/item/faction evidence beats generic action verbs ("Thornhaven's
+  // a quiet place", "Coffee sits on the table"). This keeps broad presence
+  // heuristics from turning places and objects into people.
+  if (explicitCodexCharacterCue(name, source)) return true;
+  const strongNonCharacter = strongCodexNonCharacterEvidence(name, source);
+  if (strongNonCharacter && strongNonCharacter.score >= 3) return false;
 
   // Do not let generic movement/dialogue cues promote an ordinary sentence
   // starter into a person. A stop-word-like name must first be explicitly
@@ -4235,16 +4424,31 @@ function trackMentions(text, observeIntroductions) {
       state.unsaid.codex.firstSeenTurn[key] = state.unsaid.turn;
     }
 
-    const presence = canConfirmIntroductions && isLikelyCharacterIntroduction(key, source);
+    // Reconcile persistent type state before deciding whether this is an
+    // on-screen character appearance. Previous builds made likelyCharacters
+    // sticky, so a place incorrectly promoted once could stay a character
+    // forever. Strong semantic evidence is now allowed to repair that state.
+    const reconciledType = reconcileCodexEntityType(key, source);
+    const presence = canConfirmIntroductions &&
+      reconciledType !== "location" &&
+      reconciledType !== "item" &&
+      reconciledType !== "faction" &&
+      isLikelyCharacterIntroduction(key, source);
     const trustedType = state.unsaid.codex.trustedEntities[key] || null;
-    const observedType = presence ? "character" : (trustedType || classifyCodexEntry(key, source));
+    const observedType = presence
+      ? "character"
+      : (trustedType || reconciledType || classifyCodexEntry(key, source));
     const evidenceStrength = codexEvidenceStrength(key, source, observedType, presence);
     if (!presence && hasExplicitCodexNamingCue(key, source) && observedType !== "character") {
       state.unsaid.codex.trustedEntities[key] = observedType;
     }
     recordCodexConfidence(key, observedType, evidenceStrength, actionEpoch);
 
-    if (presence || state.unsaid.codex.likelyCharacters[key]) {
+    if (presence) {
+      state.unsaid.codex.observedTypes[key] = "character";
+    } else if (state.unsaid.codex.trustedEntities[key]) {
+      state.unsaid.codex.observedTypes[key] = state.unsaid.codex.trustedEntities[key];
+    } else if (state.unsaid.codex.likelyCharacters[key]) {
       state.unsaid.codex.observedTypes[key] = "character";
     } else {
       state.unsaid.codex.observedTypes[key] = dominantCodexType(key);
@@ -4312,9 +4516,17 @@ function pruneMentionCounts() {
 }
 
 function classifyCodexEntry(name, text) {
-  // Strong on-screen person evidence outranks a misleading noun-shaped name.
-  // A character can genuinely be named River, Castle, Angel, etc.
-  if (isLikelyCharacterIntroduction(name, text)) return "character";
+  const source = typeof text === "string" ? text : "";
+
+  // Explicitly being introduced as a person is stronger than a noun-shaped
+  // name. Otherwise, semantic evidence for a place/item/faction gets first
+  // refusal before broad movement/dialogue heuristics are allowed to call the
+  // entity a character.
+  if (explicitCodexCharacterCue(name, source)) return "character";
+  const strongNonCharacter = strongCodexNonCharacterEvidence(name, source);
+  if (strongNonCharacter) return strongNonCharacter.type;
+  if (isLikelyCharacterIntroduction(name, source)) return "character";
+
   if (CODEX_LOCATION_HINTS.test(name)) return "location";
   if (CODEX_LOCATION_SUFFIX_HINTS.test(name)) return "location";
   if (CODEX_FACTION_HINTS.test(name)) return "faction";
@@ -4545,9 +4757,12 @@ function buildCodexInstruction(names, text, forced, priorFailures, hardDeadline,
   const scenarioNote = Library.scenarioGuidance(text);
 
   const blocks = names.map((name, i) => {
-    const trackedType = state.unsaid.codex.likelyCharacters[name]
-      ? "character"
-      : (state.unsaid.codex.observedTypes[name] || null);
+    const reconciledType = reconcileCodexEntityType(name, text);
+    const trackedType = state.unsaid.codex.trustedEntities[name] ||
+      reconciledType ||
+      (state.unsaid.codex.likelyCharacters[name]
+        ? "character"
+        : (state.unsaid.codex.observedTypes[name] || null));
     const type = trackedType || classifyCodexEntry(name, text);
     const fields = CARD_TEMPLATES[type] || CHARACTER_CARD_FIELDS;
     const body = fields.map(f => `${f}: ${f === "Name" ? name : "..."}`).join("\n");
@@ -4557,7 +4772,7 @@ function buildCodexInstruction(names, text, forced, priorFailures, hardDeadline,
       : "";
     const correctionNote = type === "character"
       ? ` If "${name}" is genuinely a location, item, or faction instead, switch to that matching template rather than pretending it is a person.`
-      : "";
+      : ` Treat "${name}" as a ${type}. Do not use the Character template just because the prose gives the place/object/group human-like adjectives or because its name looks like a person's name.`;
 
     const introTurn = state.unsaid.codex.introducedTurn && state.unsaid.codex.introducedTurn[name];
     const observedTurns = type === "character" && typeof introTurn === "number"
@@ -4583,26 +4798,26 @@ function buildCodexInstruction(names, text, forced, priorFailures, hardDeadline,
   }).join("\n\n");
 
   let priorityLine;
-  if (hardDeadline) {
-    priorityLine =
-      `HARD DEADLINE: write the hidden profile block${names.length > 1 ? "s" : ""} FIRST, before any visible story prose. ` +
-      `Do not postpone, summarize, or skip ${names.length > 1 ? "them" : "it"}.`;
-  } else if (forced) {
+  if (forced) {
     priorityLine =
       `The player explicitly requested ${names.length > 1 ? "these cards" : "this card"}. ` +
-      `Write the hidden profile block${names.length > 1 ? "s" : ""} FIRST, before any visible story prose.`;
+      `Write the hidden profile block${names.length > 1 ? "s" : ""} now. This is a control-command turn, so visible story prose is optional.`;
+  } else if (hardDeadline) {
+    priorityLine =
+      `HARD DEADLINE for the profile, but DO NOT sacrifice the story response. Continue the visible story FIRST, then append the hidden profile block${names.length > 1 ? "s" : ""} at the very end. ` +
+      `Both parts are mandatory; if space is tight, make the card fields shorter rather than omitting the visible continuation.`;
   } else if (failures > 0) {
     priorityLine =
-      `A previous automatic attempt did not produce a usable card. ` +
-      `This retry is mandatory: write the hidden profile block${names.length > 1 ? "s" : ""} FIRST, before continuing the story.`;
+      `A previous automatic attempt did not produce a usable card. Continue the visible story FIRST, then append the hidden profile block${names.length > 1 ? "s" : ""} at the very end. ` +
+      `The retry is mandatory, but it must never replace the normal story continuation.`;
   } else {
     priorityLine =
-      `Before continuing the visible story, write the hidden profile block${names.length > 1 ? "s" : ""} FIRST. ` +
-      `The script removes ${names.length > 1 ? "these blocks" : "this block"} before the player sees the response, so the story can continue normally afterward.`;
+      `Continue the visible story normally FIRST. After the story prose, append the hidden profile block${names.length > 1 ? "s" : ""} at the very end. ` +
+      `The script removes ${names.length > 1 ? "these blocks" : "this block"} before the player sees the response, so the hidden task must never replace or interrupt the visible continuation.`;
   }
 
   const rules = compact
-    ? `Rules: keep the CARD markers exactly; one short concrete line per field; no blanks, "...", Unknown, N/A or TBD. The Name field must stay the exact requested entity; never substitute a nearby food/object/person/place/business. Use established evidence first and infer missing details conservatively without contradicting the story. Fit every field to the actual scenario: Race means species/nature/kind; Strength Level means relevant capability, not automatically combat; Abilities may be skills/expertise/powers/resources; Relationships must be evidence-based. Do not mention this task outside the hidden block.${forced || hardDeadline ? " Visible story prose is optional after the block." : " Continue the visible story after the block."}`
+    ? `Rules: keep the CARD markers exactly; one short concrete line per field; no blanks, "...", Unknown, N/A or TBD. The Name field must stay the exact requested entity; never substitute a nearby food/object/person/place/business. Use established evidence first and infer missing details conservatively without contradicting the story. Fit every field to the actual scenario: Race means species/nature/kind; Strength Level means relevant capability, not automatically combat; Abilities may be skills/expertise/powers/resources; Relationships must be evidence-based. Do not mention this task outside the hidden block.${forced ? " Visible story prose is optional on this manual command turn." : " OUTPUT ORDER: visible story prose first, hidden CARD block last. Never return only the CARD block."}`
     : `Rules:
 - Keep the 【CARD】 and 【/CARD】 markers exactly.
 - Output exactly one short line per listed field.
@@ -4616,7 +4831,7 @@ function buildCodexInstruction(names, text, forced, priorFailures, hardDeadline,
 - Never invent magic, futuristic technology, superpowers, criminal ties, aristocratic titles, romance, military rank, or other genre-specific facts unless the scenario supports them.
 - Preserve established pronouns, culture, era, technology level, social norms, power scale, and tone.
 - Do not explain the profile or mention this task outside the hidden card block.
-${forced || hardDeadline ? "- Once the card block is complete, visible story prose is optional this turn." : "- After the card block is complete, continue the visible story normally."}`;
+${forced ? "- This is a manual /card command turn, so visible story prose is optional." : "- OUTPUT ORDER IS REQUIRED: continue the visible story first, then append the hidden CARD block at the end. Never return only the CARD block and never let the hidden task replace the story response."}`;
 
   return `\n[UNSAID CODEX — mandatory script task. ${priorityLine}${scenarioNote ? "\nScenario adaptation:" + scenarioNote : ""}
 ${blocks}
@@ -5149,7 +5364,7 @@ function buildCoreCheckInstruction(chosen, mind) {
     : "";
   const scenarioNote = compactMindScenarioGuard();
   const twistBridgeNote = Library.twistPressureForMind ? Library.twistPressureForMind(chosen) : "";
-  return `\n[Consider whether recent events have genuinely, permanently changed how ${chosen} sees themselves — not just a passing mood.${coreNote}${tensionNote}${scenarioNote}${twistBridgeNote} If yes, reveal it (keep the 《 》 characters exactly as shown, they're required, not decorative — no asterisks or other markdown, the 《 》 pair is the only formatting needed) as "《${chosen}, [one-word-emotion], core-shift: new lasting truth.》" (replace [one-word-emotion] with an actual word, not the literal placeholder) (1–2 concise sentences inside the required 《 》 marker). If nothing that significant has happened, don't force it — continue the story normally with no reveal at all.]\n`;
+  return `\n[Continue the visible story normally FIRST. Only after the visible prose, consider whether recent events have genuinely, permanently changed how ${chosen} sees themselves — not just a passing mood.${coreNote}${tensionNote}${scenarioNote}${twistBridgeNote} If yes, append at the very end (keep the 《 》 characters exactly as shown, they're required, not decorative — no asterisks or other markdown, the 《 》 pair is the only formatting needed) "《${chosen}, [one-word-emotion], core-shift: new lasting truth.》" (replace [one-word-emotion] with an actual word, not the literal placeholder) with 1–2 concise sentences inside the required 《 》 marker. If nothing that significant has happened, do not force a marker. Never return only the hidden marker; the visible story continuation comes first.]\n`;
 }
 
 function buildAndFitThoughtInstruction(chosen, active, baseText, allowCoreShift) {
@@ -5192,7 +5407,7 @@ function buildAndFitThoughtInstruction(chosen, active, baseText, allowCoreShift)
       : (mind && mind.relations && mind.relations[target]
         ? ` Feels ${mind.relations[target]} toward ${target} unless this scene shifts it.`
         : "");
-    instruction = `\n[${chosen}'s unspoken reaction to ${target} — 1–2 concise sentences inside the required 《 》 marker: how they really feel about ${target} right now, and what they secretly want from this moment. ${target} can't perceive it.${coreNote}${relationNote}${historyNote}${wantNote}${varietyNote} Replace [one-word-emotion] with an actual single word (e.g. wary, hopeful) — do not write the words "feeling" or "emotion" literally.${scenarioNote}${twistBridgeNote} Format (keep the 《 》 characters exactly as shown, they're required, not decorative — no asterisks or other markdown, the 《 》 pair is the only formatting needed): "《${chosen}, [one-word-emotion], about ${target}: thought.》"]\n`;
+    instruction = `\n[Continue the visible story normally FIRST. Then, at the very end, append ${chosen}'s unspoken reaction to ${target} — 1–2 concise sentences inside the required 《 》 marker: how they really feel about ${target} right now, and what they secretly want from this moment. ${target} can't perceive it.${coreNote}${relationNote}${historyNote}${wantNote}${varietyNote} Replace [one-word-emotion] with an actual single word (e.g. wary, hopeful) — do not write the words "feeling" or "emotion" literally.${scenarioNote}${twistBridgeNote} Format (keep the 《 》 characters exactly as shown, they're required, not decorative — no asterisks or other markdown, the 《 》 pair is the only formatting needed): "《${chosen}, [one-word-emotion], about ${target}: thought.》" Never return only the hidden marker; visible story prose must come first.]\n`;
   } else if (mind && mind.core) {
     const atThreshold = allowCoreShift && typeof mind.tensionLevel === "number" &&
       mind.tensionLevel >= TENSION_THRESHOLD;
@@ -5205,9 +5420,9 @@ function buildAndFitThoughtInstruction(chosen, active, baseText, allowCoreShift)
         ? ` Their feelings have been unraveling for a long time now, unresolved — something this significant would happen regardless. If it's truly earned, you may format this instead as "《${chosen}, [one-word-emotion], core-shift: new lasting truth.》" to replace their old anchor.`
         : ` Their feelings have been genuinely shifting for a while now, not settling back — if this moment plays into that and something has truly changed how they see themselves, you may format this instead as "《${chosen}, [one-word-emotion], core-shift: new lasting truth.》" to replace their old anchor. Only do this if it's really earned.`)
       : "";
-    instruction = `\n[${chosen}'s private thought — 1–2 concise sentences inside the required 《 》 marker: how they really feel right now, and what they secretly want. Consistent with "${mind.core}" and their feeling of ${mind.feeling} unless this scene shifts it.${historyNote}${wantNote}${varietyNote}${shiftNote} Replace [one-word-emotion] with an actual single word (e.g. wary, hopeful) — do not write the words "feeling" or "emotion" literally.${scenarioNote}${twistBridgeNote} Format (keep the 《 》 characters exactly as shown, they're required, not decorative — no asterisks or other markdown, the 《 》 pair is the only formatting needed): "《${chosen}, [one-word-emotion]: thought.》" No one else perceives it.]\n`;
+    instruction = `\n[Continue the visible story normally FIRST. Then, at the very end, append ${chosen}'s private thought — 1–2 concise sentences inside the required 《 》 marker: how they really feel right now, and what they secretly want. Consistent with "${mind.core}" and their feeling of ${mind.feeling} unless this scene shifts it.${historyNote}${wantNote}${varietyNote}${shiftNote} Replace [one-word-emotion] with an actual single word (e.g. wary, hopeful) — do not write the words "feeling" or "emotion" literally.${scenarioNote}${twistBridgeNote} Format (keep the 《 》 characters exactly as shown, they're required, not decorative — no asterisks or other markdown, the 《 》 pair is the only formatting needed): "《${chosen}, [one-word-emotion]: thought.》" No one else perceives it. Never return only the hidden marker; visible story prose must come first.]\n`;
   } else {
-    instruction = `\n[This is ${chosen}'s very first private thought — once revealed, it becomes a lasting psychological anchor about who they fundamentally are, not a fleeting reaction and not an excuse to invent unsupported biography. Base it on what the story has actually shown about them so far. Use 1–2 concise sentences inside the required 《 》 marker: what this deep truth is, and what they secretly want because of it. Replace [one-word-emotion] with an actual single word (e.g. wary, hopeful) — do not write the words "feeling" or "emotion" literally.${scenarioNote}${twistBridgeNote} Format (keep the 《 》 characters exactly as shown, they're required, not decorative — no asterisks or other markdown, the 《 》 pair is the only formatting needed): "《${chosen}, [one-word-emotion]: thought.》" No one else perceives it.]\n`;
+    instruction = `\n[Continue the visible story normally FIRST. Then, at the very end, append ${chosen}'s very first private thought — once revealed, it becomes a lasting psychological anchor about who they fundamentally are, not a fleeting reaction and not an excuse to invent unsupported biography. Base it on what the story has actually shown about them so far. Use 1–2 concise sentences inside the required 《 》 marker: what this deep truth is, and what they secretly want because of it. Replace [one-word-emotion] with an actual single word (e.g. wary, hopeful) — do not write the words "feeling" or "emotion" literally.${scenarioNote}${twistBridgeNote} Format (keep the 《 》 characters exactly as shown, they're required, not decorative — no asterisks or other markdown, the 《 》 pair is the only formatting needed): "《${chosen}, [one-word-emotion]: thought.》" No one else perceives it. Never return only the hidden marker; visible story prose must come first.]\n`;
   }
 
   return fitInstructionToBudget(baseText, instruction);

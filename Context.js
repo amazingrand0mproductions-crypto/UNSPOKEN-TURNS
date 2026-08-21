@@ -278,7 +278,9 @@ var unsaidModifier = (text) => {
     }
 
     if (forcedCodex) {
-      const type = classifyCodexEntry(forcedCodex, text);
+      const type = reconcileCodexEntityType(forcedCodex, text) ||
+        resolveCodexEntityType(forcedCodex, text) ||
+        classifyCodexEntry(forcedCodex, text);
       const priorFailures = state.unsaid.codex.attempts[forcedCodex] || 0;
       const fitted = buildAndFitCodexInstruction([forcedCodex], text, true, priorFailures, true);
       if (fitted) {
@@ -327,7 +329,9 @@ var unsaidModifier = (text) => {
           state.unsaid.codex.firstSeenTurn[name] = state.unsaid.turn;
         }
 
-        const directlyIntroduced = isLikelyCharacterIntroduction(name, codexRecent);
+        const repairedType = reconcileCodexEntityType(name, codexRecent);
+        const directlyIntroduced = repairedType === "character" &&
+          isLikelyCharacterIntroduction(name, codexRecent);
         const hadLegacyFlag = !!state.unsaid.codex.likelyCharacters[name];
         const hasIntroTurn = typeof state.unsaid.codex.introducedTurn[name] === "number";
 
@@ -394,7 +398,10 @@ var unsaidModifier = (text) => {
       } else if (matureCharacters.length > 0) {
         candidates = matureCharacters.slice(0, 1);
       } else if (sinceLastCodex >= cfg.codexCooldown) {
-        candidates = nonCharacters;
+        // One automatic card task per story turn. Multiple hidden profiles in
+        // the same model response substantially increase the chance that the
+        // model outputs only metadata and forgets the visible story.
+        candidates = nonCharacters.slice(0, 1);
       }
 
       if (candidates.length > 0) {
@@ -416,7 +423,10 @@ var unsaidModifier = (text) => {
           candidates.forEach(name => {
             state.unsaid.codex.attempts[name] = (state.unsaid.codex.attempts[name] || 0) + 1;
             state.unsaid.codex.lastAttemptTurn[name] = state.unsaid.turn;
-            types[name] = state.unsaid.codex.observedTypes[name] || classifyCodexEntry(name, text);
+            types[name] = reconcileCodexEntityType(name, text) ||
+              resolveCodexEntityType(name, text) ||
+              state.unsaid.codex.observedTypes[name] ||
+              classifyCodexEntry(name, text);
           });
           state.unsaid.codex.pendingNames = candidates;
           state.unsaid.codex.pendingTypes = types;
