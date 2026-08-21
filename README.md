@@ -1,51 +1,577 @@
-UNSPOKEN TURNS: plot twists built from clues, characters with something they're not saying
+🌀 UNSPOKEN TURNS
 
-I've had two scripts running separately for a while. TWISTS AND TURNS gives your story real plot twists, built from clues it already wrote. UNSAID gives your NPCs a private inner life: feelings and secrets that don't just get told to you outright. I kept noticing that running both together made each one better than running either alone, so I finally combined them into one script instead of two you install side by side.
+Persistent NPC psychology, automatic Story Cards, scenario adaptation and long-term plot twists for AI Dungeon.
 
-🔍 It doesn't invent twists, it notices them
-AI Dungeon models already write the raw material for a good twist constantly, without being asked. A character who won't quite meet your eyes. A death where nobody actually found the body. A "coincidence" that's a little too convenient. Normally that's just flavor text going nowhere. This script scans your recent story every turn for that exact kind of phrasing, ties it to whichever character or thing it's actually about, and quietly opens a thread on it. Nothing shows up in your story when this happens. It's pure bookkeeping.
+🧠 Character thoughts and emotional continuity
+📇 Evidence-based automatic Story Cards
+🌀 212 plot twist concepts
+🌍 Scenario-aware behavior
+🔞 Optional mature twist pool
+⚙️ Configurable inside AI Dungeon
 
-📖 It reads your scenario before you've even played a turn
-On top of the live text, it reads your Story Cards, Plot Essentials, and Author's Note for language that already implies a twist ("secretly," "in truth," "exiled," "cursed," a double life) and opens threads on those immediately, already partway built up since the scenario itself established them. It cross-checks against your actual Story Card titles too, so it's naming "Queen Yseult" and not just grabbing the nearest capitalized word. Edit any of this later, mid-game, and it notices on its own. Nothing needs to be re-run.
+⸻
 
-🌱 How a thread actually grows
-A new thread needs both enough reinforcement and enough turns to pass before it's eligible to pay off. Never a fixed timer, never immediate. On a self-adjusting schedule, the script nudges the AI through a hidden context injection you never see, to plant one more small, easy-to-overlook detail connected to that character. Not "here's your twist," just "make this feel a little more loaded, but don't explain why." Do that a few times and by the time it pays off there's a real trail behind it, since the resolution is explicitly told to be a logical consequence of what's already there, scaled to how built-up the thread actually is. A cooldown keeps twists from stacking on top of each other.
+📖 Where This Came From
 
-🎭 120 shapes, effectively unlimited actual twists
-Identity and deception. Family secrets. Power and succession. Knowledge and secrets. Objects and places. Motive and morality. Time and sequence. Factions and society. Perception versus reality. Fate. Ten themes, twelve shapes each, and these are shapes, not scenes: the actual character always comes from your own story. Two independently-ready threads can resolve together as one connected twist, and a thread that keeps getting reinforced can escalate all the way into a story-altering "cataclysmic" tier instead of capping out early. Each character's own twist history is remembered too, so the same shape won't repeat on someone who's already had it.
+UNSPOKEN TURNS is the combination of two scripts I originally developed separately:
 
-🎨 Lean the whole thing toward a genre
-Set a category bias toward one or more of the ten themes (power and authority plus fate, say, for something political) and any twist whose shape isn't already determined by what actually happened in your story prefers those themes instead of drawing evenly from all 120. It never overrides genuine detection. If the text says "hush money," that's still what gets tracked. It just fills in the blanks with more of the flavor you asked for.
+🧠 UNSAID
 
-🌟 Core truth
-The first time a character has a real, standalone private thought, not a reaction to someone else, just a thought about who they are, that becomes their core truth. It's the one thing the script treats as fundamentally, lastingly true about that character underneath whatever they show on the surface, and it's specifically prompted to feel significant rather than like a passing reaction. Every later reveal gets nudged to stay consistent with it.
+A character-focused system built around private NPC thoughts, emotions, relationships and persistent beliefs.
 
-Characters can genuinely change, by default. Their feelings landing somewhere new, over and over without settling, builds real tracked tension right on their card. A shift only opens up once they've shown a bit more of themselves beyond that founding thought. Nothing gets thrown away when it happens either. The old core truth sticks around next to the new one, along with how long the current one has actually held. Prefer a permanent anchor instead? One setting turns all of this off.
+🌀 TWISTS AND TURNS
 
-💭 Private thoughts
-Two-sentence reveals: how a character really feels, and what they secretly want. They never show up in your story by default. They go straight to the character's own Story Card, in a plain layout meant to be skimmed. A hidden feeling can still color a character's visible behavior, a tight smile, a held breath, without ever stating it outright. A whole new cast gets going within a handful of turns rather than being left purely to chance one at a time, and the odds settle back down once everyone's had a first reveal. You can force one on demand any time, and it still gets captured correctly even if the model drops the exact format or the character's name entirely.
+A plot-focused system built around planting loose threads, foreshadowing them over time and eventually turning them into earned payoffs.
 
-📇 Cards that write themselves
-Mention a name enough and it gets carded automatically, classified as a character, location, item, or faction from whatever your story and general knowledge already suggest, and that guess isn't final either. Multi-word names get tracked as one candidate instead of splitting into fragments, so "Sword of Power" doesn't lose to "Sword" fighting for the same slot. A card cut off mid-response gets salvaged from whatever it managed to write instead of thrown out. Existing hand-made cards get adopted in automatically. If it genuinely gives up on a name it says so plainly, and if several different names fail in a row that gets flagged sooner rather than waiting on each one's own retry budget individually.
+The two systems eventually made more sense together than apart.
 
-🗂️ Keeping track without spoiling anything
-Resolved twists feed a single card that carries only the most recent handful into the model's context, capped small no matter how large the cast gets or how long the game runs, and adjustable if you want more or less. The full history is never lost either, just kept on a separate running log that costs nothing since it's Notes-field only. Want a temperature check without spoiling yourself? One command gives you a count by theme only, brewing and about to surface, never a name and never the specific twist. Curious what's actually being tracked on the character side? Another command writes a live status readout on demand, no screenshots required.
+A twist can change how a character sees themselves.
 
-🤝 Why this is one script now, not two
-This is the part that actually took the work. A character's private, unrevealed truth never leaks into what the twist half treats as established fact. There was a real case where it could, early on, and I went back and fixed it, because a secret getting spoiled by the plot before you've ever actually discovered it defeats the entire point of the private side existing. Private thoughts stay exactly where they've always lived, on the character's own card, and never bleed into your Plot Essentials or color what counts as "already established" for a twist to build on.
+A hidden feeling can become the reason somebody lies, betrays another character, takes a risk or refuses to act.
 
-Every command from either half now tells you what it just did, too. Type something and you get a clear response back immediately, whether it's a twist firing or a thought being forced. That used to only be true on one side. Now it's true everywhere, in both halves, off the same story, the same generation, every single turn.
+A relationship tracked by UNSAID can become material for TWISTS AND TURNS.
 
-🎚️ Commands
-/twist pays off the most-built-up thread right now. /twist a name forces a twist around someone specific, even untracked. /plant a name, and optionally a category, manually seeds a new thread. /twistlog toggles a spoiler-safe log of resolved twists. /threads gives the spoiler-safe temperature check. /intensity low, medium, or high sets a base pace the script still self-adjusts on top of. /rescan forces a full re-check of your Story Cards, Plot Essentials, and Author's Note. /twists or /twisthelp pulls up the config card. /peek a name forces a private thought on demand, and adding "core" checks whether a moment just changed who they fundamentally are. /card a name forces a Story Card right now, skipping the usual mention count. /unsaid status writes a live snapshot of everything currently tracked.
+A major payoff from TWISTS AND TURNS can create lasting emotional consequences inside UNSAID.
 
-⚙️ Config
-Two Story Cards, one per half, both self-healing if you break the formatting while editing, both explained in plain language right next to each setting so you're never guessing what a number does. Already know a character's core truth? Write it into their card yourself first and the script builds from what you wrote instead of inventing its own.
+UNSPOKEN TURNS is the merged system.
 
-🧩 A couple of platform notes
-Some models run in a mode that trades scripting reliability for more context length. Both halves detect that automatically and adjust how they deliver their nudges, with a heads-up card explaining what's going on if it's ever active. It also works correctly in multiplayer, where nothing assumes second-person "you" narration that isn't actually there.
+It also includes CODEX, which handles automatic Story Card generation and synchronization.
 
-🙏 Credit
-Private character thoughts and self-writing cards both started as ideas from LewdLeah's Inner Self and Auto-Cards. Built from scratch, not their code, but the ideas are theirs.
+⸻
 
-Four script tabs total. Paste it in, play normally, and see what starts connecting on its own. Feedback's genuinely welcome, especially if something feels off. A twist landing too fast, a thought that never seems to fire, whatever it is, tell me.
+🧠 UNSAID
+
+UNSAID gives recurring characters a persistent private state.
+
+Characters can maintain:
+
+* a core truth
+* current feelings
+* recent emotional history
+* hidden wants
+* feelings toward other characters
+* pressure against their current beliefs
+* previous core truths after real character development
+
+Private thoughts normally stay out of the visible story.
+
+Instead, they can influence:
+
+* dialogue
+* tone
+* hesitation
+* body language
+* confidence
+* affection
+* hostility
+* avoidance
+* awkwardness
+* emotional distance
+
+This lets the player notice that something is wrong without every NPC announcing exactly what they are thinking.
+
+Core truths
+
+A core truth is a durable belief a character holds about themselves or their life.
+
+It is intentionally difficult to change.
+
+Temporary anger, fear or sadness should not rewrite somebody’s personality.
+
+Major events can gradually build enough pressure to cause genuine change. When a core truth changes, the previous one can be retained as part of that character’s history.
+
+⸻
+
+📇 CODEX
+
+CODEX automatically detects noteworthy:
+
+* characters
+* locations
+* items
+* factions
+
+and can create matching AI Dungeon Story Cards.
+
+Characters are observed before being carded
+
+CODEX does not create a full character profile the moment somebody’s name appears.
+
+Default character timing:
+
+Minimum observation: 3 full story turns
+Normal requirement: 2 separate on-screen appearances
+Hard deadline: 5 turns after a genuine introduction
+
+An off-screen reference does not count as an introduction.
+
+For example:
+
+“Mirelle said you’d be coming.”
+
+CODEX may begin tracking the name Mirelle, but it will not assume she has entered the story.
+
+During the observation period, the script gathers a small evidence bank from:
+
+* dialogue
+* behavior
+* actions
+* appearance
+* relationships
+* relevant established lore
+
+When the card is generated, established information is preferred over invention.
+
+Missing details can still be inferred where useful, preventing profiles filled with Unknown, N/A, TBD or placeholders.
+
+Character fields
+
+Character cards normally use:
+
+* Name
+* Race / Species / Nature
+* Strength Level / Relevant Capability
+* Background
+* Personality
+* Appearance
+* Abilities
+* Weaknesses
+* Relationships
+
+These fields adapt to the scenario.
+
+“Strength Level” does not automatically mean combat power.
+
+For example:
+
+* a lawyer may be an experienced litigator
+* a doctor may be a skilled specialist
+* a musician may be an accomplished performer
+* a politician may have significant influence
+* an AI may have advanced analytical capability
+* an athlete may be physically elite
+* a mage may genuinely have magical power
+
+⸻
+
+🌍 Scenario Adaptation
+
+UNSPOKEN TURNS can build a lightweight profile of the current adventure using:
+
+* the recent story
+* Plot Essentials
+* Author’s Note
+* relevant Story Cards
+
+It can recognize signals associated with:
+
+Fantasy • Sci-fi • Cyberpunk • Contemporary • Historical • Western • Horror • Mystery • Crime / Noir • Romance • Slice of Life • School / Campus • Superhero • Post-Apocalyptic • Survival • Military / War • Political Intrigue • Medical • Legal • Sports • Music / Celebrity • Pirate / Nautical • Comedy
+
+These are not fixed game modes.
+
+Multiple signals can exist at once.
+
+Examples:
+
+* fantasy western
+* cyberpunk horror
+* historical romance
+* superhero school drama
+* supernatural detective story
+* post-apocalyptic survival mystery
+
+The actual story has priority over the detected profile.
+
+If supernatural events are genuinely established in an otherwise grounded scenario, the script should follow the story rather than blindly obey a genre label.
+
+Manual scenario guidance
+
+/scenario
+
+Show the current detected scenario profile.
+
+/scenario status
+
+Show scenario information.
+
+/scenario auto
+
+Return to automatic detection.
+
+/scenario off
+
+Disable automatic adaptation.
+
+/scenario grounded Victorian detective story
+
+Supply custom scenario guidance.
+
+You can use any free-text description.
+
+⸻
+
+🌀 TWISTS AND TURNS
+
+TWISTS AND TURNS looks for loose threads across:
+
+* the current story
+* Story Cards
+* Plot Essentials
+* Author’s Note
+
+A thread can be noticed, reinforced, foreshadowed and eventually paid off.
+
+The goal is to avoid twists that feel like they were invented on the exact turn they were revealed.
+
+212 twist concepts
+
+The current combined script contains 212 twist concepts across 13 themes.
+
+Themes cover areas such as:
+
+* Identity & Deception
+* Family & Relationships
+* Power & Authority
+* Knowledge & Secrets
+* Objects & Places
+* Motive & Morality
+* Time & Sequence
+* Groups & Society
+* Perception & Reality
+* Fate & Destiny
+* Vice & Corruption
+* Body & Transformation
+* Mature & Adult
+
+Threads can progress through:
+
+Minor → Moderate → Major → Cataclysmic
+
+Severity is relative to the current scenario.
+
+A major twist in a grounded family drama does not need to destroy a city.
+
+It may instead destroy a marriage, expose a devastating secret, end a career or completely change somebody’s future.
+
+⸻
+
+✅ Confirmation-Based Twists
+
+The script does not automatically assume the model followed a twist instruction.
+
+Foreshadow and payoff requests use hidden confirmation markers.
+
+A thread is only:
+
+* reinforced
+* resolved
+* added to the Twist Log
+* written into Established Facts
+
+after the requested event is confirmed.
+
+If the model ignores the request, the thread remains available instead of becoming false canon.
+
+⸻
+
+🔞 Optional Mature Twists
+
+The script contains 26 optional mature/adult twist concepts.
+
+They are:
+
+OFF by default.
+
+Enable them with:
+
+/mature on
+
+Disable them with:
+
+/mature off
+
+The mature pool is intended for adult relationship, life and drama complications.
+
+Automatic mature twists require evidence that the relevant character is an adult.
+
+Unknown-age characters and minors are excluded.
+
+⸻
+
+🎮 Commands
+
+🧠 UNSAID / CODEX
+
+/peek <name>
+
+Force a private-thought reveal.
+
+/peek <name> core
+
+Check whether recent events have genuinely changed the character’s core truth.
+
+/card <name>
+
+Force a Story Card immediately.
+
+/unsaid status
+
+Generate detailed tracking diagnostics.
+
+/unsaid resetcodex
+
+Reset CODEX detection/retry state without deleting existing Story Cards.
+
+/unsaid help
+
+Show UNSAID/CODEX help.
+
+⸻
+
+🌀 TWISTS AND TURNS
+
+/twist
+
+Force an eligible twist.
+
+/twist <name>
+
+Force a twist involving a specific entity.
+
+/plant <name>
+
+Manually plant a loose thread.
+
+/plant <name> <category>
+
+Plant a particular twist category.
+
+/threads
+
+Create or refresh the Brewing Threads overview.
+
+/twistlog
+
+Show or hide resolved twist history.
+
+/intensity low
+
+/intensity medium
+
+/intensity high
+
+Adjust twist pacing.
+
+/rescan
+
+Rescan Story Cards, Plot Essentials and Author’s Note for potential threads.
+
+/twisttypes
+
+Create the Twist Catalog.
+
+/twistcategories
+
+Alias for /twisttypes.
+
+/mature on|off
+
+Control adult-only twists.
+
+⸻
+
+🌍 Scenario
+
+/scenario
+
+Show automatic scenario detection.
+
+/scenario auto
+
+Use automatic adaptation.
+
+/scenario off
+
+Disable scenario adaptation.
+
+/scenario <guidance>
+
+Give the script custom free-text setting guidance.
+
+Example:
+
+/scenario realistic near-future crime thriller, no supernatural elements
+
+⸻
+
+⚙️ Configuration
+
+UNSPOKEN TURNS automatically creates:
+
+UNSPOKEN TURNS — Config
+
+This Story Card acts as the control panel.
+
+Settings include controls for:
+
+* UNSAID on/off
+* private-thought frequency
+* thought cooldown
+* subtle emotional hints
+* core-truth changes
+* CODEX on/off
+* mention thresholds
+* observation time
+* required appearances
+* Story Card deadline
+* retry behavior
+* twist intensity
+* seed requirements
+* payoff timing
+* payoff retry timing
+* strict logic
+* wildcard twists
+* compound twists
+* player involvement
+* mature twists
+* active thread limits
+* scenario adaptation
+* scenario override
+* Twist Log visibility
+
+Most gameplay tuning can be done from the Story Card without editing JavaScript.
+
+⸻
+
+🔧 Installation
+
+AI Dungeon provides four script hooks used by this project.
+
+Copy each file into its matching script section:
+
+Library.js → Library
+
+Input.js → Input
+
+Context.js → Context
+
+Output.js → Output
+
+Use all four files from the same release/download.
+
+The hooks share state and helper functions, so mixing files from different builds can cause unexpected behavior.
+
+Once installed, start or continue an adventure.
+
+The script creates its configuration and supporting Story Cards automatically as needed.
+
+⸻
+
+🧩 Existing Adventures
+
+UNSPOKEN TURNS includes migration and repair logic intended to preserve existing state where possible.
+
+This includes:
+
+* character minds
+* core truths
+* emotional history
+* CODEX tracking
+* active twist threads
+* resolved twist history
+* existing Story Cards
+
+Hand-written Story Card entries are deliberately protected from automatic replacement.
+
+Invalid or dangling thread state is repaired where possible.
+
+⸻
+
+🛡️ Reliability Features
+
+AI models do not always follow structured requests perfectly, so the script includes safeguards for that.
+
+Current protections include:
+
+* tolerant CODEX parsing
+* multiple CARD marker formats
+* markdown field handling
+* field aliases
+* name-based multi-card matching
+* placeholder rejection
+* bounded Story Card values
+* compact prompts under tight context limits
+* failed-card retries
+* duplicate-turn protection
+* capped tracking history
+* capped active threads
+* per-entity thread limits
+* old-state migration
+* seed confirmation
+* payoff confirmation
+* front-memory isolation
+* protected hand-written Story Cards
+* authorized core-truth shifts only
+* conservative mature-content gating
+* scenario-aware twist filtering
+* false-positive name filtering
+
+⸻
+
+💡 Recommended First Run
+
+Leave most settings at their defaults at first.
+
+Let the story introduce a few characters naturally so CODEX has time to observe them.
+
+Useful diagnostic commands:
+
+/unsaid status
+
+See what characters and names are currently being tracked.
+
+/threads
+
+Inspect active story threads.
+
+/scenario
+
+Check what kind of scenario the script currently thinks it is running.
+
+If your setting is unusual, provide a short override:
+
+/scenario low-magic medieval political drama
+
+or:
+
+/scenario near-future realistic medical thriller
+
+⸻
+
+🎯 Why Combine the Two Scripts?
+
+The original systems approached continuity from opposite directions.
+
+UNSAID asks:
+
+What is happening inside this character that they are not saying out loud?
+
+TWISTS AND TURNS asks:
+
+What is quietly building in the story that could matter later?
+
+Those questions overlap constantly.
+
+A character’s secret can become a plot thread.
+
+A twist can completely alter somebody’s relationships.
+
+A betrayal can change a core truth.
+
+An old emotional wound can motivate a future payoff.
+
+A resolved plot thread can continue affecting a character twenty turns later.
+
+That is what UNSPOKEN TURNS is meant to preserve.
+
+What characters carry inside them, and what the story is carrying toward the future.
