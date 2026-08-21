@@ -123,9 +123,17 @@ var unsaidModifier = (text) => {
     const cardOpenSource = "(?:【CARD】|〖CARD〗|\\[CARD\\]|<CARD>)";
     const cardCloseSource = "(?:【\\/CARD】|〖\\/CARD〗|\\[\\/CARD\\]|<\\/CARD>)";
     const blockPattern = new RegExp(cardOpenSource + "([\\s\\S]*?)" + cardCloseSource, "gi");
-    const expectedNames = Array.isArray(state.unsaid.codex.pendingNames)
+    const pendingForcedCodex = !!state.unsaid.codex.pendingForced;
+    const rawExpectedNames = Array.isArray(state.unsaid.codex.pendingNames)
       ? state.unsaid.codex.pendingNames.slice()
       : [];
+    // Manual `/card <name>` is an explicit user override and may intentionally
+    // use an unusual name. Automatic Codex output is revalidated one final
+    // time here so stale pending state from older builds cannot still create
+    // a junk Story Card after the new scanner has been installed.
+    const expectedNames = pendingForcedCodex
+      ? rawExpectedNames
+      : rawExpectedNames.filter(name => !isClearlyJunkCodexName(name));
     const expectedTypes = state.unsaid.codex.pendingTypes || {};
     const maxFieldLength = 420;
     // Never strip arbitrary CARD-looking prose unless this turn actually
@@ -518,6 +526,7 @@ var unsaidModifier = (text) => {
 
     state.unsaid.codex.pendingNames = [];
     state.unsaid.codex.pendingTypes = {};
+    state.unsaid.codex.pendingForced = false;
 
     trackMentions(text, true);
 

@@ -1073,6 +1073,9 @@ var COMMON_CAPITALIZED_STOPWORDS = [
   "Canon", "Canonical", "Instructional", "Diagnostic", "Diagnostics", "Automatic", "Automatically"
 ];
 
+
+
+
 // TWISTS AND TURNS' own additions on top of the shared base — narrative-
 // hedging/rumor vocabulary that matters specifically for how loose-thread
 // and scenario-hint scanning phrase things ("rumored to," "legend has
@@ -2412,8 +2415,137 @@ var MAX_ACTIVE_TWIST_THREADS = 120;
 // NAME_ALPHANUM) plus Codex-specific extras — this used to be an entirely
 // separate, independently-maintained literal list, which is exactly how it
 // drifted out of sync with the twist side's own filtering for so long.
+// Large Codex-only lexical filter. Keep this separate from the shared Twist
+// stop-word set: card generation benefits from very aggressive precision,
+// while the twist scanner should remain able to track unusual entities whose
+// names happen to also be ordinary English words.
+var CODEX_EXTRA_STOPWORDS = [
+  "aboard", "about", "above", "across", "after", "against", "along", "alongside", "although", "amid", "amidst", "among",
+  "amongst", "around", "as", "at", "because", "before", "behind", "below", "beneath", "beside", "besides", "between",
+  "beyond", "both", "but", "by", "concerning", "considering", "despite", "down", "during", "either", "except", "excluding",
+  "following", "for", "from", "given", "if", "in", "including", "inside", "into", "like", "near", "neither",
+  "nor", "of", "off", "on", "onto", "opposite", "or", "outside", "over", "past", "regarding", "round",
+  "since", "than", "though", "through", "throughout", "till", "to", "toward", "towards", "under", "underneath", "unlike",
+  "until", "unto", "up", "upon", "versus", "via", "when", "whenever", "where", "whereas", "wherever", "whether",
+  "while", "whilst", "with", "within", "without", "yet", "all", "another", "any", "anybody", "anyone", "anything",
+  "each", "enough", "everybody", "everyone", "everything", "few", "fewer", "he", "her", "hers", "herself", "him",
+  "himself", "his", "I", "it", "its", "itself", "many", "me", "mine", "more", "most", "much",
+  "my", "myself", "no", "nobody", "none", "noone", "nothing", "one", "other", "others", "our", "ours",
+  "ourselves", "several", "she", "some", "somebody", "someone", "something", "such", "that", "their", "theirs", "them",
+  "themselves", "these", "they", "this", "those", "us", "we", "what", "whatever", "which", "whichever", "who",
+  "whoever", "whom", "whomever", "whose", "you", "your", "yours", "yourself", "yourselves", "am", "are", "aren't",
+  "be", "became", "become", "becomes", "becoming", "been", "being", "can", "cannot", "can't", "could", "couldn't",
+  "did", "didn't", "do", "does", "doesn't", "doing", "done", "don't", "had", "hadn't", "has", "hasn't",
+  "have", "haven't", "having", "is", "isn't", "might", "must", "mustn't", "need", "needs", "needed", "needing",
+  "ought", "shall", "should", "shouldn't", "was", "wasn't", "were", "weren't", "won't", "would", "wouldn't", "zero",
+  "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen",
+  "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty", "thirty", "forty", "fifty", "sixty", "seventy",
+  "eighty", "ninety", "hundred", "thousand", "million", "billion", "first", "second", "third", "fourth", "fifth", "sixth",
+  "seventh", "eighth", "ninth", "tenth", "eleventh", "twelfth", "thirteenth", "fourteenth", "fifteenth", "sixteenth", "seventeenth", "eighteenth",
+  "nineteenth", "twentieth", "next", "previous", "last", "former", "latter", "single", "double", "triple", "numerous", "countless",
+  "multiple", "half", "quarter", "whole", "total", "entire", "partial", "absolutely", "accordingly", "additionally", "admittedly", "afterwards",
+  "again", "almost", "already", "also", "altogether", "apparently", "approximately", "arguably", "aside", "away", "basically", "certainly",
+  "consequently", "conversely", "currently", "definitely", "directly", "else", "elsewhere", "especially", "essentially", "eventually", "evidently", "exactly",
+  "finally", "frankly", "frequently", "generally", "genuinely", "gradually", "hence", "honestly", "hopefully", "however", "immediately", "increasingly",
+  "indeed", "initially", "instead", "interestingly", "largely", "literally", "meanwhile", "merely", "mostly", "naturally", "nearly", "nevertheless",
+  "nonetheless", "normally", "notably", "obviously", "occasionally", "oddly", "often", "otherwise", "overall", "particularly", "perhaps", "possibly",
+  "practically", "presumably", "probably", "promptly", "quite", "rarely", "rather", "really", "recently", "regardless", "relatively", "reportedly",
+  "roughly", "seriously", "simply", "slightly", "slowly", "somehow", "sometimes", "soon", "specifically", "still", "strangely", "suddenly",
+  "supposedly", "surely", "technically", "then", "therefore", "thereby", "thus", "together", "too", "typically", "ultimately", "unfortunately",
+  "usually", "very", "virtually", "well", "wholly", "widely", "accept", "accepts", "accepted", "accepting", "acknowledge", "acknowledges",
+  "acknowledged", "acknowledging", "add", "adds", "added", "adding", "admit", "admits", "admitted", "admitting", "agree", "agrees",
+  "agreed", "agreeing", "announce", "announces", "announced", "announcing", "answer", "answers", "answered", "answering", "argue", "argues",
+  "argued", "arguing", "ask", "asks", "asked", "asking", "bark", "barks", "barked", "barking", "beg", "begs",
+  "begged", "begging", "blurt", "blurts", "blurted", "blurting", "breathe", "breathes", "breathed", "breathing", "call", "calls",
+  "called", "calling", "chuckle", "chuckles", "chuckled", "chuckling", "confess", "confesses", "confessed", "confessing", "continue", "continues",
+  "continued", "continuing", "cry", "cries", "cried", "crying", "declare", "declares", "declared", "declaring", "demand", "demands",
+  "demanded", "demanding", "exclaim", "exclaims", "exclaimed", "exclaiming", "explain", "explains", "explained", "explaining", "gasp", "gasps",
+  "gasped", "gasping", "giggle", "giggles", "giggled", "giggling", "grin", "grins", "grinned", "grinning", "growl", "growls",
+  "growled", "growling", "hiss", "hisses", "hissed", "hissing", "insist", "insists", "insisted", "insisting", "laugh", "laughs",
+  "laughed", "laughing", "mention", "mentions", "mentioned", "mentioning", "mumble", "mumbles", "mumbled", "mumbling", "murmur", "murmurs",
+  "murmured", "murmuring", "mutter", "mutters", "muttered", "muttering", "nod", "nods", "nodded", "nodding", "note", "notes",
+  "noted", "noting", "observe", "observes", "observed", "observing", "point", "points", "pointed", "pointing", "protest", "protests",
+  "protested", "protesting", "question", "questions", "questioned", "questioning", "remark", "remarks", "remarked", "remarking", "repeat", "repeats",
+  "repeated", "repeating", "reply", "replies", "replied", "replying", "respond", "responds", "responded", "responding", "say", "says",
+  "said", "saying", "shout", "shouts", "shouted", "shouting", "sigh", "sighs", "sighed", "sighing", "smile", "smiles",
+  "smiled", "smiling", "snap", "snaps", "snapped", "snapping", "speak", "speaks", "spoke", "spoken", "speaking", "stammer",
+  "stammers", "stammered", "stammering", "state", "states", "stated", "stating", "tell", "tells", "told", "telling", "whisper",
+  "whispers", "whispered", "whispering", "yell", "yells", "yelled", "yelling", "approach", "approaches", "approached", "approaching", "arrive",
+  "arrives", "arrived", "arriving", "back", "backs", "backed", "backing", "begin", "begins", "began", "begun", "beginning",
+  "bend", "bends", "bent", "bending", "blink", "blinks", "blinked", "blinking", "bow", "bows", "bowed", "bowing",
+  "break", "breaks", "broke", "broken", "breaking", "bring", "brings", "brought", "bringing", "brush", "brushes", "brushed",
+  "brushing", "carry", "carries", "carried", "carrying", "catch", "catches", "caught", "catching", "circle", "circles", "circled",
+  "circling", "climb", "climbs", "climbed", "climbing", "close", "closes", "closed", "closing", "come", "comes", "came",
+  "coming", "crouch", "crouches", "crouched", "crouching", "cross", "crosses", "crossed", "crossing", "descend", "descends", "descended",
+  "descending", "draw", "draws", "drew", "drawn", "drawing", "drop", "drops", "dropped", "dropping", "enter", "enters",
+  "entered", "entering", "escape", "escapes", "escaped", "escaping", "exhale", "exhales", "exhaled", "exhaling", "fall", "falls",
+  "fell", "fallen", "falling", "flinch", "flinches", "flinched", "flinching", "follow", "follows", "followed", "freeze", "freezes",
+  "froze", "frozen", "freezing", "gesture", "gestures", "gestured", "gesturing", "grab", "grabs", "grabbed", "grabbing", "halt",
+  "halts", "halted", "halting", "head", "heads", "headed", "heading", "hold", "holds", "held", "holding", "inhale",
+  "inhales", "inhaled", "inhaling", "jump", "jumps", "jumped", "jumping", "keep", "keeps", "kept", "keeping", "kneel",
+  "kneels", "knelt", "kneeling", "lean", "leans", "leaned", "leaning", "leave", "leaves", "left", "leaving", "lift",
+  "lifts", "lifted", "lifting", "look", "looks", "looked", "looking", "lower", "lowers", "lowered", "lowering", "move",
+  "moves", "moved", "moving", "open", "opens", "opened", "opening", "pace", "paces", "paced", "pacing", "pass",
+  "passes", "passed", "passing", "pause", "pauses", "paused", "pausing", "peer", "peers", "peered", "peering", "pick",
+  "picks", "picked", "picking", "pivot", "pivots", "pivoted", "pivoting", "place", "places", "placed", "placing", "pull",
+  "pulls", "pulled", "pulling", "push", "pushes", "pushed", "pushing", "raise", "raises", "raised", "raising", "reach",
+  "reaches", "reached", "reaching", "recoil", "recoils", "recoiled", "recoiling", "remain", "remains", "remained", "remaining", "return",
+  "returns", "returned", "returning", "rise", "rises", "risen", "rising", "run", "runs", "ran", "running", "settle",
+  "settles", "settled", "settling", "shake", "shakes", "shook", "shaken", "shaking", "shift", "shifts", "shifted", "shifting",
+  "sit", "sits", "sat", "sitting", "spin", "spins", "spun", "spinning", "stand", "stands", "stood", "standing",
+  "start", "starts", "started", "starting", "step", "steps", "stepped", "stepping", "stop", "stops", "stopped", "stopping",
+  "stumble", "stumbles", "stumbled", "stumbling", "swallow", "swallows", "swallowed", "swallowing", "take", "takes", "took", "taken",
+  "taking", "tilt", "tilts", "tilted", "tilting", "tremble", "trembles", "trembled", "trembling", "turn", "turns", "turned",
+  "turning", "walk", "walks", "walked", "walking", "watch", "watches", "watched", "watching", "wave", "waves", "waved",
+  "waving", "wince", "winces", "winced", "wincing", "believe", "believes", "believed", "believing", "care", "cares", "cared",
+  "caring", "consider", "considers", "considered", "decide", "decides", "decided", "deciding", "expect", "expects", "expected", "expecting",
+  "fear", "fears", "feared", "fearing", "feel", "feels", "felt", "feeling", "forget", "forgets", "forgot", "forgotten",
+  "forgetting", "guess", "guesses", "guessed", "guessing", "hate", "hates", "hated", "hating", "hear", "hears", "heard",
+  "hearing", "hopes", "hoped", "hoping", "imagine", "imagines", "imagined", "imagining", "know", "knows", "knew", "known",
+  "knowing", "likes", "liked", "liking", "love", "loves", "loved", "loving", "mean", "means", "meant", "meaning",
+  "mind", "minds", "minded", "minding", "notice", "notices", "noticed", "noticing", "prefer", "prefers", "preferred", "preferring",
+  "realize", "realizes", "realized", "realizing", "recall", "recalls", "recalled", "recalling", "recognize", "recognizes", "recognized", "recognizing",
+  "remember", "remembers", "remembered", "remembering", "sense", "senses", "sensed", "sensing", "suppose", "supposes", "supposed", "supposing",
+  "think", "thinks", "thought", "thinking", "understand", "understands", "understood", "understanding", "want", "wants", "wanted", "wanting",
+  "wonder", "wonders", "wondered", "wondering", "wish", "wishes", "wished", "wishing", "air", "area", "body", "bodies",
+  "bottom", "ceiling", "center", "centre", "corner", "corridor", "darkness", "distance", "door", "doorway", "edge", "end",
+  "entrance", "exit", "face", "faces", "floor", "front", "ground", "hall", "hallway", "hand", "hands", "home",
+  "interior", "light", "middle", "moment", "moments", "room", "rooms", "side", "silence", "space", "stairs", "staircase",
+  "street", "surface", "table", "tables", "top", "wall", "walls", "window", "windows", "voice", "voices", "eye",
+  "eyes", "gaze", "expression", "expressions", "breath", "breaths", "shoulder", "shoulders", "arm", "arms", "finger", "fingers",
+  "foot", "feet", "footsteps", "hair", "lips", "mouth", "jaw", "chest", "heart", "posture", "stance", "shadow",
+  "shadows", "sound", "sounds", "noise", "noises", "smell", "scent", "temperature", "weather", "action", "actions", "adventure",
+  "adventures", "author", "authors", "card", "cards", "chapter", "chapters", "character", "characters", "choice", "choices", "config",
+  "configuration", "context", "continuation", "conversation", "description", "detail", "details", "dialogue", "ending", "entry", "entries", "event",
+  "events", "example", "examples", "fact", "facts", "field", "fields", "format", "formatting", "game", "games", "genre",
+  "genres", "history", "input", "instruction", "instructions", "lore", "memory", "model", "models", "name", "names", "narration",
+  "narrative", "narrator", "output", "paragraph", "paragraphs", "part", "parts", "player", "players", "plot", "profile", "profiles",
+  "prompt", "prompts", "response", "responses", "rule", "rules", "scenario", "scenarios", "scene", "scenes", "script", "scripts",
+  "section", "sections", "setting", "settings", "status", "story", "stories", "summary", "summaries", "system", "systems", "task",
+  "tasks", "text", "texts", "theme", "themes", "version", "world", "worlds", "able", "afraid", "alive", "alone",
+  "angry", "anxious", "awake", "aware", "bad", "bare", "basic", "beautiful", "better", "big", "bitter", "black",
+  "blank", "bright", "broad", "calm", "careful", "certain", "clear", "cold", "common", "complete", "concerned", "confused",
+  "dark", "dead", "deep", "different", "difficult", "distant", "dry", "early", "easy", "empty", "exact", "familiar",
+  "far", "fast", "final", "fine", "flat", "free", "fresh", "full", "general", "gentle", "good", "great",
+  "hard", "heavy", "high", "hollow", "hot", "huge", "important", "impossible", "large", "late", "little", "local",
+  "long", "loud", "low", "main", "major", "minor", "narrow", "new", "normal", "obvious", "old", "ordinary",
+  "pale", "personal", "possible", "quiet", "quick", "ready", "real", "recent", "right", "rough", "safe", "same",
+  "serious", "sharp", "short", "silent", "simple", "slow", "small", "soft", "solid", "strange", "strong", "sudden",
+  "sure", "tall", "thin", "tired", "true", "unclear", "unusual", "warm", "weak", "wide", "wrong", "young",
+  "afternoon", "ago", "daytime", "dusk", "evening", "forever", "later", "midnight", "morning", "night", "noon", "nowadays",
+  "once", "overnight", "present", "presently", "shortly", "someday", "sometime", "sunrise", "sunset", "today", "tomorrow", "tonight",
+  "twice", "yesterday", "ai", "assistant", "automatic", "automatically", "backup", "cache", "canon", "canonical", "category", "categories",
+  "codex", "command", "commands", "compound", "core", "current", "deadline", "detected", "diagnostic", "diagnostics", "disabled", "enable",
+  "enabled", "entity", "entities", "evidence", "forced", "frontmemory", "hint", "hook", "hooks", "mandatory", "marker", "markers",
+  "mature", "minimum", "maximum", "optimized", "optional", "override", "pending", "payoff", "private", "required", "reset", "resolved",
+  "retry", "retries", "seed", "seeds", "strict", "subtle", "template", "templates", "thread", "threads", "tracking", "tracked",
+  "twist", "twists", "unsaid", "warning", "wildcard", "s", "bury", "burying", "buries", "buried", "fitting", "talking",
+  "seen", "honesty", "traffic", "according", "alleged", "allegedly", "apparent", "reported", "rumored", "rumoured"
+];
+
 var CODEX_STOPWORDS = new Set([
-  ...COMMON_CAPITALIZED_STOPWORDS
+  ...COMMON_CAPITALIZED_STOPWORDS,
+  ...CODEX_EXTRA_STOPWORDS
 ].map(w => w.toLowerCase()));
 
 var CODEX_LOCATION_HINTS = /\b(city|state|street|road|lane|avenue|boulevard|canyon|terminal|park|building|tower|island|country|nation|kingdom|realm|district|region|planet|world|base|facility|academy|university|school|campus|bridge|river|mountain|forest|desert|battleground|warzone|hall|tavern|inn|hotel|motel|castle|fortress|temple|church|mosque|shrine|level|sector|wing|chamber|vault|bay|deck|outpost|colony|settlement|village|town|hamlet|station|harbor|harbour|wharf|apartment|house|home|office|warehouse|factory|farm|ranch|arena|stadium|courtroom|courthouse|prison|jail|laboratory|lab|theater|theatre|cinema|museum|library|mall|market|beach|cave|mine|ruins?|cemetery|graveyard|neighborhood|neighbourhood|suburb|block)\b/i;
@@ -2486,6 +2618,211 @@ var CODEX_TITLE_ABBREV_REGEX = new RegExp(
   `\\b(?:(?:${[...SENTENCE_ABBREVIATIONS].filter(w => w.length > 1).join("|")})\\.\\s+)?${CODEX_NAME_TOKEN}(?:\\s+of\\s+${CODEX_NAME_TOKEN}|\\s+${CODEX_NAME_TOKEN}){0,2}\\b`,
   "g"
 );
+
+
+// Automatic Codex discovery intentionally uses a much stricter standard than
+// a manual `/card <name>` command. Capitalization alone is not entity evidence:
+// every generated sentence starts with a capital letter, which is how words
+// such as "Which", "Already", "Six", "Burying", and "To" can otherwise age
+// into completely bogus Story Cards.
+//
+// `hasExplicitCodexNamingCue` is the escape hatch for unusual *real* names.
+// A character genuinely named Six, Which, Summer, etc. is still allowed when
+// the story explicitly names them ("I'm Six", "a woman named Six", "codename
+// Six"). Generic narration such as "Which comes..." is never enough.
+function codexStopKey(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/\u2019/g, "'")
+    .replace(/^[^a-z0-9]+|[^a-z0-9'.-]+$/gi, "")
+    .replace(/\.$/, "")
+    .replace(/'s$/i, "")
+    .trim();
+}
+
+function hasExplicitCodexNamingCue(name, text) {
+  const source = typeof text === "string" ? text : "";
+  const cleanName = String(name || "").trim();
+  if (!source || !cleanName) return false;
+
+  const n = escapeForRegex(cleanName);
+  const quote = `["“”'‘’]?`;
+  const personKind = [
+    "person", "woman", "man", "girl", "boy", "lady", "gentleman", "teenager",
+    "teen", "adult", "child", "youth", "stranger", "traveler", "traveller",
+    "guard", "soldier", "knight", "mage", "wizard", "witch", "priest",
+    "priestess", "captain", "doctor", "nurse", "merchant", "officer",
+    "detective", "pilot", "engineer", "teacher", "professor", "student",
+    "lawyer", "attorney", "judge", "athlete", "coach", "musician", "singer",
+    "actor", "artist", "scientist", "researcher", "agent", "android", "robot",
+    "synthetic", "ai", "alien", "creature", "spirit", "ghost", "vampire",
+    "werewolf", "superhero", "hero", "villain", "elf", "dwarf", "orc", "fae",
+    "demon", "angel", "dragon", "deity", "god", "goddess", "dog", "cat",
+    "horse", "animal", "companion", "npc"
+  ].join("|");
+  const entityKind = [
+    personKind,
+    "city", "town", "village", "kingdom", "realm", "district", "region",
+    "planet", "world", "station", "base", "facility", "school", "academy",
+    "college", "university", "hospital", "hotel", "tavern", "inn", "house",
+    "building", "street", "road", "river", "mountain", "forest", "island",
+    "company", "corporation", "agency", "organization", "organisation", "group",
+    "guild", "order", "clan", "faction", "team", "club", "band", "crew",
+    "ship", "starship", "vehicle", "car", "train", "boat", "weapon", "sword",
+    "gun", "device", "artifact", "relic", "book", "document", "app", "network"
+  ].join("|");
+
+  const cues = [
+    new RegExp(`\\b(?:I\\s*(?:am|'m|’m)|my\\s+name\\s+(?:is|'s|’s)|call\\s+me|people\\s+call\\s+me|they\\s+call\\s+me|I\\s+go\\s+by|this\\s+is|meet)\\s+${quote}${n}\\b`, "i"),
+    new RegExp(`\\b(?:introduces?|introduced)\\s+(?:himself|herself|themself|themselves|itself)\\s+as\\s+${quote}${n}\\b`, "i"),
+    new RegExp(`\\b(?:${entityKind})\\s+(?:named|called|known\\s+as|dubbed|codenamed|designated)\\s+${quote}${n}\\b`, "i"),
+    new RegExp(`\\b(?:named|called|known\\s+as|dubbed|codenamed|designated)\\s+${quote}${n}\\b`, "i"),
+    new RegExp(`\\b(?:codename|code\\s+name|callsign|call\\s+sign|designation|nickname|alias)\\s*(?::|=|is\\s+)?\\s*${quote}${n}\\b`, "i"),
+    new RegExp(`\\b${n}\\b\\s+(?:is|was)\\s+(?:my|his|her|their|its|the)\\s+(?:name|nickname|codename|callsign|designation)\\b`, "i")
+  ];
+  return cues.some(re => re.test(source));
+}
+
+function codexLooksLikeSentenceStarterMorphology(name, source) {
+  const clean = String(name || "").trim();
+  if (!clean || /\s/.test(clean)) return false;
+  // Restrict this heuristic to very characteristic prose-form suffixes.
+  // Plain -ed/-ly are deliberately not used because real names such as Reed,
+  // Jared, Ashley and Kelly would be collateral damage.
+  if (!/(?:ing|ingly|edly|ously|ively)$/i.test(clean)) return false;
+  const s = typeof source === "string" ? source : "";
+  if (!s) return true;
+  const n = escapeForRegex(clean);
+  return new RegExp(`(?:^|[.!?]["'”’)]*\\s+|\\n+\\s*|["“]\\s*)${n}\\b`, "i").test(s);
+}
+
+function normalizeCodexCandidate(raw, source) {
+  let name = stripPossessive(String(raw || "")
+    .replace(/^[\s"'“”‘’([{<]+|[\s"'“”‘’)\]}>.,:;!?—–-]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim());
+  if (!name || name.length > 80 || !/[A-Za-z]/.test(name)) return null;
+
+  const originalExplicit = hasExplicitCodexNamingCue(name, source);
+  let words = name.split(/\s+/).filter(Boolean);
+
+  // Sentence-openers and titles can be captured together with the real
+  // proper noun ("Which Harlan", "Captain Reyes"). Strip them only when
+  // the complete phrase was not explicitly named as an entity.
+  if (!originalExplicit) {
+    while (words.length > 1 &&
+      (CODEX_STOPWORDS.has(codexStopKey(words[0])) || CODEX_TITLE_WORDS.has(codexStopKey(words[0])))) {
+      words.shift();
+    }
+    while (words.length > 1 &&
+      (CODEX_STOPWORDS.has(codexStopKey(words[words.length - 1])) ||
+       CODEX_TITLE_WORDS.has(codexStopKey(words[words.length - 1])))) {
+      words.pop();
+    }
+    name = words.join(" ").trim();
+  }
+
+  if (!name || !words.length) return null;
+  const explicit = originalExplicit || hasExplicitCodexNamingCue(name, source);
+  const keys = words.map(codexStopKey).filter(Boolean);
+
+  if (!keys.length) return null;
+
+  if (!explicit) {
+    if (keys.length === 1 &&
+        (CODEX_STOPWORDS.has(keys[0]) || CODEX_TITLE_WORDS.has(keys[0]))) {
+      return null;
+    }
+
+    // A phrase made mostly from generic/function words is prose, not a
+    // durable named entity. "of" and similar connectors are tolerated only
+    // when there is enough actual proper-noun material around them.
+    const genericCount = keys.filter(k =>
+      CODEX_STOPWORDS.has(k) || CODEX_TITLE_WORDS.has(k)
+    ).length;
+    if (genericCount === keys.length) return null;
+    if (keys.length > 1 && genericCount >= Math.ceil(keys.length * 0.67)) return null;
+
+    if (keys.length === 1 && codexLooksLikeSentenceStarterMorphology(name, source)) {
+      return null;
+    }
+  }
+
+  if (keys.length === 1) {
+    if (name.length <= 1 && !explicit) return null;
+    if (/^(?:[ivxlcdm]+)$/i.test(name) && name.length <= 8 && !explicit) return null;
+    if (/^\d+(?:st|nd|rd|th)?$/i.test(name) && !explicit) return null;
+
+    // Short all-caps words are usually acronyms/headings. Explicit naming is
+    // required, which still permits characters such as ARIA, VEX, Q, etc.
+    if (name.length <= 5 && name === name.toUpperCase() &&
+        /[A-Z]{2,}/.test(name) && !explicit) {
+      return null;
+    }
+  }
+
+  return name;
+}
+
+function codexEvidenceTextFor(name) {
+  try {
+    const evidence = state && state.unsaid && state.unsaid.codex &&
+      state.unsaid.codex.evidence && state.unsaid.codex.evidence[name];
+    if (!Array.isArray(evidence)) return "";
+    return evidence
+      .map(item => item && typeof item.text === "string" ? item.text : "")
+      .filter(Boolean)
+      .join(" ");
+  } catch (e) {
+    return "";
+  }
+}
+
+
+
+function isEstablishedExplicitCodexCharacter(name) {
+  try {
+    const codex = state && state.unsaid && state.unsaid.codex;
+    if (!codex || !codex.likelyCharacters || !codex.likelyCharacters[name]) return false;
+    return hasExplicitCodexNamingCue(name, codexEvidenceTextFor(name));
+  } catch (e) {
+    return false;
+  }
+}
+
+function isClearlyJunkCodexName(name) {
+  const raw = String(name || "").trim();
+  if (!raw) return true;
+  const evidenceText = codexEvidenceTextFor(raw);
+  if (hasExplicitCodexNamingCue(raw, evidenceText)) return false;
+
+  const words = raw.split(/\s+/).filter(Boolean);
+  const keys = words.map(codexStopKey).filter(Boolean);
+  if (!keys.length) return true;
+  if (raw.length <= 1) return true;
+
+  if (keys.length === 1) {
+    if (CODEX_STOPWORDS.has(keys[0]) || CODEX_TITLE_WORDS.has(keys[0])) return true;
+    if (codexLooksLikeSentenceStarterMorphology(raw, "")) return true;
+    if (/^\d+(?:st|nd|rd|th)?$/i.test(raw)) return true;
+    if (/^(?:[ivxlcdm]+)$/i.test(raw) && raw.length <= 8) return true;
+    return false;
+  }
+
+  const genericCount = keys.filter(k =>
+    CODEX_STOPWORDS.has(k) || CODEX_TITLE_WORDS.has(k)
+  ).length;
+  return genericCount === keys.length ||
+    genericCount >= Math.ceil(keys.length * 0.67);
+}
+
+function isSafeTrackedCodexName(name) {
+  // Evidence is important for intentionally unusual names that are otherwise
+  // stop words. "I'm Six" remains valid; an old persisted candidate called
+  // "Six" with no naming evidence is discarded automatically.
+  const evidenceText = codexEvidenceTextFor(name);
+  return !!normalizeCodexCandidate(name, evidenceText);
+}
 
 var CHARACTER_CARD_FIELDS = ["Name", "Race", "Strength Level", "Background", "Personality", "Appearance", "Abilities", "Weaknesses", "Relationships"];
 var LOCATION_CARD_FIELDS = ["Name", "Location", "Description", "Key Locations", "Historical Events", "Significance"];
@@ -2613,6 +2950,7 @@ function initUnsaid() {
         lastAttemptTurn: {},
         pendingNames: [],
         pendingTypes: {},
+        pendingForced: false,
         consecutiveFailedNames: [],
         lastTriggerTurn: 0
       }
@@ -2646,6 +2984,7 @@ function initUnsaid() {
       lastAttemptTurn: {},
       pendingNames: [],
       pendingTypes: {},
+      pendingForced: false,
       consecutiveFailedNames: [],
       lastTriggerTurn: 0
     };
@@ -2662,6 +3001,7 @@ function initUnsaid() {
   if (!state.unsaid.codex.lastAttemptTurn || typeof state.unsaid.codex.lastAttemptTurn !== "object") state.unsaid.codex.lastAttemptTurn = {};
   if (!Array.isArray(state.unsaid.codex.pendingNames)) state.unsaid.codex.pendingNames = [];
   if (!state.unsaid.codex.pendingTypes || typeof state.unsaid.codex.pendingTypes !== "object") state.unsaid.codex.pendingTypes = {};
+  if (typeof state.unsaid.codex.pendingForced !== "boolean") state.unsaid.codex.pendingForced = false;
   if (!Array.isArray(state.unsaid.codex.consecutiveFailedNames)) state.unsaid.codex.consecutiveFailedNames = [];
   if (typeof state.unsaid.codex.lastTriggerTurn !== "number") state.unsaid.codex.lastTriggerTurn = 0;
   if (typeof state.unsaid.lastActionCount !== "number") state.unsaid.lastActionCount = -1;
@@ -3226,6 +3566,12 @@ function isLikelyCharacterIntroduction(name, text) {
   const source = typeof text === "string" ? text : "";
   if (!source || !name) return false;
 
+  // Do not let generic movement/dialogue cues promote an ordinary sentence
+  // starter into a person. A stop-word-like name must first be explicitly
+  // named ("I'm Six", "a woman named Six", etc.).
+  if (!normalizeCodexCandidate(name, source) &&
+      !isEstablishedExplicitCodexCharacter(name)) return false;
+
   const n = escapeForRegex(name);
 
   // Presence cues are intentionally stronger than a plain mention. This is
@@ -3303,25 +3649,19 @@ function trackMentions(text, observeIntroductions) {
     : state.unsaid.turn;
 
   matches.forEach(raw => {
-    let name = stripPossessive(raw.trim());
-    let words = name.split(/\s+/).filter(Boolean);
-    const stopKey = (w) => w.toLowerCase()
-      .replace(/\u2019/g, "'")
-      .replace(/\.$/, "")
-      .replace(/'s$/i, "");
+    let name = normalizeCodexCandidate(raw, source);
 
-    while (words.length > 1 &&
-      (CODEX_STOPWORDS.has(stopKey(words[0])) || CODEX_TITLE_WORDS.has(stopKey(words[0])))) {
-      words = words.slice(1);
-      name = words.join(" ");
+    // Once an unusual stop-word-like character was explicitly introduced,
+    // keep recognizing that established name on later turns. The original
+    // explicit naming evidence remains the trust anchor; this does not
+    // resurrect old junk candidates that lack such evidence.
+    if (!name) {
+      const rawName = stripPossessive(String(raw || "").trim());
+      const established = Object.keys(state.unsaid.codex.likelyCharacters || {})
+        .find(k => isEstablishedExplicitCodexCharacter(k) && isSameCardEntity(k, rawName));
+      if (established) name = established;
     }
-
-    if (!name || name.length > 80) return;
-    if (words.length === 1 && CODEX_STOPWORDS.has(stopKey(words[0]))) return;
-    if (words.length === 1 && CODEX_TITLE_WORDS.has(stopKey(name))) return;
-    if (words.length === 1 && name.length <= 1) return;
-    if (words.length === 1 && name.length <= 5 && name === name.toUpperCase() && /[A-Z]{2,}/.test(name) &&
-        !isLikelyCharacterIntroduction(name, source)) return;
+    if (!name) return;
 
     const keys = Object.keys(state.unsaid.codex.mentionCounts);
     const exactKey = keys.find(k => k.toLowerCase() === name.toLowerCase());
@@ -3368,6 +3708,15 @@ function pruneMentionCounts() {
   const counts = state.unsaid.codex.mentionCounts;
   Object.keys(counts).forEach(name => {
     if (storyCards.some(c => c.title && isSameCardEntity(c.title, name))) {
+      forgetMentionTracking(name);
+      return;
+    }
+
+    // Clean up stale garbage left in persistent state by older builds.
+    // This happens automatically on the next real turn, so names such as
+    // Which / Six / S / Burying / Already / To cannot remain eligible just
+    // because they accumulated mentions before this filter existed.
+    if (!isSafeTrackedCodexName(name)) {
       forgetMentionTracking(name);
     }
   });
@@ -3544,6 +3893,14 @@ function findCodexCandidates(threshold, excludeNames, maxAttempts, maxCount) {
 
   for (const name in counts) {
     const introducedCharacter = !!likelyCharacters[name];
+
+    // Revalidate at scheduling time as a second line of defense. This also
+    // protects against old persisted state that reaches Context before the
+    // normal scanner has had a chance to touch it.
+    if (!isSafeTrackedCodexName(name)) {
+      forgetMentionTracking(name);
+      continue;
+    }
 
     if (!introducedCharacter && counts[name] < threshold) continue;
     if (exclude.some(ex => isSameCardEntity(ex, name))) continue;

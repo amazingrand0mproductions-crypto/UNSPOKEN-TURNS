@@ -214,6 +214,7 @@ var unsaidModifier = (text) => {
       state.unsaid.pendingCoreShiftAllowed = false;
       state.unsaid.pendingCoreCheck = false;
       state.unsaid.codex.pendingNames = [];
+      state.unsaid.codex.pendingForced = false;
       syncFrontMemoryHint(false);
       updateUnsaidBackupCard(cacheEfficient, "");
       return { text };
@@ -225,6 +226,7 @@ var unsaidModifier = (text) => {
       state.unsaid.pendingCoreShiftAllowed = false;
       state.unsaid.pendingCoreCheck = false;
       state.unsaid.codex.pendingNames = [];
+      state.unsaid.codex.pendingForced = false;
       updateUnsaidBackupCard(cacheEfficient, "");
       return { text };
     }
@@ -243,6 +245,7 @@ var unsaidModifier = (text) => {
       state.unsaid.pendingCoreShiftAllowed = false;
       state.unsaid.pendingCoreCheck = false;
       state.unsaid.codex.pendingNames = [];
+      state.unsaid.codex.pendingForced = false;
       updateUnsaidBackupCard(cacheEfficient, "");
       return { text };
     }
@@ -255,6 +258,7 @@ var unsaidModifier = (text) => {
         state.unsaid.pendingCoreShiftAllowed = true;
         state.unsaid.pendingCoreCheck = true;
         state.unsaid.codex.pendingNames = [];
+      state.unsaid.codex.pendingForced = false;
         updateUnsaidBackupCard(cacheEfficient, fitted);
         return { text: text + fitted };
       }
@@ -266,6 +270,7 @@ var unsaidModifier = (text) => {
         state.unsaid.pendingCoreShiftAllowed = naturalCoreShiftEligible(state.unsaid.minds[forcedPeek], cfg.allowCoreShift);
         state.unsaid.pendingCoreCheck = false;
         state.unsaid.codex.pendingNames = [];
+      state.unsaid.codex.pendingForced = false;
         updateUnsaidBackupCard(cacheEfficient, fitted);
         return { text: text + fitted };
       }
@@ -281,6 +286,7 @@ var unsaidModifier = (text) => {
         state.unsaid.codex.lastAttemptTurn[forcedCodex] = state.unsaid.turn;
         state.unsaid.codex.pendingNames = [forcedCodex];
         state.unsaid.codex.pendingTypes = { [forcedCodex]: type };
+        state.unsaid.codex.pendingForced = true;
         state.unsaid.codex.lastTriggerTurn = state.unsaid.turn;
         state.unsaid.pending = null;
         state.unsaid.pendingCoreShiftAllowed = false;
@@ -294,6 +300,11 @@ var unsaidModifier = (text) => {
     const sinceLastCodex = state.unsaid.turn - (state.unsaid.codex.lastTriggerTurn || 0);
 
     if (cfg.codexEnabled) {
+      // Purge stale automatic junk candidates before any legacy-state
+      // migration or scheduling. This makes the fix effective immediately
+      // in existing adventures, not only for names seen after installation.
+      pruneMentionCounts();
+
       const codexRecent = recentTurnsText(
         text,
         Math.max(
@@ -409,6 +420,7 @@ var unsaidModifier = (text) => {
           });
           state.unsaid.codex.pendingNames = candidates;
           state.unsaid.codex.pendingTypes = types;
+          state.unsaid.codex.pendingForced = false;
           state.unsaid.codex.lastTriggerTurn = state.unsaid.turn;
           state.unsaid.pending = null;
           state.unsaid.pendingCoreShiftAllowed = false;
@@ -427,6 +439,7 @@ var unsaidModifier = (text) => {
     }
 
     state.unsaid.codex.pendingNames = [];
+      state.unsaid.codex.pendingForced = false;
 
     if (cfg.cast.length > 0) {
       const eligible = active.filter(name => {
