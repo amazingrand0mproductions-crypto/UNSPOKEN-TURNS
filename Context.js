@@ -366,7 +366,9 @@ var unsaidModifier = (text) => {
         typeof codexState.introducedTurn[name] !== "number"
       );
 
-      if (legacyNames.length > 0 && (typeof utHasRuntimeBudget !== "function" || utHasRuntimeBudget(300))) {
+      const upgradeGraceActive = typeof utCodexUpgradeGraceActive === "function" && utCodexUpgradeGraceActive();
+
+      if (legacyNames.length > 0 && !upgradeGraceActive && (typeof utHasRuntimeBudget !== "function" || utHasRuntimeBudget(300))) {
         const batchSize = Math.max(1, CODEX_CONTEXT_MIGRATION_BATCH || 8);
         const cursor = Math.max(0, Math.floor(codexState.legacyMigrationCursor || 0)) % legacyNames.length;
         const migrationBatch = [];
@@ -402,10 +404,16 @@ var unsaidModifier = (text) => {
       } else if (legacyNames.length === 0) {
         codexState.legacyMigrationCursor = 0;
       } else if (typeof utSkipRuntimeTask === "function") {
-        utSkipRuntimeTask("codex-legacy-migration");
+        utSkipRuntimeTask(upgradeGraceActive ? "codex-hot-upgrade-grace" : "codex-legacy-migration");
       }
 
-      const canAutoCodex = typeof utHasRuntimeBudget !== "function" || utHasRuntimeBudget(220);
+      // The first Context pass after a script update is deliberately a clean
+      // reconciliation turn: Input/Output may keep collecting fresh evidence,
+      // but old pending candidates are not allowed to fire until the new code
+      // has seen one complete story turn. This prevents the classic
+      // "one error a few turns after updating" caused by stale in-flight work.
+      const canAutoCodex = !upgradeGraceActive &&
+        (typeof utHasRuntimeBudget !== "function" || utHasRuntimeBudget(220));
       const available = canAutoCodex
         ? findCodexCandidates(
             cfg.mentionThreshold,
@@ -414,7 +422,7 @@ var unsaidModifier = (text) => {
           ).filter(name => (state.unsaid.codex.lastAttemptTurn[name] || -999999) < state.unsaid.turn)
         : [];
       if (!canAutoCodex && typeof utSkipRuntimeTask === "function") {
-        utSkipRuntimeTask("codex-auto-scheduling");
+        utSkipRuntimeTask(upgradeGraceActive ? "codex-hot-upgrade-grace" : "codex-auto-scheduling");
       }
 
       const minObserve = Math.max(0, cfg.codexCharacterMinTurns || 0);

@@ -1,4 +1,6 @@
 var CP_VERSION = "1.3";
+var UT_BUILD_ID = "2026-08-22-feedback-hardened";
+var UT_UPGRADE_GRACE_TURNS = 1;
 
 // Shared by both systems' name/entity detection (TWISTS AND TURNS'
 // findEntityInSentence and UNSAID's CODEX_NAME_TOKEN below) — the set of
@@ -121,6 +123,96 @@ function utEndRuntimePhase(token) {
   if (UT_ACTIVE_RUNTIME_PHASE === t) UT_ACTIVE_RUNTIME_PHASE = null;
 }
 
+
+function utCurrentActionEpoch() {
+  try {
+    if (typeof info !== "undefined" && info && Number.isInteger(info.actionCount)) {
+      return info.actionCount;
+    }
+  } catch (e) {}
+  try {
+    if (state && state.unsaid && typeof state.unsaid.turn === "number") return state.unsaid.turn;
+    if (state && state.contingency && typeof state.contingency.turn === "number") return state.contingency.turn;
+  } catch (e) {}
+  return 0;
+}
+
+function utApplyBuildMigration() {
+  if (typeof state === "undefined" || !state) return false;
+  const previous = state.unspokenTurnsBuild && state.unspokenTurnsBuild.id;
+  if (previous === UT_BUILD_ID) return false;
+
+  const epoch = utCurrentActionEpoch();
+  const unsaid = state.unsaid;
+  if (unsaid && typeof unsaid === "object") {
+    unsaid.pending = null;
+    unsaid.forcedPeek = null;
+    unsaid.forcedPeekCore = null;
+    unsaid.forcedCodex = null;
+    unsaid.pendingCoreShiftAllowed = false;
+    unsaid.pendingCoreCheck = false;
+    unsaid.lastStorySignature = null;
+
+    const codex = unsaid.codex;
+    if (codex && typeof codex === "object") {
+      codex.pendingNames = [];
+      codex.pendingTypes = {};
+      codex.pendingForced = false;
+      codex.pendingRefreshNames = [];
+      codex.consecutiveFailedNames = [];
+      codex.legacyMigrationCursor = 0;
+      codex.pruneCursor = 0;
+      codex.upgradeGraceUntilTurn = Math.max(
+        Number(unsaid.turn) || 0,
+        (Number(unsaid.turn) || 0) + UT_UPGRADE_GRACE_TURNS
+      );
+      codex.lastUpgradeAction = epoch;
+      codex.lastUpgradeBuild = UT_BUILD_ID;
+    }
+  }
+
+  const contingency = state.contingency;
+  if (contingency && typeof contingency === "object") {
+    contingency.pendingPayoffId = null;
+    contingency.pendingPayoffId2 = null;
+    contingency.pendingSeedId = null;
+    contingency.forceEntity = null;
+    contingency.forcePlant = null;
+    contingency.importedCardSignatures = {};
+    contingency.lastContextSignature = null;
+    contingency.lastAuthorsNoteSignature = null;
+    contingency.lastHookSignature = null;
+  }
+
+  const health = utEnsureRuntimeHealth();
+  if (health) {
+    health.phases = {};
+    health.lastError = null;
+    health.lastMigration = {
+      from: previous || "legacy",
+      to: UT_BUILD_ID,
+      action: epoch
+    };
+  }
+
+  state.unspokenTurnsBuild = {
+    id: UT_BUILD_ID,
+    previous: previous || null,
+    migratedAction: epoch
+  };
+  return true;
+}
+
+function utCodexUpgradeGraceActive() {
+  try {
+    const codex = state && state.unsaid && state.unsaid.codex;
+    if (!codex || typeof codex.upgradeGraceUntilTurn !== "number") return false;
+    return (state.unsaid.turn || 0) <= codex.upgradeGraceUntilTurn;
+  } catch (e) {
+    return false;
+  }
+}
+
 function utRuntimeHealthReport() {
   const h = utEnsureRuntimeHealth();
   if (!h) return "Runtime health data is unavailable.";
@@ -148,6 +240,7 @@ function utRuntimeHealthReport() {
     `Adaptive governor: ${utRuntimeGovernorEnabled() ? "ON" : "OFF"}`,
     `Internal context budget: ${utRuntimeBudgetMs()} ms (kept deliberately below the platform hook timeout)`,
     `Working set: ${storyCardCount} Story Cards · ${candidateCount} Codex candidates · ${mindNames.length} minds · ${adaptiveSlots} adaptive slots · ${aliasCount} manual aliases`,
+    `Build state: ${UT_BUILD_ID}${utCodexUpgradeGraceActive() ? " · hot-upgrade safety pass active" : ""}`,
     "",
     "Hook timings:", ...phaseLines,
     "",
@@ -2740,7 +2833,7 @@ var MENTION_TRACKING_CAP = 150;
 // Hard performance guardrails for AI Dungeon's isolated VM. Semantic entity
 // typing is intentionally evidence-rich, but it must never rescan an entire
 // long context hundreds of times in one Context Modifier pass.
-var CODEX_SEMANTIC_SCAN_CHAR_LIMIT = 4200;
+var CODEX_SEMANTIC_SCAN_CHAR_LIMIT = 3400;
 var CODEX_CONTEXT_MIGRATION_BATCH = 4;
 var CODEX_CONTEXT_PRUNE_BATCH = 12;
 var CODEX_IO_PRUNE_BATCH = 18;
@@ -3512,7 +3605,10 @@ function checkCacheEfficientWarning() {
   return true;
 }
 
+var UNSAID_INIT_DONE = false;
+
 function initUnsaid() {
+  if (UNSAID_INIT_DONE) return;
   if (!state.unsaid) {
     state.unsaid = {
       minds: {},
@@ -3634,8 +3730,13 @@ function initUnsaid() {
   if (!Array.isArray(state.unsaid.codex.consecutiveFailedNames)) state.unsaid.codex.consecutiveFailedNames = [];
   if (typeof state.unsaid.codex.lastTriggerTurn !== "number") state.unsaid.codex.lastTriggerTurn = 0;
   if (typeof state.unsaid.codex.lastRefreshTriggerTurn !== "number") state.unsaid.codex.lastRefreshTriggerTurn = 0;
+  if (typeof state.unsaid.codex.upgradeGraceUntilTurn !== "number") state.unsaid.codex.upgradeGraceUntilTurn = -1;
+  if (typeof state.unsaid.codex.lastUpgradeAction !== "number") state.unsaid.codex.lastUpgradeAction = -1;
+  if (typeof state.unsaid.codex.lastUpgradeBuild !== "string") state.unsaid.codex.lastUpgradeBuild = "";
   if (typeof state.unsaid.lastActionCount !== "number") state.unsaid.lastActionCount = -1;
+  utApplyBuildMigration();
   ensureSharedConfigCard();
+  UNSAID_INIT_DONE = true;
 }
 
 function escapeForRegex(s) {
@@ -3704,6 +3805,7 @@ function nameAppears(name, text) {
 // recreated for each isolated hook) so "Dr. Voss", "Harlan", "Voss", callsigns and
 // creator-authored nicknames can all wake the SAME mind without O(cast × cards) scans.
 var UNSAID_ALIAS_INDEX = null;
+var UNSAID_STORY_MATCH_CACHE = Object.create(null);
 
 function normalizeUnsaidIdentity(value) {
   return String(value || "")
@@ -3731,6 +3833,7 @@ function buildUnsaidAliasIndex() {
   const byTitle = {};
   const aliasToTitles = {};
   const aliasToCards = {};
+  const titleToCards = {};
   const addAlias = (title, alias, card) => {
     const titleKey = normalizeUnsaidIdentity(title);
     const aliasKey = normalizeUnsaidIdentity(alias);
@@ -3752,6 +3855,11 @@ function buildUnsaidAliasIndex() {
     if (typeof storyCards !== "undefined" && Array.isArray(storyCards)) {
       storyCards.forEach(card => {
         if (!card || !card.title || isOwnCard(card.title)) return;
+        const titleKey = normalizeUnsaidIdentity(card.title);
+        if (titleKey) {
+          if (!titleToCards[titleKey]) titleToCards[titleKey] = [];
+          titleToCards[titleKey].push(card);
+        }
         storyCardAliasValues(card).forEach(alias => addAlias(card.title, alias, card));
       });
     }
@@ -3768,12 +3876,13 @@ function buildUnsaidAliasIndex() {
     }
   } catch (e) {}
 
-  UNSAID_ALIAS_INDEX = { byTitle, aliasToTitles, aliasToCards };
+  UNSAID_ALIAS_INDEX = { byTitle, aliasToTitles, aliasToCards, titleToCards };
   return UNSAID_ALIAS_INDEX;
 }
 
 function invalidateUnsaidAliasIndex() {
   UNSAID_ALIAS_INDEX = null;
+  UNSAID_STORY_MATCH_CACHE = Object.create(null);
 }
 
 function aliasesForUnsaidCharacter(name) {
@@ -4819,12 +4928,12 @@ function codexLocalEvidenceForName(name, text) {
   // collect a few small literal windows and run the expensive rules there.
   const hay = source.toLowerCase().replace(/[’‘]/g, "\'").replace(/[‐‑–—]/g, "-");
   const needle = rawName.toLowerCase().replace(/[’‘]/g, "\'").replace(/[‐‑–—]/g, "-");
-  const radius = 190;
+  const radius = 165;
   const pieces = [];
   let from = 0;
   let seen = 0;
 
-  while (needle && from <= hay.length - needle.length && seen < 5) {
+  while (needle && from <= hay.length - needle.length && seen < 4) {
     const at = hay.indexOf(needle, from);
     if (at < 0) break;
     const before = at > 0 ? hay.charAt(at - 1) : "";
@@ -4843,7 +4952,7 @@ function codexLocalEvidenceForName(name, text) {
   // about this name anyway. Returning empty avoids burning time on unrelated prose;
   // cheap name-shape hints still run in the caller.
   if (!pieces.length) return "";
-  return pieces.join("\n…\n").slice(0, 2200);
+  return pieces.join("\n…\n").slice(0, 1700);
 }
 
 var CODEX_STRONG_NONCHAR_CACHE = Object.create(null);
@@ -4870,21 +4979,38 @@ function cacheStrongNonCharacterResult(key, value) {
 }
 
 function strongCodexNonCharacterEvidence(name, text) {
+  if (!name) return null;
   const rawSource = boundedCodexSemanticText(text);
-  if (!rawSource || !name) return null;
+  if (!rawSource) return null;
 
   const cacheKey = codexStrongNonCharacterCacheKey(name, rawSource);
   if (Object.prototype.hasOwnProperty.call(CODEX_STRONG_NONCHAR_CACHE, cacheKey)) {
     return CODEX_STRONG_NONCHAR_CACHE[cacheKey] || null;
   }
 
-  // Never let automatic semantic typing be the task that consumes the last
-  // slice of a hook's runtime budget. Name-shape hints below remain available;
-  // the richer prose scan can happen on a later turn.
-  const budgetLow = typeof utHasRuntimeBudget === "function" && !utHasRuntimeBudget(180);
-  const source = budgetLow ? "" : codexLocalEvidenceForName(name, rawSource);
-  if (budgetLow && typeof utSkipRuntimeTask === "function") utSkipRuntimeTask("codex-semantic-typing");
+  const hintScores = { location: 0, item: 0, faction: 0 };
+  if (CODEX_LOCATION_HINTS.test(name)) hintScores.location += 2;
+  if (CODEX_LOCATION_SUFFIX_HINTS.test(name)) hintScores.location += 2;
+  if (CODEX_ITEM_HINTS.test(name)) hintScores.item += 2;
+  if (CODEX_FACTION_HINTS.test(name)) hintScores.faction += 2;
 
+  const budgetLow = typeof utHasRuntimeBudget === "function" && !utHasRuntimeBudget(200);
+  if (budgetLow) {
+    if (typeof utSkipRuntimeTask === "function") utSkipRuntimeTask("codex-semantic-typing");
+    const order = ["location", "faction", "item"];
+    const best = order.reduce((a, b) => hintScores[b] > hintScores[a] ? b : a);
+    const bestScore = hintScores[best];
+    const second = order.filter(t => t !== best).reduce((m, t) => Math.max(m, hintScores[t]), 0);
+    if (bestScore < 3) return cacheStrongNonCharacterResult(cacheKey, null);
+    return cacheStrongNonCharacterResult(cacheKey, {
+      type: best,
+      score: bestScore,
+      margin: bestScore - second,
+      scores: hintScores
+    });
+  }
+
+  const source = codexLocalEvidenceForName(name, rawSource);
   const n = escapeForRegex(name);
 
   const locationKinds =
@@ -4922,13 +5048,11 @@ function strongCodexNonCharacterEvidence(name, text) {
     "police|government|family|house|business|firm|studio|hospital|clinic|" +
     "chain|franchise|conglomerate|enterprise|enterprises|industries)";
 
-  const scores = { location: 0, item: 0, faction: 0 };
-
-  // These cheap name-shape hints are safe even when the richer scan yielded.
-  if (CODEX_LOCATION_HINTS.test(name)) scores.location += 2;
-  if (CODEX_LOCATION_SUFFIX_HINTS.test(name)) scores.location += 2;
-  if (CODEX_ITEM_HINTS.test(name)) scores.item += 2;
-  if (CODEX_FACTION_HINTS.test(name)) scores.faction += 2;
+  const scores = {
+    location: hintScores.location,
+    item: hintScores.item,
+    faction: hintScores.faction
+  };
 
   if (source) {
     const locationExplicit = [
@@ -5189,6 +5313,30 @@ function resolveCodexTrackingKey(name, source) {
   return existing;
 }
 
+
+function registerExistingMentionedCard(card, matchedName, source, canConfirmIntroductions, actionEpoch) {
+  if (!card || !card.title || isOwnCard(card.title)) return false;
+
+  const type = codexKindFromExistingCard(card, matchedName || card.title);
+  if (type === "character" && isCharacterLikeCard(card.title, card)) {
+    if (!state.unsaid.castRegistry.some(existing => isSameCardEntity(existing, card.title))) {
+      state.unsaid.castRegistry.push(card.title);
+      if (state.unsaid.castRegistry.length > MAX_CAST_SIZE) {
+        state.unsaid.castRegistry = state.unsaid.castRegistry.slice(-MAX_CAST_SIZE);
+      }
+    }
+  }
+
+  if (canConfirmIntroductions &&
+      (state.unsaid.codex.cardMeta[card.title] || codexLogHasEntity(card.title))) {
+    const snippets = codexEvidenceSentences(matchedName || card.title, source);
+    snippets.forEach(snippet =>
+      recordCodexCardUpdateEvidence(card.title, card, snippet, actionEpoch)
+    );
+  }
+  return true;
+}
+
 function trackMentions(text, observeIntroductions) {
   if (!state.unsaid || !state.unsaid.codex) return;
   const source = typeof text === "string" ? text : "";
@@ -5223,19 +5371,14 @@ function trackMentions(text, observeIntroductions) {
     if (seenThisPass.has(key)) return;
     seenThisPass.add(key);
 
-    // If this resolves unambiguously to an existing Codex-managed card,
-    // preserve the exact sentence as future refresh evidence. This also
-    // catches safe aliases such as "Harlan" -> "Harlan Voss", which a
-    // full-title-only scan would otherwise miss.
-    if (canConfirmIntroductions) {
-      const existingCard = findStoryCardForEntity(name) || findStoryCardForEntity(key);
-      if (existingCard &&
-          (state.unsaid.codex.cardMeta[existingCard.title] || codexLogHasEntity(existingCard.title))) {
-        const aliasSnippets = codexEvidenceSentences(name, source);
-        aliasSnippets.forEach(snippet =>
-          recordCodexCardUpdateEvidence(existingCard.title, existingCard, snippet, actionEpoch)
-        );
+    const existingCard = findStoryCardForEntity(name) || findStoryCardForEntity(key);
+    if (existingCard) {
+      registerExistingMentionedCard(existingCard, name, source, canConfirmIntroductions, actionEpoch);
+      if (state.unsaid.codex.mentionCounts[key] || state.unsaid.codex.mentionCounts[name]) {
+        forgetMentionTracking(key);
+        if (key !== name) forgetMentionTracking(name);
       }
+      return;
     }
 
     // Count at most once per action epoch. Repeating a name five times in one
@@ -5514,42 +5657,42 @@ var UNSAID_AMBIGUITY_LOGGED = Object.create(null);
 function storyCardMatchesForEntity(name) {
   if (!name || typeof storyCards === "undefined" || !Array.isArray(storyCards)) return [];
 
-  const clean = (value) => String(value || "")
-    .toLowerCase()
-    .replace(/[“”"'‘’.,:;!?()[\]{}\-‐‑–—]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  // Exact card titles always outrank trigger aliases. A common scenario has
-  // one canonical card titled "Silvermane" plus several other cards that use
-  // Silvermane as a relationship/activation key. Older builds merged all of
-  // those into one 5-card "ambiguity" and then refused to update the real card.
-  const aliasKey = clean(name);
-  const exactTitleMatches = [];
-  for (let i = 0; i < storyCards.length; i++) {
-    const card = storyCards[i];
-    if (card && card.title && !isOwnCard(card.title) && clean(card.title) === aliasKey) exactTitleMatches.push(card);
-  }
-  if (exactTitleMatches.length) return exactTitleMatches;
-
-  // Creator-authored trigger aliases use the same per-hook identity index.
-  if (typeof buildUnsaidAliasIndex === "function") {
-    const index = buildUnsaidAliasIndex();
-    const direct = index && index.aliasToCards && index.aliasToCards[aliasKey];
-    if (direct && direct.length) return direct.slice();
+  const aliasKey = normalizeUnsaidIdentity(name);
+  if (!aliasKey) return [];
+  if (Object.prototype.hasOwnProperty.call(UNSAID_STORY_MATCH_CACHE, aliasKey)) {
+    return UNSAID_STORY_MATCH_CACHE[aliasKey].slice();
   }
 
-  const wantedWordCount = clean(name).split(" ").filter(Boolean).length;
-  return storyCards.filter(card => {
+  const index = typeof buildUnsaidAliasIndex === "function"
+    ? buildUnsaidAliasIndex()
+    : null;
+
+  const exactTitleMatches = index && index.titleToCards
+    ? (index.titleToCards[aliasKey] || [])
+    : [];
+  if (exactTitleMatches.length) {
+    UNSAID_STORY_MATCH_CACHE[aliasKey] = exactTitleMatches.slice();
+    return exactTitleMatches.slice();
+  }
+
+  const direct = index && index.aliasToCards
+    ? (index.aliasToCards[aliasKey] || [])
+    : [];
+  if (direct.length) {
+    UNSAID_STORY_MATCH_CACHE[aliasKey] = direct.slice();
+    return direct.slice();
+  }
+
+  const wantedWordCount = aliasKey.split(" ").filter(Boolean).length;
+  const matches = storyCards.filter(card => {
     if (!card || !card.title || !isSameCardEntity(card.title, name)) return false;
-    // Direction matters for lookup. "Harlan" may intentionally refer to an
-    // existing "Harlan Voss" card, but a longer new entity such as "Rose
-    // Garden" must not collapse onto an existing one-word "Rose" card.
-    const cardWordCount = clean(card.title).split(" ").filter(Boolean).length;
+    const cardWordCount = normalizeUnsaidIdentity(card.title).split(" ").filter(Boolean).length;
     return cardWordCount >= wantedWordCount;
   });
-}
 
+  UNSAID_STORY_MATCH_CACHE[aliasKey] = matches.slice();
+  return matches;
+}
 function findStoryCardForEntity(name) {
   const matches = storyCardMatchesForEntity(name);
   if (matches.length === 1) return matches[0];
