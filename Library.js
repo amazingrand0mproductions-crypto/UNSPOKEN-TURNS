@@ -1623,18 +1623,39 @@ var Library = (() => {
       const title = storyCards[i] && storyCards[i].title;
       if (title && !isOwnCard(title)) out.push(title);
     }
+    // Longest-first is the lookup priority. Sort once here instead of once
+    // per sentence inside findKnownEntityInSentence().
+    out.sort((a, b) => String(b).length - String(a).length);
     return out;
+  }
+
+  function knownEntityLiteralAppears(title, source, sourceLower) {
+    const needle = String(title || "").toLowerCase();
+    if (!needle) return false;
+    const hay = sourceLower || String(source || "").toLowerCase();
+    let from = 0;
+    while (from <= hay.length - needle.length) {
+      const at = hay.indexOf(needle, from);
+      if (at < 0) return false;
+      const before = at > 0 ? hay.charAt(at - 1) : "";
+      const afterAt = at + needle.length;
+      const after = afterAt < hay.length ? hay.charAt(afterAt) : "";
+      const beforeOk = !before || !/[a-z0-9]/i.test(before);
+      const afterOk = !after || !/[a-z0-9]/i.test(after);
+      if (beforeOk && afterOk) return true;
+      from = at + 1;
+    }
+    return false;
   }
 
   function findKnownEntityInSentence(sentence, titles) {
     try {
-      const list = (titles || eligibleCardTitles()).filter(Boolean).slice()
-        .sort((a,b) => String(b).length - String(a).length);
+      const list = titles || eligibleCardTitles();
       const source = String(sentence || "");
+      const sourceLower = source.toLowerCase();
       for (let i = 0; i < list.length; i++) {
-        const title = String(list[i]);
-        const escaped = title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        if (new RegExp(`(?:^|[^A-Za-z0-9])${escaped}(?=$|[^A-Za-z0-9])`, "i").test(source)) return list[i];
+        const title = list[i];
+        if (title && knownEntityLiteralAppears(title, source, sourceLower)) return title;
       }
     } catch (e) {}
     return null;
@@ -2641,6 +2662,13 @@ var FEELING_HISTORY_LIMIT = 3;
 var RELATION_HISTORY_LIMIT = 2;
 var MAX_RELATIONS_PER_CHARACTER = 6;
 var MENTION_TRACKING_CAP = 150;
+// Hard performance guardrails for AI Dungeon's isolated VM. Semantic entity
+// typing is intentionally evidence-rich, but it must never rescan an entire
+// long context hundreds of times in one Context Modifier pass.
+var CODEX_SEMANTIC_SCAN_CHAR_LIMIT = 7000;
+var CODEX_CONTEXT_MIGRATION_BATCH = 8;
+var CODEX_CONTEXT_PRUNE_BATCH = 12;
+var MENTION_TRACKING_HARD_CAP = 180;
 
 var TENSION_THRESHOLD = 3;
 var DRASTIC_TENSION_MULTIPLIER = 2;
@@ -4235,8 +4263,28 @@ function codexTypeVoteScore(name, type) {
 // important for place names such as Thornhaven: "Thornhaven's a quiet place"
 // is much stronger evidence than the fact that the same capitalized token
 // happens to occur at the start of a sentence.
+//
+// PERFORMANCE NOTE: AI Dungeon's Context Modifier runs inside a time-limited
+// isolated VM. Older builds repeatedly ran every dynamic entity regex against
+// the full context for every tracked name, which could mean thousands of
+// full-context scans in one pass. The timeout screenshot that pointed at the
+// locationExplicit.some(...) line was one symptom of that accumulated work.
+// Keep the evidence-rich rules, but bound the text each rule is allowed to scan.
+function boundedCodexSemanticText(text) {
+  let source = typeof text === "string" ? text : String(text || "");
+  const cap = Math.max(2000, CODEX_SEMANTIC_SCAN_CHAR_LIMIT || 7000);
+  if (source.length <= cap) return source;
+
+  // Stored Codex evidence is normally prepended while live/recent story text is
+  // appended. Preserving both ends keeps historical identity evidence AND the
+  // newest scene while discarding the low-value middle of a huge context.
+  const head = Math.min(1800, Math.floor(cap * 0.28));
+  const tail = Math.max(1, cap - head - 5);
+  return source.slice(0, head) + "\n…\n" + source.slice(-tail);
+}
+
 function explicitCodexCharacterCue(name, text) {
-  const source = typeof text === "string" ? text : "";
+  const source = boundedCodexSemanticText(text);
   if (!source || !name) return false;
   const n = escapeForRegex(name);
   const personKinds =
@@ -4264,7 +4312,7 @@ function explicitCodexCharacterCue(name, text) {
 }
 
 function strongCodexNonCharacterEvidence(name, text) {
-  const source = typeof text === "string" ? text : "";
+  const source = boundedCodexSemanticText(text);
   if (!source || !name) return null;
   const n = escapeForRegex(name);
 
@@ -4306,7 +4354,6 @@ function strongCodexNonCharacterEvidence(name, text) {
   const locationExplicit = [
     new RegExp(`\\b${locationKinds}\\s+(?:of\\s+|called\\s+|named\\s+|known\\s+as\\s+)?["“”'‘’]?${n}\\b`, "i"),
     new RegExp(`\\b${n}\\b\\s+(?:is|was|are|were)\\s+(?:a|an|the)\\s+(?:[a-z-]+\\s+){0,3}${locationKinds}\\b`, "i"),
-    // Handles contractions such as "Thornhaven's a quiet place."
     new RegExp(`\\b${n}(?:'s|’s)\\s+(?:a|an|the)\\s+(?:[a-z-]+\\s+){0,3}${locationKinds}\\b`, "i")
   ];
   if (locationExplicit.some(re => re.test(source))) scores.location += 6;
@@ -4324,6 +4371,16 @@ function strongCodexNonCharacterEvidence(name, text) {
   if (itemExplicit.some(re => re.test(source))) scores.item += 6;
   if (new RegExp(`\\b(?:wields?|holds?|wears?|uses?|draws?|grips?|picks?\\s+up|carries?|opens?|reads?|drives?|pilots?|boards?)\\s+(?:the\\s+|a\\s+|an\\s+|his\\s+|her\\s+|their\\s+)?${n}\\b`, "i").test(source)) {
     scores.item += 1;
+  }
+  // Vehicle/mech names are often proper nouns with no vehicle word inside
+  // the name itself (Mustang, Rocinante, Normandy). Mechanical possessives
+  // and unmistakable vehicle-operation verbs outrank a weak "into X"
+  // location cue.
+  if (new RegExp(`\\b${n}(?:'s|’s)\\s+(?:engine|motor|dashboard|dash|steering\\s+wheel|wheel|wheels|tires?|tyres?|windshield|windscreen|headlights?|taillights?|doors?|trunk|boot|hood|bonnet|chassis|transmission|gearbox|exhaust|cockpit|hull|thrusters?|reactor|controls?)\\b`, "i").test(source)) {
+    scores.item += 5;
+  }
+  if (new RegExp(`\\b(?:drives?|drove|driving|parks?|parked|pilots?|piloted|boards?|boarded|rides?|rode|climbs?|climbed|gets?|got|hops?|hopped)\\s+(?:into\\s+|onto\\s+|aboard\\s+)?(?:the\\s+|a\\s+|an\\s+|his\\s+|her\\s+|their\\s+)?${n}\\b`, "i").test(source)) {
+    scores.item += 3;
   }
 
   const factionExplicit = [
@@ -4348,9 +4405,30 @@ function strongCodexNonCharacterEvidence(name, text) {
   return { type: best, score: bestScore, margin: bestScore - second, scores };
 }
 
+// Direct scene-presence cues only. This intentionally does NOT call the
+// expensive semantic typing helpers itself; callers that already did those
+// checks can reuse this without doubling the regex workload.
+function hasDirectCodexCharacterPresenceCue(name, text) {
+  const source = boundedCodexSemanticText(text);
+  if (!source || !name) return false;
+  const n = escapeForRegex(name);
+  const directCues = [
+    new RegExp(`\\b(?:I\\s*(?:am|'m|’m)|my\\s+name\\s+is|name\\s*(?:is|'s|’s)|call\\s+me|this\\s+is|meet|known\\s+as|go\\s+by)\\s+["“”'‘’]?${n}\\b`, "i"),
+    new RegExp(`\\b(?:you|he|she|they|we)\\s+(?:see|spot|notice|meet|find|face|approach|watch|hear)\\s+(?:the\\s+|a\\s+|an\\s+)?${n}\\b`, "i"),
+    new RegExp(`\\b${n}(?:'s|’s)\\s+(?:eyes?|voice|hands?|face|expression|smile|gaze|shoulders?|breath|hair|fingers?|arms?|feet|heart|cheeks?|lips?|posture|jaw|stance|grip|step|footsteps?)\\b`, "i"),
+    new RegExp(`\\b${n}\\b[^\\n.!?]{0,64}\\b(?:steps?|stepped|walks?|walked|approaches?|approached|enters?|entered|arrives?|arrived|comes?|came|sits?|sat|stands?|stood|leans?|leaned|reaches?|reached|turns?|turned|looks?|looked|glances?|glanced|stares?|stared|smiles?|smiled|frowns?|frowned|nods?|nodded|shrugs?|shrugged|runs?|ran|follows?|followed|kneels?|knelt|rises?|rose|flinches?|flinched|grabs?|grabbed|takes?|took|places?|placed|pushes?|pushed|pulls?|pulled|moves?|moved|laughs?|laughed|sighs?|sighed|winces?|winced|swallows?|swallowed|gestures?|gestured|speaks?|spoke)\\b`, "i"),
+    new RegExp(`\\b(?:a|an|the)\\s+(?:young\\s+|old\\s+|elderly\\s+)?(?:girl|boy|woman|man|person|lady|gentleman|teenager|teen|child|youth|guard|soldier|knight|mage|wizard|witch|priest|priestess|captain|doctor|merchant|stranger|traveler|traveller|officer|detective|pilot|engineer|nurse|bartender|server|waiter|waitress|barista|cashier|clerk|receptionist|chef|cook|mechanic|driver|courier|medic|therapist|counselor|counsellor|neighbor|neighbour|roommate|coworker|colleague|manager|boss|assistant|owner|parent|mother|father|sister|brother|wife|husband|partner|friend|teacher|professor|student|lawyer|attorney|judge|athlete|coach|musician|singer|actor|artist|scientist|researcher|agent|android|robot|synthetic|AI|alien|creature|spirit|ghost|vampire|werewolf|superhero|hero|villain|elf|dwarf|orc|fae|demon|angel|dragon|deity|god|goddess|dog|cat|horse|animal|companion)\\s+(?:named|called)\\s+${n}\\b`, "i"),
+    new RegExp(`\\b${n}\\b\\s+(?:says?|asks?|replies?|answers?|whispers?|murmurs?|shouts?|calls?|adds?|admits?|explains?|insists?|snaps?|growls?|mutters?|laughs?|sighs?)\\s*[,.:!?-]?\\s*["“]`, "i"),
+    new RegExp(`["”][^\\n]{0,40}\\b${n}\\b\\s+(?:says?|asks?|replies?|answers?|whispers?|murmurs?|shouts?|adds?|admits?|explains?|insists?|snaps?|growls?|mutters?)\\b`, "i")
+  ];
+  return directCues.some(re => re.test(source));
+}
+
 function resolveCodexEntityType(name, text) {
-  const live = typeof text === "string" ? text : "";
-  const evidence = [codexEvidenceTextFor(name), live].filter(Boolean).join(" ");
+  const live = boundedCodexSemanticText(text);
+  const evidence = boundedCodexSemanticText(
+    [codexEvidenceTextFor(name), live].filter(Boolean).join(" ")
+  );
   const explicitCharacter = explicitCodexCharacterCue(name, evidence);
   const strongNonCharacter = strongCodexNonCharacterEvidence(name, evidence);
 
@@ -4375,15 +4453,17 @@ function resolveCodexEntityType(name, text) {
     }
   } catch (e) {}
 
-  return classifyCodexEntry(name, live);
+  return classifyCodexEntryAfterSemanticChecks(name, evidence);
 }
 
 function reconcileCodexEntityType(name, text) {
   try {
     const codex = state && state.unsaid && state.unsaid.codex;
     if (!codex || !name) return null;
-    const evidence = [codexEvidenceTextFor(name), typeof text === "string" ? text : ""]
-      .filter(Boolean).join(" ");
+    const evidence = boundedCodexSemanticText(
+      [codexEvidenceTextFor(name), typeof text === "string" ? text : ""]
+        .filter(Boolean).join(" ")
+    );
     const explicitCharacter = explicitCodexCharacterCue(name, evidence);
     const strongNonCharacter = strongCodexNonCharacterEvidence(name, evidence);
 
@@ -4409,14 +4489,27 @@ function reconcileCodexEntityType(name, text) {
       return strongNonCharacter.type;
     }
 
-    return resolveCodexEntityType(name, evidence);
+    // Do not call resolveCodexEntityType() here: it would run the same strong
+    // semantic regexes again. Reuse the already-clean evidence and continue
+    // from the cheap persistent-state / fallback stage instead.
+    if (codex.trustedEntities && codex.trustedEntities[name]) {
+      return codex.trustedEntities[name];
+    }
+    if (codex.likelyCharacters && codex.likelyCharacters[name]) {
+      return "character";
+    }
+    const dominant = dominantCodexType(name);
+    if (dominant && dominant !== "character" && codexTypeVoteScore(name, dominant) >= 2) {
+      return dominant;
+    }
+    return classifyCodexEntryAfterSemanticChecks(name, evidence);
   } catch (e) {
     return null;
   }
 }
 
 function isLikelyCharacterIntroduction(name, text) {
-  const source = typeof text === "string" ? text : "";
+  const source = boundedCodexSemanticText(text);
   if (!source || !name) return false;
 
   // Strong identity cues beat noun-shaped names ("I'm River"), while strong
@@ -4433,22 +4526,7 @@ function isLikelyCharacterIntroduction(name, text) {
   if (!normalizeCodexCandidate(name, source) &&
       !isEstablishedExplicitCodexCharacter(name)) return false;
 
-  const n = escapeForRegex(name);
-
-  // Presence cues are intentionally stronger than a plain mention. This is
-  // what separates "Mirelle said you'd be coming" from Mirelle actually
-  // entering, speaking, moving, or being physically described in the scene.
-  const directCues = [
-    new RegExp(`\\b(?:I\\s*(?:am|'m|’m)|my\\s+name\\s+is|name\\s*(?:is|'s|’s)|call\\s+me|this\\s+is|meet|known\\s+as|go\\s+by)\\s+["“”'‘’]?${n}\\b`, "i"),
-    new RegExp(`\\b(?:you|he|she|they|we)\\s+(?:see|spot|notice|meet|find|face|approach|watch|hear)\\s+(?:the\\s+|a\\s+|an\\s+)?${n}\\b`, "i"),
-    new RegExp(`\\b${n}(?:'s|’s)\\s+(?:eyes?|voice|hands?|face|expression|smile|gaze|shoulders?|breath|hair|fingers?|arms?|feet|heart|cheeks?|lips?|posture|jaw|stance|grip|step|footsteps?)\\b`, "i"),
-    new RegExp(`\\b${n}\\b[^\\n.!?]{0,64}\\b(?:steps?|stepped|walks?|walked|approaches?|approached|enters?|entered|arrives?|arrived|comes?|came|sits?|sat|stands?|stood|leans?|leaned|reaches?|reached|turns?|turned|looks?|looked|glances?|glanced|stares?|stared|smiles?|smiled|frowns?|frowned|nods?|nodded|shrugs?|shrugged|runs?|ran|follows?|followed|kneels?|knelt|rises?|rose|flinches?|flinched|grabs?|grabbed|takes?|took|places?|placed|pushes?|pushed|pulls?|pulled|moves?|moved|laughs?|laughed|sighs?|sighed|winces?|winced|swallows?|swallowed|gestures?|gestured|speaks?|spoke)\\b`, "i"),
-    new RegExp(`\\b(?:a|an|the)\\s+(?:young\\s+|old\\s+|elderly\\s+)?(?:girl|boy|woman|man|person|lady|gentleman|teenager|teen|child|youth|guard|soldier|knight|mage|wizard|witch|priest|priestess|captain|doctor|merchant|stranger|traveler|traveller|officer|detective|pilot|engineer|nurse|bartender|server|waiter|waitress|barista|cashier|clerk|receptionist|chef|cook|mechanic|driver|courier|medic|therapist|counselor|counsellor|neighbor|neighbour|roommate|coworker|colleague|manager|boss|assistant|owner|parent|mother|father|sister|brother|wife|husband|partner|friend|teacher|professor|student|lawyer|attorney|judge|athlete|coach|musician|singer|actor|artist|scientist|researcher|agent|android|robot|synthetic|AI|alien|creature|spirit|ghost|vampire|werewolf|superhero|hero|villain|elf|dwarf|orc|fae|demon|angel|dragon|deity|god|goddess|dog|cat|horse|animal|companion)\\s+(?:named|called)\\s+${n}\\b`, "i"),
-    new RegExp(`\\b${n}\\b\\s+(?:says?|asks?|replies?|answers?|whispers?|murmurs?|shouts?|calls?|adds?|admits?|explains?|insists?|snaps?|growls?|mutters?|laughs?|sighs?)\\s*[,.:!?-]?\\s*["“]`, "i"),
-    new RegExp(`["”][^\\n]{0,40}\\b${n}\\b\\s+(?:says?|asks?|replies?|answers?|whispers?|murmurs?|shouts?|adds?|admits?|explains?|insists?|snaps?|growls?|mutters?)\\b`, "i")
-  ];
-
-  return directCues.some(re => re.test(source));
+  return hasDirectCodexCharacterPresenceCue(name, source);
 }
 
 function codexEvidenceSentences(name, source) {
@@ -4642,9 +4720,51 @@ function trackMentions(text, observeIntroductions) {
 }
 
 
-function pruneMentionCounts() {
-  const counts = state.unsaid.codex.mentionCounts;
-  Object.keys(counts).forEach(name => {
+function pruneMentionCounts(maxChecks) {
+  const codex = state.unsaid.codex;
+  const counts = codex.mentionCounts;
+  if (!counts || typeof counts !== "object") return;
+
+  let keys = Object.keys(counts);
+
+  // Emergency trim FIRST, before doing any fuzzy Story Card matching. Old
+  // saves from buggy builds can contain hundreds or thousands of stale names;
+  // trying to semantically validate all of them in a single isolated-VM pass
+  // is exactly the kind of work that can time out before cleanup finishes.
+  if (keys.length > MENTION_TRACKING_HARD_CAP) {
+    keys
+      .sort((a, b) => {
+        const aProtected = codex.likelyCharacters[a] ? 1 : 0;
+        const bProtected = codex.likelyCharacters[b] ? 1 : 0;
+        if (aProtected !== bProtected) return bProtected - aProtected;
+        const countDiff = (counts[b] || 0) - (counts[a] || 0);
+        if (countDiff !== 0) return countDiff;
+        return (codex.firstSeenTurn[b] || 0) - (codex.firstSeenTurn[a] || 0);
+      })
+      .slice(MENTION_TRACKING_HARD_CAP)
+      .forEach(forgetMentionTracking);
+    keys = Object.keys(counts);
+  }
+
+  // Context uses a small rotating maintenance batch; Input/Output call this
+  // without a limit and still get the full cleanup pass. This prevents the
+  // Context Modifier from re-checking ~150 fuzzy names against every Story
+  // Card on every generation while still self-healing old state over time.
+  let inspect = keys;
+  const limit = (typeof maxChecks === "number" && isFinite(maxChecks) && maxChecks > 0)
+    ? Math.max(1, Math.floor(maxChecks))
+    : 0;
+  if (limit && keys.length > limit) {
+    const cursor = Math.max(0, Math.floor(codex.pruneCursor || 0)) % keys.length;
+    inspect = [];
+    for (let i = 0; i < limit; i++) inspect.push(keys[(cursor + i) % keys.length]);
+    codex.pruneCursor = (cursor + limit) % keys.length;
+  } else {
+    codex.pruneCursor = 0;
+  }
+
+  inspect.forEach(name => {
+    if (!(name in counts)) return;
     const existingMatches = typeof storyCardMatchesForEntity === "function"
       ? storyCardMatchesForEntity(name)
       : [];
@@ -4654,46 +4774,51 @@ function pruneMentionCounts() {
     }
 
     // Clean up stale garbage left in persistent state by older builds.
-    // This happens automatically on the next real turn, so names such as
-    // Which / Six / S / Burying / Already / To cannot remain eligible just
-    // because they accumulated mentions before this filter existed.
     if (!isSafeTrackedCodexName(name)) {
       forgetMentionTracking(name);
     }
   });
 
-  const keys = Object.keys(counts);
-  if (keys.length > MENTION_TRACKING_CAP + 50) {
+  keys = Object.keys(counts);
+  if (keys.length > MENTION_TRACKING_CAP) {
     keys
       .sort((a, b) => {
-        const aProtected = state.unsaid.codex.likelyCharacters[a] ? 1 : 0;
-        const bProtected = state.unsaid.codex.likelyCharacters[b] ? 1 : 0;
+        const aProtected = codex.likelyCharacters[a] ? 1 : 0;
+        const bProtected = codex.likelyCharacters[b] ? 1 : 0;
         if (aProtected !== bProtected) return aProtected - bProtected;
         const countDiff = (counts[a] || 0) - (counts[b] || 0);
         if (countDiff !== 0) return countDiff;
-        return (state.unsaid.codex.firstSeenTurn[a] || 0) - (state.unsaid.codex.firstSeenTurn[b] || 0);
+        return (codex.firstSeenTurn[a] || 0) - (codex.firstSeenTurn[b] || 0);
       })
       .slice(0, keys.length - MENTION_TRACKING_CAP)
       .forEach(forgetMentionTracking);
   }
 
-  const attempts = state.unsaid.codex.attempts;
+  const attempts = codex.attempts;
   Object.keys(attempts).forEach(name => {
     if (!(name in counts)) delete attempts[name];
   });
 }
 
 function classifyCodexEntry(name, text) {
-  const source = typeof text === "string" ? text : "";
+  const source = boundedCodexSemanticText(text);
+  if (!name) return "character";
 
-  // Explicitly being introduced as a person is stronger than a noun-shaped
-  // name. Otherwise, semantic evidence for a place/item/faction gets first
-  // refusal before broad movement/dialogue heuristics are allowed to call the
-  // entity a character.
+  // Perform expensive semantic checks exactly once. Older builds called
+  // isLikelyCharacterIntroduction() here, which repeated both of these
+  // full regex suites before doing the actual presence test.
   if (explicitCodexCharacterCue(name, source)) return "character";
   const strongNonCharacter = strongCodexNonCharacterEvidence(name, source);
   if (strongNonCharacter) return strongNonCharacter.type;
-  if (isLikelyCharacterIntroduction(name, source)) return "character";
+
+  return classifyCodexEntryAfterSemanticChecks(name, source);
+}
+
+function classifyCodexEntryAfterSemanticChecks(name, text) {
+  const source = boundedCodexSemanticText(text);
+  if (!name) return "character";
+
+  if (hasDirectCodexCharacterPresenceCue(name, source)) return "character";
 
   if (CODEX_LOCATION_HINTS.test(name)) return "location";
   if (CODEX_LOCATION_SUFFIX_HINTS.test(name)) return "location";
@@ -4703,11 +4828,11 @@ function classifyCodexEntry(name, text) {
   const n = escapeForRegex(name);
   const nearLocation = new RegExp(`(in|inside|outside|through|into)\\s+(?:the\\s+)?${n}\\b`, "i");
   const describedAsLocation = new RegExp(`\\b(?:location|place|site|venue|garden|grove|park|plaza|square|city|town|village|hamlet|kingdom|realm|district|region|port|harbor|harbour|forest|woods|mountain|valley|island|station|outpost|colony|settlement|tavern|inn|hotel|motel|castle|fortress|temple|academy|school|college|university|campus|facility|base|office|apartment|house|home|warehouse|factory|farm|ranch|arena|stadium|courtroom|courthouse|prison|jail|theater|theatre|museum|library|mall|market|beach|cave|mine|ruins?|cemetery|graveyard|neighbou?rhood|suburb)\\s+(?:of|called|named)\\s+${n}\\b|\\b${n}\\b\\s+(?:is|was)\\s+(?:an?\\s+|the\\s+)?(?:location|place|site|venue|garden|grove|park|plaza|square|city|town|village|hamlet|kingdom|realm|district|region|port|harbor|harbour|forest|station|outpost|colony|settlement|tavern|inn|hotel|motel|castle|fortress|temple|academy|school|college|university|campus|facility|base|office|apartment|house|home|warehouse|factory|farm|ranch|arena|stadium|courtroom|courthouse|prison|jail|theater|theatre|museum|library|mall|market|beach|cave|mine|ruins?|cemetery|graveyard|neighbou?rhood|suburb)\\b`, "i");
-  if (nearLocation.test(text) || describedAsLocation.test(text)) return "location";
+  if (nearLocation.test(source) || describedAsLocation.test(source)) return "location";
 
-  const nearItem = new RegExp(`(wields?|holds?|wearing|wears|wore|donned|dressed\\s+in|put\\s+on|slipped\\s+into|using|uses|draws?|grips?|picks?\\s+up|holsters?|drove|drives|driving|parked|rode|riding|climbed\\s+into|hopped\\s+into|flew|flying|piloted|piloting|boarded|boarding|launched|launching|docked|docking)\\s+(the\\s+|a\\s+|an\\s+|his\\s+|her\\s+|their\\s+)?${n}\\b`, "i");
+  const nearItem = new RegExp(`(wields?|holds?|wearing|wears|wore|donned|dressed\\s+in|put\\s+on|slipped\\s+into|using|uses|draws?|grips?|picks?\\s+up|holsters?|drove|drives|driving|parked|rode|riding|climbs?\\s+into|climbed\\s+into|gets?\\s+into|got\\s+into|hops?\\s+into|hopped\\s+into|flew|flying|piloted|piloting|boarded|boarding|launched|launching|docked|docking)\\s+(the\\s+|a\\s+|an\\s+|his\\s+|her\\s+|their\\s+)?${n}\\b`, "i");
   const describedAsItem = new RegExp(`\\b(?:sword|blade|gun|rifle|pistol|staff|wand|amulet|ring|artifact|device|weapon|tool|key|book|tome|relic|ship|starship|vehicle|car|truck|motorcycle|bicycle|train|boat|robot|android|mech|phone|computer|laptop|camera|instrument|guitar|document|letter|contract|map|medicine|medication|serum)\\s+(?:called|named)\\s+${n}\\b|\\b${n}\\b\\s+(?:is|was)\\s+(?:an?\\s+|the\\s+)?(?:sword|blade|gun|rifle|pistol|staff|wand|amulet|ring|artifact|device|weapon|tool|key|book|tome|relic|ship|starship|vehicle|car|truck|motorcycle|bicycle|train|boat|robot|android|mech|phone|computer|laptop|camera|instrument|guitar|document|letter|contract|map|medicine|medication|serum)\\b`, "i");
-  if (nearItem.test(text) || describedAsItem.test(text)) return "item";
+  if (nearItem.test(source) || describedAsItem.test(source)) return "item";
 
   // Ordinary food words are filtered from automatic discovery, but a
   // deliberately named/signature consumable can still be a legitimate item
@@ -4719,7 +4844,7 @@ function classifyCodexEntry(name, text) {
     `(?:dish|meal|food|drink|beverage|cocktail|mocktail|dessert|recipe|menu\\s+item|special)\\b`,
     "i"
   );
-  if (describedAsConsumable.test(text)) return "item";
+  if (describedAsConsumable.test(source)) return "item";
 
   // A name with no recognizable keyword in itself ("Dragon's Breath Fried
   // Chicken" contains no obvious business word) can still be caught from
@@ -4729,7 +4854,7 @@ function classifyCodexEntry(name, text) {
   // match ordinary location references ("stood at the harbor") and
   // misclassify those instead.
   const nearBusiness = new RegExp(`(ordered\\s+from|ate\\s+at|dined\\s+at|grabbed\\s+(food\\s+)?from|work(?:s|ed)?\\s+(at|for)|employed\\s+(at|by)|shops?\\s+at|shopping\\s+at)\\s+${escapeForRegex(name)}\\b`, "i");
-  if (nearBusiness.test(text)) return "faction";
+  if (nearBusiness.test(source)) return "faction";
 
   // A generic name ("Silver Hand", "VyrMusic") is often immediately
   // followed by the word that actually classifies it ("Silver Hand
@@ -4737,7 +4862,7 @@ function classifyCodexEntry(name, text) {
   // name itself, so this catches the same signal sitting just outside it.
   const followedByFactionWord = new RegExp(`${n}\\s+(order|guild|alliance|empire|faction|clan|brotherhood|council|syndicate|coalition|army|legion|cult|society|corporation|compan(?:y|ies)|division|agency|federation|dynasty|tribe|app|platform|website|network|restaurant|diner|caf[eé]|bakery|store|shop|team|club|league|union|association|foundation|charity|department|bureau|committee|party|campaign|band|orchestra|label|school|college|university|crew|fleet|police|government)\\b`, "i");
   const describedAsFaction = new RegExp(`\\b(?:order|guild|alliance|faction|clan|brotherhood|council|syndicate|coalition|company|corporation|agency|organization|organisation|group|gang|cult|society|restaurant|store|shop|brand|network|team|club|league|union|association|foundation|charity|department|bureau|committee|party|campaign|band|orchestra|label|school|college|university|crew|fleet|police|government)\\s+(?:called|named)\\s+${n}\\b|\\b${n}\\b\\s+(?:is|was)\\s+(?:an?\\s+|the\\s+)?(?:order|guild|alliance|faction|clan|brotherhood|council|syndicate|coalition|company|corporation|agency|organization|organisation|group|gang|cult|society|restaurant|store|shop|brand|network|team|club|league|union|association|foundation|charity|department|bureau|committee|party|campaign|band|orchestra|label|school|college|university|crew|fleet|police|government)\\b`, "i");
-  if (followedByFactionWord.test(text) || describedAsFaction.test(text)) return "faction";
+  if (followedByFactionWord.test(source) || describedAsFaction.test(source)) return "faction";
 
   return "character";
 }

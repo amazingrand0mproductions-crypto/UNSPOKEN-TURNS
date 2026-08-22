@@ -68,7 +68,13 @@ var twistsModifier = (text) => {
     Library.scanPlotEssentialsForThreads(c, cfg, cardTitles);
     Library.scanAuthorsNoteForThreads(c, cfg, cardTitles);
 
-    const scanText = text
+    // Scan only the newest story window. The old build rescanned the ENTIRE
+    // model context every Context Modifier pass; as adventures grew, that
+    // multiplied sentence/entity/pattern work until the isolated VM timed out.
+    const twistScanSource = (typeof recentTurnsText === "function")
+      ? recentTurnsText(text, 3)
+      : String(text || "").slice(-4500);
+    const scanText = twistScanSource
       .replace(/\[[^\[\]]*\]/g, " ")
       .replace(/《[^》]*》?/g, " ")
       .replace(/【CARD】[\s\S]*?【\/CARD】?/g, " ");
@@ -308,10 +314,11 @@ var unsaidModifier = (text) => {
     const sinceLastCodex = state.unsaid.turn - (state.unsaid.codex.lastTriggerTurn || 0);
 
     if (cfg.codexEnabled) {
-      // Purge stale automatic junk candidates before any legacy-state
-      // migration or scheduling. This makes the fix effective immediately
-      // in existing adventures, not only for names seen after installation.
-      pruneMentionCounts();
+      // Keep Context maintenance deliberately bounded. Input/Output perform
+      // the full candidate scan on real actions; Context only needs a small
+      // rotating cleanup slice so it can never spend its entire VM budget on
+      // old persisted candidates before generating the actual story context.
+      pruneMentionCounts(CODEX_CONTEXT_PRUNE_BATCH);
 
       const codexRecent = recentTurnsText(
         text,
@@ -322,43 +329,54 @@ var unsaidModifier = (text) => {
         )
       );
 
-      // Migration + false-positive cleanup for saves that were already run
-      // with the previous fast-track logic. That version could mark a mere
-      // off-screen reference ("Mirelle said you'd be coming") as a character
-      // introduction. We now require direct scene-presence evidence before
-      // starting the character timer. Existing "likely" flags with no real
-      // introduction timestamp are therefore revalidated instead of trusted.
-      Object.keys(state.unsaid.codex.mentionCounts).forEach(name => {
-        if (storyCards.some(c => c.title && isSameCardEntity(c.title, name))) return;
+      // Legacy migration is only needed for the old sticky character flags
+      // that have NO introduction timestamp. Previous code reclassified every
+      // tracked name (up to ~150) against the same recent context on every
+      // Context pass — the main source of the timeout seen in the screenshot.
+      // Repair a small rotating batch instead; current/new entities are already
+      // handled by trackMentions in Input/Output.
+      const codexState = state.unsaid.codex;
+      const legacyNames = Object.keys(codexState.mentionCounts || {}).filter(name =>
+        !!codexState.likelyCharacters[name] &&
+        typeof codexState.introducedTurn[name] !== "number"
+      );
 
-        if (typeof state.unsaid.codex.firstSeenTurn[name] !== "number") {
-          state.unsaid.codex.firstSeenTurn[name] = state.unsaid.turn;
+      if (legacyNames.length > 0) {
+        const batchSize = Math.max(1, CODEX_CONTEXT_MIGRATION_BATCH || 8);
+        const cursor = Math.max(0, Math.floor(codexState.legacyMigrationCursor || 0)) % legacyNames.length;
+        const migrationBatch = [];
+        for (let i = 0; i < Math.min(batchSize, legacyNames.length); i++) {
+          migrationBatch.push(legacyNames[(cursor + i) % legacyNames.length]);
         }
+        codexState.legacyMigrationCursor = (cursor + migrationBatch.length) % legacyNames.length;
 
-        const repairedType = reconcileCodexEntityType(name, codexRecent);
-        const directlyIntroduced = repairedType === "character" &&
-          isLikelyCharacterIntroduction(name, codexRecent);
-        const hadLegacyFlag = !!state.unsaid.codex.likelyCharacters[name];
-        const hasIntroTurn = typeof state.unsaid.codex.introducedTurn[name] === "number";
+        migrationBatch.forEach(name => {
+          if (typeof storyCards !== "undefined" && Array.isArray(storyCards) &&
+              storyCards.some(card => card && card.title && isSameCardEntity(card.title, name))) return;
 
-        if (directlyIntroduced) {
-          state.unsaid.codex.likelyCharacters[name] = true;
-          state.unsaid.codex.observedTypes[name] = "character";
-          if (!hasIntroTurn) {
-            // Conservative migration: if we cannot know which exact old turn
-            // contained the introduction, start the observation clock now.
-            // Waiting three extra turns is preferable to canonizing a profile
-            // too early.
-            state.unsaid.codex.introducedTurn[name] = state.unsaid.turn;
+          if (typeof codexState.firstSeenTurn[name] !== "number") {
+            codexState.firstSeenTurn[name] = state.unsaid.turn;
           }
-          if (codexAppearanceCount(name) === 0) {
-            recordCodexEvidence(name, codexRecent, true);
+
+          const repairedType = reconcileCodexEntityType(name, codexRecent);
+          const directlyIntroduced = repairedType === "character" &&
+            isLikelyCharacterIntroduction(name, codexRecent);
+
+          if (directlyIntroduced) {
+            codexState.likelyCharacters[name] = true;
+            codexState.observedTypes[name] = "character";
+            codexState.introducedTurn[name] = state.unsaid.turn;
+            if (codexAppearanceCount(name) === 0) {
+              recordCodexEvidence(name, codexRecent, true);
+            }
+          } else {
+            delete codexState.likelyCharacters[name];
+            codexState.observedTypes[name] = codexState.observedTypes[name] || "character";
           }
-        } else if (hadLegacyFlag && !hasIntroTurn) {
-          delete state.unsaid.codex.likelyCharacters[name];
-          state.unsaid.codex.observedTypes[name] = state.unsaid.codex.observedTypes[name] || "character";
-        }
-      });
+        });
+      } else {
+        codexState.legacyMigrationCursor = 0;
+      }
 
       const available = findCodexCandidates(
         cfg.mentionThreshold,
