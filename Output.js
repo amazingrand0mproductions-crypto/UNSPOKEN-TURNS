@@ -756,8 +756,14 @@ var unsaidModifier = (text) => {
     const revealWasRequested = !!state.unsaid.pending;
     if (state.unsaid.pending) {
       const name = state.unsaid.pending;
+      const revealAliases = (typeof aliasesForUnsaidCharacter === "function"
+        ? aliasesForUnsaidCharacter(name)
+        : [name])
+        .filter(Boolean)
+        .sort((a, b) => String(b).length - String(a).length);
+      const revealNameSource = `(?:${revealAliases.map(v => escapeForRegex(v)).join("|") || escapeForRegex(name)})`;
       const strictPattern = new RegExp(
-        `《${escapeForRegex(name)},\\s*([a-zA-Z][a-zA-Z-]*)(?:,\\s*(about\\s+[^:》]+|core-shift))?:\\s*([^》]*)》`,
+        `《${revealNameSource},\\s*([a-zA-Z][a-zA-Z-]*)(?:,\\s*(about\\s+[^:》]+|core-shift))?:\\s*([^》]*)》`,
         "i"
       );
       let matchedPattern = strictPattern;
@@ -770,7 +776,7 @@ var unsaidModifier = (text) => {
         modifier2 = thoughtMatch[2] ? thoughtMatch[2].trim() : null;
         thought = thoughtMatch[3].trim();
       } else {
-        const loosePattern = new RegExp(`《${escapeForRegex(name)},\\s*([^》]+)》`, "i");
+        const loosePattern = new RegExp(`《${revealNameSource},\\s*([^》]+)》`, "i");
         const looseMatch = text.match(loosePattern);
         if (looseMatch) {
           matchedPattern = loosePattern;
@@ -781,7 +787,7 @@ var unsaidModifier = (text) => {
           // Do not consume an arbitrary unrelated 《...》 block just because
           // a reveal happened to be pending.
           const barePattern = new RegExp(
-            `(^|\\n)\\s*${escapeForRegex(name)},\\s*([a-zA-Z][a-zA-Z-]*)(?:,\\s*(about\\s+[^:\\n]+|core-shift))?:\\s*([^\\n]+)`,
+            `(^|\\n)\\s*${revealNameSource},\\s*([a-zA-Z][a-zA-Z-]*)(?:,\\s*(about\\s+[^:\\n]+|core-shift))?:\\s*([^\\n]+)`,
             "i"
           );
           const bareMatch = text.match(barePattern);
@@ -859,9 +865,11 @@ var unsaidModifier = (text) => {
         const mind = state.unsaid.minds[name];
         const previousFeeling = mind.feeling;
         const normalizeThought = (s) => (s || "").trim().toLowerCase().replace(/\s+/g, " ");
-        const isStaleRepeat = !!mind.lastThoughtText && normalizeThought(thought) === normalizeThought(mind.lastThoughtText);
+        const exactRepeat = !!mind.lastThoughtText && normalizeThought(thought) === normalizeThought(mind.lastThoughtText);
+        const isStaleRepeat = exactRepeat ||
+          (typeof isNearRepeatThought === "function" && isNearRepeatThought(mind, thought));
         let justShifted = false;
-        if (isCoreShift && cfg.allowCoreShift && thought && thought !== mind.core) {
+        if (!isStaleRepeat && isCoreShift && cfg.allowCoreShift && thought && thought !== mind.core) {
           if (!mind.coreHistory) mind.coreHistory = [];
           if (mind.core) pushCapped(mind.coreHistory, mind.core, 2);
           mind.core = thought;
@@ -881,10 +889,11 @@ var unsaidModifier = (text) => {
           mind.coreSetTurn = state.unsaid.turn;
         }
         mind.feeling = feeling;
-        if (wantSentence) mind.want = wantSentence;
-        mind.lastThoughtText = thought;
+        if (wantSentence && !isStaleRepeat) mind.want = wantSentence;
         mind.lastTurn = state.unsaid.turn;
         if (!isStaleRepeat) {
+          mind.lastThoughtText = thought;
+          if (typeof recordThoughtHistory === "function") recordThoughtHistory(mind, thought);
           mind.revealCount = (mind.revealCount || 0) + 1;
           if (!mind.feelingHistory) mind.feelingHistory = [];
           pushCapped(mind.feelingHistory, feeling, FEELING_HISTORY_LIMIT);
@@ -907,16 +916,26 @@ var unsaidModifier = (text) => {
           recordRelation(name, about, feeling);
         }
 
+        if (!isStaleRepeat && typeof rememberAdaptiveThought === "function") {
+          rememberAdaptiveThought(mind, thought, about, isCoreShift, feeling, cfg);
+          const reflectionInterval = Math.max(2, Math.min(20, Number(cfg.adaptiveReflectionInterval) || 4));
+          if (cfg.adaptiveMindEnabled !== false && mind.revealCount > 0 && mind.revealCount % reflectionInterval === 0) {
+            mind.lastReflectionTurn = state.unsaid.turn;
+          }
+        }
+
         // Let established private psychology reinforce an already-existing
         // compatible story thread. The bridge never creates a betrayal or
         // secret from a mere fear/suspicion; ordinary core-shift creation is
         // still handled separately by reinforceFromCoreShift above.
-        try {
-          const { c: tc, cfg: tcfg } = Library.initState();
-          if (Library.absorbUnsaidSignal) {
-            Library.absorbUnsaidSignal(tc, tcfg, name, mind, thought, about);
-          }
-        } catch (e) {}
+        if (!isStaleRepeat) {
+          try {
+            const { c: tc, cfg: tcfg } = Library.initState();
+            if (Library.absorbUnsaidSignal) {
+              Library.absorbUnsaidSignal(tc, tcfg, name, mind, thought, about);
+            }
+          } catch (e) {}
+        }
 
         const synced = syncMindToCard(name, cfg.allowCoreShift, cfg.jsonNotes);
 
@@ -969,6 +988,7 @@ var unsaidModifier = (text) => {
 
     return { text };
   } catch (e) {
+    if (typeof utRecordRuntimeError === "function") utRecordRuntimeError("Output/UNSAID", e);
     if (typeof log === "function") log("UNSAID Output error: " + (e && e.message));
     // Never let a parser/runtime exception leave a stale structured task
     // attached to the next unrelated model response. Creation candidates
@@ -987,8 +1007,17 @@ var unsaidModifier = (text) => {
 };
 
 var modifier = (text) => {
-  var afterTwists = twistsModifier(text);
-  return unsaidModifier(afterTwists.text);
+  var runtimeToken = typeof utBeginRuntimePhase === "function" ? utBeginRuntimePhase("output") : null;
+  try {
+    var afterTwists = twistsModifier(text);
+    return unsaidModifier(afterTwists.text);
+  } catch (e) {
+    if (typeof utRecordRuntimeError === "function") utRecordRuntimeError("Output/modifier", e);
+    if (typeof log === "function") log("UNSPOKEN TURNS Output wrapper error: " + (e && e.message));
+    return { text };
+  } finally {
+    if (typeof utEndRuntimePhase === "function") utEndRuntimePhase(runtimeToken);
+  }
 };
 
 modifier(text);

@@ -62,15 +62,12 @@ var twistsModifier = (text) => {
       c.forcePlant = null;
     }
 
-    Library.scanStoryCardsForScenarioThreads(c, cfg);
-
     const cardTitles = Library.eligibleCardTitles();
-    Library.scanPlotEssentialsForThreads(c, cfg, cardTitles);
-    Library.scanAuthorsNoteForThreads(c, cfg, cardTitles);
 
-    // Scan only the newest story window. The old build rescanned the ENTIRE
-    // model context every Context Modifier pass; as adventures grew, that
-    // multiplied sentence/entity/pattern work until the isolated VM timed out.
+    // Always prioritize the live story window. Lore maintenance can wait a
+    // turn; understanding what just happened cannot. The governor below
+    // yields older/background scans before the isolated VM reaches its hard
+    // execution cutoff.
     const twistScanSource = (typeof recentTurnsText === "function")
       ? recentTurnsText(text, 3)
       : String(text || "").slice(-4500);
@@ -79,7 +76,27 @@ var twistsModifier = (text) => {
       .replace(/《[^》]*》?/g, " ")
       .replace(/【CARD】[\s\S]*?【\/CARD】?/g, " ");
 
-    Library.scanForLooseThreads(scanText, c, cfg, cardTitles);
+    const scanLower = scanText.toLowerCase();
+    const liveCardTitles = cardTitles.filter(title =>
+      title && scanLower.indexOf(String(title).toLowerCase()) !== -1
+    ).slice(0, 64);
+    Library.scanForLooseThreads(scanText, c, cfg, liveCardTitles);
+
+    if (typeof utHasRuntimeBudget !== "function" || utHasRuntimeBudget(430)) {
+      Library.scanStoryCardsForScenarioThreads(c, cfg, liveCardTitles);
+    } else if (typeof utSkipRuntimeTask === "function") {
+      utSkipRuntimeTask("twist-storycard-scan");
+    }
+    if (typeof utHasRuntimeBudget !== "function" || utHasRuntimeBudget(350)) {
+      Library.scanPlotEssentialsForThreads(c, cfg, cardTitles);
+    } else if (typeof utSkipRuntimeTask === "function") {
+      utSkipRuntimeTask("twist-plot-scan");
+    }
+    if (typeof utHasRuntimeBudget !== "function" || utHasRuntimeBudget(300)) {
+      Library.scanAuthorsNoteForThreads(c, cfg, cardTitles);
+    } else if (typeof utSkipRuntimeTask === "function") {
+      utSkipRuntimeTask("twist-authors-note-scan");
+    }
 
     if (c.forceEntity) {
       let thread = null;
@@ -189,6 +206,7 @@ var twistsModifier = (text) => {
     Library.updateConfigCard(cfg, c);
     Library.updateTwistLogCard(c, cfg);
   } catch (e) {
+    if (typeof utRecordRuntimeError === "function") utRecordRuntimeError("Context/Twists", e);
     if (typeof log === "function") log("Context/Twists error: " + (e && e.message));
   }
 
@@ -242,7 +260,10 @@ var unsaidModifier = (text) => {
     state.unsaid.turn++;
 
     const recent = recentTurnsText(text, cfg.recentTurnsWindow);
-    const active = cfg.cast.filter(name => nameAppears(name, recent));
+    const latestSceneText = recentTurnsText(text, 1);
+    const active = (typeof activeUnsaidCharacters === "function")
+      ? activeUnsaidCharacters(cfg.cast, recent, latestSceneText)
+      : cfg.cast.filter(name => nameAppears(name, recent));
 
     active.forEach(seedMindIfKnown);
     if (forcedPeek) seedMindIfKnown(forcedPeek);
@@ -274,7 +295,7 @@ var unsaidModifier = (text) => {
       }
       pushMessage(`🌗 Not enough room left in context to check ${forcedPeek} this turn — try again once the story frees up some space.`);
     } else if (forcedPeek) {
-      const fitted = buildAndFitThoughtInstruction(forcedPeek, active, text, cfg.allowCoreShift);
+      const fitted = buildAndFitThoughtInstruction(forcedPeek, active, text, cfg.allowCoreShift, cfg);
       if (fitted) {
         state.unsaid.pending = forcedPeek;
         state.unsaid.pendingCoreShiftAllowed = naturalCoreShiftEligible(state.unsaid.minds[forcedPeek], cfg.allowCoreShift);
@@ -318,7 +339,11 @@ var unsaidModifier = (text) => {
       // the full candidate scan on real actions; Context only needs a small
       // rotating cleanup slice so it can never spend its entire VM budget on
       // old persisted candidates before generating the actual story context.
-      pruneMentionCounts(CODEX_CONTEXT_PRUNE_BATCH);
+      if (typeof utHasRuntimeBudget !== "function" || utHasRuntimeBudget(360)) {
+        pruneMentionCounts(CODEX_CONTEXT_PRUNE_BATCH);
+      } else if (typeof utSkipRuntimeTask === "function") {
+        utSkipRuntimeTask("codex-prune");
+      }
 
       const codexRecent = recentTurnsText(
         text,
@@ -341,7 +366,7 @@ var unsaidModifier = (text) => {
         typeof codexState.introducedTurn[name] !== "number"
       );
 
-      if (legacyNames.length > 0) {
+      if (legacyNames.length > 0 && (typeof utHasRuntimeBudget !== "function" || utHasRuntimeBudget(300))) {
         const batchSize = Math.max(1, CODEX_CONTEXT_MIGRATION_BATCH || 8);
         const cursor = Math.max(0, Math.floor(codexState.legacyMigrationCursor || 0)) % legacyNames.length;
         const migrationBatch = [];
@@ -374,15 +399,23 @@ var unsaidModifier = (text) => {
             codexState.observedTypes[name] = codexState.observedTypes[name] || "character";
           }
         });
-      } else {
+      } else if (legacyNames.length === 0) {
         codexState.legacyMigrationCursor = 0;
+      } else if (typeof utSkipRuntimeTask === "function") {
+        utSkipRuntimeTask("codex-legacy-migration");
       }
 
-      const available = findCodexCandidates(
-        cfg.mentionThreshold,
-        excludedNames(cfg),
-        cfg.codexMaxAttempts
-      ).filter(name => (state.unsaid.codex.lastAttemptTurn[name] || -999999) < state.unsaid.turn);
+      const canAutoCodex = typeof utHasRuntimeBudget !== "function" || utHasRuntimeBudget(220);
+      const available = canAutoCodex
+        ? findCodexCandidates(
+            cfg.mentionThreshold,
+            excludedNames(cfg),
+            cfg.codexMaxAttempts
+          ).filter(name => (state.unsaid.codex.lastAttemptTurn[name] || -999999) < state.unsaid.turn)
+        : [];
+      if (!canAutoCodex && typeof utSkipRuntimeTask === "function") {
+        utSkipRuntimeTask("codex-auto-scheduling");
+      }
 
       const minObserve = Math.max(0, cfg.codexCharacterMinTurns || 0);
       const minAppearances = Math.max(1, cfg.codexCharacterMinAppearances || 1);
@@ -407,9 +440,13 @@ var unsaidModifier = (text) => {
       });
 
       const nonCharacters = available.filter(name => !state.unsaid.codex.likelyCharacters[name]);
-      const refreshPreview = (cfg.codexAutoRefresh && sinceLastCodex >= cfg.codexCooldown)
+      const canRefreshCodex = canAutoCodex && (typeof utHasRuntimeBudget !== "function" || utHasRuntimeBudget(170));
+      const refreshPreview = (canRefreshCodex && cfg.codexAutoRefresh && sinceLastCodex >= cfg.codexCooldown)
         ? pickCodexRefreshCandidate(cfg)
         : null;
+      if (canAutoCodex && !canRefreshCodex && cfg.codexAutoRefresh && typeof utSkipRuntimeTask === "function") {
+        utSkipRuntimeTask("codex-refresh-preview");
+      }
       const refreshVeryOverdue = !!refreshPreview &&
         refreshPreview.since >= Math.max(1, cfg.codexRefreshInterval || 20) * 2;
 
@@ -480,7 +517,7 @@ var unsaidModifier = (text) => {
       // genuinely new card. They run only when no new-card candidate was due
       // this turn, respect the normal Codex task cooldown, and refresh at most
       // one existing Codex-made card at a time.
-      if (candidates.length === 0 && sinceLastCodex >= cfg.codexCooldown && cfg.codexAutoRefresh) {
+      if (candidates.length === 0 && sinceLastCodex >= cfg.codexCooldown && cfg.codexAutoRefresh && canRefreshCodex) {
         const refresh = refreshPreview || pickCodexRefreshCandidate(cfg);
         if (refresh && refresh.name) {
           const card = findStoryCardForEntity(refresh.name);
@@ -538,8 +575,10 @@ var unsaidModifier = (text) => {
       }
 
       if (eligible.length > 0 && Math.random() < effectiveChance) {
-        const chosen = pickBySilence(eligible, state.unsaid.turn);
-        const fitted = buildAndFitThoughtInstruction(chosen, active, text, cfg.allowCoreShift);
+        const chosen = (typeof pickUnsaidThinker === "function")
+          ? pickUnsaidThinker(eligible, state.unsaid.turn, recent)
+          : pickBySilence(eligible, state.unsaid.turn);
+        const fitted = buildAndFitThoughtInstruction(chosen, active, text, cfg.allowCoreShift, cfg);
         if (fitted) {
           state.unsaid.pending = chosen;
           state.unsaid.pendingCoreShiftAllowed = naturalCoreShiftEligible(state.unsaid.minds[chosen], cfg.allowCoreShift);
@@ -553,9 +592,25 @@ var unsaidModifier = (text) => {
     state.unsaid.pending = null;
     state.unsaid.pendingCoreShiftAllowed = false;
     state.unsaid.pendingCoreCheck = false;
-    updateUnsaidBackupCard(cacheEfficient, "");
-    return { text };
+
+    // Even when this turn does not reveal a private thought, established
+    // goals/plans can keep shaping visible behavior. This is intentionally
+    // lower priority than Codex or thought-generation work and yields first
+    // when the runtime governor is getting tight.
+    let continuityFitted = null;
+    if (cfg.behavioralContinuity !== false && active.length > 0 &&
+        (typeof utHasRuntimeBudget !== "function" || utHasRuntimeBudget(110))) {
+      const continuityInstruction = typeof buildBehaviorContinuityInstruction === "function"
+        ? buildBehaviorContinuityInstruction(active, text, cfg)
+        : "";
+      if (continuityInstruction) continuityFitted = fitInstructionToBudget(text, continuityInstruction);
+    } else if (cfg.behavioralContinuity !== false && active.length > 0 && typeof utSkipRuntimeTask === "function") {
+      utSkipRuntimeTask("behavioral-continuity");
+    }
+    updateUnsaidBackupCard(cacheEfficient, continuityFitted || "");
+    return { text: continuityFitted ? text + continuityFitted : text };
   } catch (e) {
+    if (typeof utRecordRuntimeError === "function") utRecordRuntimeError("Context/UNSAID", e);
     if (typeof log === "function") log("UNSAID Context error: " + (e && e.message));
     try {
       if (state.unsaid && state.unsaid.codex) {
@@ -573,8 +628,17 @@ var unsaidModifier = (text) => {
 };
 
 var modifier = (text) => {
-  var afterTwists = twistsModifier(text);
-  return unsaidModifier(afterTwists.text);
+  var runtimeToken = typeof utBeginRuntimePhase === "function" ? utBeginRuntimePhase("context") : null;
+  try {
+    var afterTwists = twistsModifier(text);
+    return unsaidModifier(afterTwists.text);
+  } catch (e) {
+    if (typeof utRecordRuntimeError === "function") utRecordRuntimeError("Context/modifier", e);
+    if (typeof log === "function") log("UNSPOKEN TURNS Context wrapper error: " + (e && e.message));
+    return { text };
+  } finally {
+    if (typeof utEndRuntimePhase === "function") utEndRuntimePhase(runtimeToken);
+  }
 };
 
 modifier(text);

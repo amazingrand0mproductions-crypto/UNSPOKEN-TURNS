@@ -194,7 +194,7 @@ var unsaidModifier = (text) => {
   const originalText = text;
   try {
     const commandText = (text || "").trim();
-    const isUnsaidCommand = /\/(?:unsaid|pe(?:e|a)k|card)\b/i.test(commandText);
+    const isUnsaidCommand = /\/(?:unsaid|pe(?:e|a)k|card|alias|unalias)\b/i.test(commandText);
 
     // Commands are control input, not story evidence. Ordinary Say/Do/Story
     // input still contributes mention tracking, but "/card Mirelle" should
@@ -220,9 +220,28 @@ var unsaidModifier = (text) => {
       return { text: "(A quiet moment passes.)" };
     }
 
+    if (/^\/unsaid\s+health\s*$/i.test(commandText)) {
+      const report = typeof utRuntimeHealthReport === "function"
+        ? utRuntimeHealthReport()
+        : "Runtime health data is unavailable in this build.";
+      let card = storyCards.find(c => c.title === "UNSPOKEN TURNS — Runtime Health");
+      if (!card) card = createOrFindCard("unspoken runtime health", " ", "Class");
+      if (card) {
+        card.title = "UNSPOKEN TURNS — Runtime Health";
+        card.keys = "unspoken runtime health";
+        card.type = "Class";
+        card.entry = " ";
+        card.description = "Regenerated fresh each time you type \"/unsaid health\". Diagnostic only; not sent to the AI.\n\n" + report;
+        pushMessage("🩺 Runtime diagnostics written — check the \"UNSPOKEN TURNS — Runtime Health\" card.");
+      } else {
+        pushMessage("🩺 Couldn't write the runtime-health card this turn — try again in a moment.");
+      }
+      return { text: "(A quiet moment passes.)" };
+    }
+
     if (/^\/unsaid\s+(?:help|commands?)\s*$/i.test(commandText)) {
       ensureSharedConfigCard();
-      pushMessage("📖 UNSAID commands: /peek <name>, /peek <name> core, /card <name>, /unsaid status, /unsaid resetcodex. /card is a manual override and still works when automatic Codex is disabled. Full settings are on the \"UNSPOKEN TURNS — Config\" card.");
+      pushMessage("📖 UNSAID commands: /peek <name>, /peek <name> core, /card <name>, /alias <character> = <alias>, /unalias <character> = <alias>, /unsaid status, /unsaid health, /unsaid resetcodex. Story Card triggers also work as automatic aliases. Full settings are on the \"UNSPOKEN TURNS — Config\" card.");
       return { text: "(A quiet moment passes.)" };
     }
 
@@ -239,12 +258,87 @@ var unsaidModifier = (text) => {
       return { text: "(A quiet moment passes.)" };
     }
 
+    const aliasAddMatch = commandText.match(/^\/alias\s+(.+?)\s*(?:=|->)\s*(.+?)\s*$/i);
+    if (aliasAddMatch) {
+      const requestedCharacter = cleanCommandEntity(aliasAddMatch[1], 80);
+      const alias = cleanCommandEntity(aliasAddMatch[2], 80);
+      if (!requestedCharacter || !alias) {
+        pushMessage('🏷️ Use /alias <character> = <alias> — for example "/alias Harlan Voss = Ghost".');
+        return { text: "(A quiet moment passes.)" };
+      }
+      const characterMatches = typeof storyCardMatchesForEntity === "function"
+        ? storyCardMatchesForEntity(requestedCharacter)
+        : [];
+      if (characterMatches.length > 1) {
+        pushMessage(`🏷️ "${requestedCharacter}" matches ${characterMatches.length} Story Cards. Use the exact full character title first.`);
+        return { text: "(A quiet moment passes.)" };
+      }
+      const canonical = characterMatches.length === 1 && characterMatches[0].title
+        ? characterMatches[0].title
+        : (typeof resolveUnsaidCanonicalName === "function" ? resolveUnsaidCanonicalName(requestedCharacter) : requestedCharacter);
+      const aliasMatches = typeof storyCardMatchesForEntity === "function"
+        ? storyCardMatchesForEntity(alias)
+        : [];
+      const conflict = aliasMatches.find(card => card && card.title && !isSameCardEntity(card.title, canonical));
+      let manualConflict = null;
+      try {
+        if (typeof buildUnsaidAliasIndex === "function" && typeof normalizeUnsaidIdentity === "function") {
+          const owners = buildUnsaidAliasIndex().aliasToTitles[normalizeUnsaidIdentity(alias)] || [];
+          manualConflict = owners.find(owner => !isSameCardEntity(owner, canonical)) || null;
+        }
+      } catch (e) {}
+      if (conflict || manualConflict) {
+        const owner = conflict && conflict.title ? conflict.title : manualConflict;
+        pushMessage(`🏷️ "${alias}" already identifies ${owner}. I won't make that alias ambiguous.`);
+        return { text: "(A quiet moment passes.)" };
+      }
+      const canonicalCard = findStoryCardForEntity(canonical);
+      if (canonicalCard && !isCharacterLikeCard(canonical)) {
+        pushMessage(`🏷️ "${canonicalCard.title}" is not typed as a character, so I didn't attach a character alias to it.`);
+        return { text: "(A quiet moment passes.)" };
+      }
+      const saved = typeof registerUnsaidAlias === "function" ? registerUnsaidAlias(canonical, alias) : null;
+      if (saved) pushMessage(`🏷️ Alias saved: ${alias} → ${saved}. Mentions of either name now share the same UNSAID mind and Story Card.`);
+      else pushMessage("🏷️ I couldn't save that alias. Check both names and try again.");
+      return { text: "(A quiet moment passes.)" };
+    }
+
+    const aliasListMatch = commandText.match(/^\/alias\s+(.+?)\s*$/i);
+    if (aliasListMatch) {
+      const requestedCharacter = cleanCommandEntity(aliasListMatch[1], 80);
+      const canonical = typeof resolveUnsaidCanonicalName === "function"
+        ? resolveUnsaidCanonicalName(requestedCharacter)
+        : requestedCharacter;
+      const aliases = typeof aliasesForUnsaidCharacter === "function"
+        ? aliasesForUnsaidCharacter(canonical)
+        : [canonical];
+      pushMessage(`🏷️ ${canonical}: ${aliases.length ? aliases.join(", ") : "no aliases found"}. Story Card triggers are included automatically.`);
+      return { text: "(A quiet moment passes.)" };
+    }
+
+    const aliasRemoveMatch = commandText.match(/^\/unalias\s+(.+?)\s*(?:=|->)\s*(.+?)\s*$/i);
+    if (aliasRemoveMatch) {
+      const requestedCharacter = cleanCommandEntity(aliasRemoveMatch[1], 80);
+      const alias = cleanCommandEntity(aliasRemoveMatch[2], 80);
+      const canonical = typeof resolveUnsaidCanonicalName === "function"
+        ? resolveUnsaidCanonicalName(requestedCharacter)
+        : requestedCharacter;
+      const removed = typeof removeUnsaidAlias === "function" && removeUnsaidAlias(canonical, alias);
+      pushMessage(removed
+        ? `🏷️ Removed manual alias "${alias}" from ${canonical}.`
+        : `🏷️ "${alias}" is not a manual alias for ${canonical}. If it comes from that Story Card's triggers, edit the trigger list on the card itself.`);
+      return { text: "(A quiet moment passes.)" };
+    }
+
     const peekMatch = commandText.match(/^\/pe(?:e|a)k\b\s*(.*?)\s*$/i);
     if (peekMatch) {
       let rawName = peekMatch[1] || "";
       const coreRequested = /\s+core\s*$/i.test(rawName);
       if (coreRequested) rawName = rawName.replace(/\s+core\s*$/i, "");
-      const name = cleanCommandEntity(rawName, 60);
+      const enteredName = cleanCommandEntity(rawName, 60);
+      const name = enteredName && typeof resolveUnsaidCanonicalName === "function"
+        ? resolveUnsaidCanonicalName(enteredName)
+        : enteredName;
 
       if (!name) {
         pushMessage("👁️ /peek needs a character name — try \"/peek Elara\" or \"/peek Elara core\".");
@@ -275,7 +369,10 @@ var unsaidModifier = (text) => {
 
     const cardMatch = commandText.match(/^\/card\b\s*(.*?)\s*$/i);
     if (cardMatch) {
-      const name = cleanCommandEntity(cardMatch[1], 60);
+      const enteredName = cleanCommandEntity(cardMatch[1], 60);
+      const name = enteredName && typeof resolveUnsaidCanonicalName === "function"
+        ? resolveUnsaidCanonicalName(enteredName)
+        : enteredName;
       if (!name) {
         pushMessage("📇 /card needs a name — try \"/card Elara\".");
         return { text: "(A quiet moment passes.)" };
@@ -300,14 +397,24 @@ var unsaidModifier = (text) => {
 
     return { text };
   } catch (e) {
+    if (typeof utRecordRuntimeError === "function") utRecordRuntimeError("Input/UNSAID", e);
     if (typeof log === "function") log("UNSAID Input error: " + (e && e.message));
     return { text: originalText };
   }
 };
 
 var modifier = (text) => {
-  var afterTwists = twistsModifier(text);
-  return unsaidModifier(afterTwists.text);
+  var runtimeToken = typeof utBeginRuntimePhase === "function" ? utBeginRuntimePhase("input") : null;
+  try {
+    var afterTwists = twistsModifier(text);
+    return unsaidModifier(afterTwists.text);
+  } catch (e) {
+    if (typeof utRecordRuntimeError === "function") utRecordRuntimeError("Input/modifier", e);
+    if (typeof log === "function") log("UNSPOKEN TURNS Input wrapper error: " + (e && e.message));
+    return { text };
+  } finally {
+    if (typeof utEndRuntimePhase === "function") utEndRuntimePhase(runtimeToken);
+  }
 };
 
 modifier(text);

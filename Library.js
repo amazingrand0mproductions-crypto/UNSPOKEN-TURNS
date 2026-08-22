@@ -11,6 +11,155 @@ var CP_VERSION = "1.3";
 // shared definition means a future gap only needs finding and fixing once.
 var NAME_ALPHANUM = "a-zA-Z0-9";
 
+// UNSPOKEN TURNS runtime governor. AI Dungeon executes modifiers inside a
+// time-limited isolated VM, so every advanced subsystem must be able to
+// yield lower-priority maintenance instead of taking the whole Context hook
+// down with a hard timeout. The governor never cancels user-forced commands;
+// it only defers automatic scanning/maintenance until the next real turn.
+var UT_DEFAULT_CONTEXT_BUDGET_MS = 900;
+var UT_ACTIVE_RUNTIME_PHASE = null;
+
+function utClockNow() {
+  try { return Date.now(); } catch (e) { return 0; }
+}
+
+function utEnsureRuntimeHealth() {
+  if (typeof state === "undefined" || !state) return null;
+  if (!state.unspokenTurnsRuntime || typeof state.unspokenTurnsRuntime !== "object") {
+    state.unspokenTurnsRuntime = {
+      phases: {},
+      skips: {},
+      errors: {},
+      totalSkips: 0,
+      totalErrors: 0,
+      lastSkip: null,
+      lastError: null
+    };
+  }
+  const h = state.unspokenTurnsRuntime;
+  if (!h.phases || typeof h.phases !== "object") h.phases = {};
+  if (!h.skips || typeof h.skips !== "object") h.skips = {};
+  if (!h.errors || typeof h.errors !== "object") h.errors = {};
+  if (typeof h.totalSkips !== "number") h.totalSkips = 0;
+  if (typeof h.totalErrors !== "number") h.totalErrors = 0;
+  return h;
+}
+
+function utRuntimeBudgetMs() {
+  try {
+    const cfg = state && state.contingencyConfig;
+    const requested = cfg && Number(cfg.performanceBudgetMs);
+    if (isFinite(requested) && requested >= 400 && requested <= 1500) return requested;
+  } catch (e) {}
+  return UT_DEFAULT_CONTEXT_BUDGET_MS;
+}
+
+function utRuntimeGovernorEnabled() {
+  try {
+    const cfg = state && state.contingencyConfig;
+    return !cfg || cfg.adaptivePerformance !== false;
+  } catch (e) { return true; }
+}
+
+function utBeginRuntimePhase(name) {
+  const token = { name: name || "unknown", started: utClockNow(), budget: utRuntimeBudgetMs() };
+  UT_ACTIVE_RUNTIME_PHASE = token;
+  return token;
+}
+
+function utRuntimeElapsed(token) {
+  const t = token || UT_ACTIVE_RUNTIME_PHASE;
+  if (!t || !t.started) return 0;
+  const now = utClockNow();
+  return now ? Math.max(0, now - t.started) : 0;
+}
+
+function utHasRuntimeBudget(reserveMs) {
+  if (!utRuntimeGovernorEnabled()) return true;
+  const t = UT_ACTIVE_RUNTIME_PHASE;
+  if (!t) return true;
+  const reserve = Math.max(0, Number(reserveMs) || 0);
+  return utRuntimeElapsed(t) < Math.max(120, t.budget - reserve);
+}
+
+function utSkipRuntimeTask(task) {
+  const name = String(task || "maintenance");
+  const h = utEnsureRuntimeHealth();
+  if (!h) return;
+  h.skips[name] = (h.skips[name] || 0) + 1;
+  h.totalSkips += 1;
+  h.lastSkip = { task: name, turn: (state.unsaid && state.unsaid.turn) || (state.contingency && state.contingency.turn) || 0 };
+}
+
+function utRecordRuntimeError(where, error) {
+  const name = String(where || "unknown");
+  const h = utEnsureRuntimeHealth();
+  if (!h) return;
+  h.errors[name] = (h.errors[name] || 0) + 1;
+  h.totalErrors += 1;
+  h.lastError = {
+    where: name,
+    message: String(error && error.message ? error.message : error || "unknown error").slice(0, 180),
+    turn: (state.unsaid && state.unsaid.turn) || (state.contingency && state.contingency.turn) || 0
+  };
+}
+
+function utEndRuntimePhase(token) {
+  const t = token || UT_ACTIVE_RUNTIME_PHASE;
+  if (!t) return;
+  const elapsed = utRuntimeElapsed(t);
+  const h = utEnsureRuntimeHealth();
+  if (h) {
+    const old = h.phases[t.name] || { runs: 0, lastMs: 0, avgMs: 0, maxMs: 0, overBudget: 0 };
+    old.runs += 1;
+    old.lastMs = elapsed;
+    old.avgMs = old.runs === 1 ? elapsed : Math.round((old.avgMs * 0.8) + (elapsed * 0.2));
+    old.maxMs = Math.max(old.maxMs || 0, elapsed);
+    if (elapsed > t.budget) old.overBudget = (old.overBudget || 0) + 1;
+    h.phases[t.name] = old;
+  }
+  if (UT_ACTIVE_RUNTIME_PHASE === t) UT_ACTIVE_RUNTIME_PHASE = null;
+}
+
+function utRuntimeHealthReport() {
+  const h = utEnsureRuntimeHealth();
+  if (!h) return "Runtime health data is unavailable.";
+  const phaseNames = Object.keys(h.phases || {});
+  const phaseLines = phaseNames.length
+    ? phaseNames.map(name => {
+        const p = h.phases[name] || {};
+        return `${name}: last ${p.lastMs || 0} ms · avg ${p.avgMs || 0} ms · max ${p.maxMs || 0} ms · runs ${p.runs || 0}${p.overBudget ? ` · over budget ${p.overBudget}` : ""}`;
+      })
+    : ["No measured hook runs yet."];
+  const skipLines = Object.keys(h.skips || {}).sort((a,b) => (h.skips[b]||0) - (h.skips[a]||0)).slice(0, 8)
+    .map(k => `${k}: ${h.skips[k]}`);
+  const errorLines = Object.keys(h.errors || {}).sort((a,b) => (h.errors[b]||0) - (h.errors[a]||0)).slice(0, 8)
+    .map(k => `${k}: ${h.errors[k]}`);
+  const unsaidState = state && state.unsaid ? state.unsaid : {};
+  const codexState = unsaidState.codex || {};
+  const minds = unsaidState.minds || {};
+  const mindNames = Object.keys(minds);
+  const adaptiveSlots = mindNames.reduce((sum, name) => sum + (Array.isArray(minds[name] && minds[name].thoughtOrder) ? minds[name].thoughtOrder.length : 0), 0);
+  const aliasCount = Object.keys(unsaidState.aliases || {}).reduce((sum, name) => sum + (Array.isArray(unsaidState.aliases[name]) ? unsaidState.aliases[name].length : 0), 0);
+  const storyCardCount = (typeof storyCards !== "undefined" && Array.isArray(storyCards)) ? storyCards.length : 0;
+  const candidateCount = Object.keys(codexState.mentionCounts || {}).length;
+  return [
+    "UNSPOKEN TURNS — Runtime Health",
+    `Adaptive governor: ${utRuntimeGovernorEnabled() ? "ON" : "OFF"}`,
+    `Internal context budget: ${utRuntimeBudgetMs()} ms (kept deliberately below the platform hook timeout)`,
+    `Working set: ${storyCardCount} Story Cards · ${candidateCount} Codex candidates · ${mindNames.length} minds · ${adaptiveSlots} adaptive slots · ${aliasCount} manual aliases`,
+    "",
+    "Hook timings:", ...phaseLines,
+    "",
+    `Deferred automatic tasks: ${h.totalSkips || 0}`,
+    ...(skipLines.length ? skipLines : ["none"]),
+    "",
+    `Caught script errors: ${h.totalErrors || 0}`,
+    ...(errorLines.length ? errorLines : ["none"]),
+    h.lastError ? `\nLast error: ${h.lastError.where} — ${h.lastError.message}` : ""
+  ].filter(Boolean).join("\n");
+}
+
 var CP_DEFAULTS = {
   enabled: true,
   intensity: "medium",
@@ -29,6 +178,10 @@ var CP_DEFAULTS = {
   scenarioAdaptation: true,
   scenarioOverride: "",
   crossSystemSynergy: true,
+  // Automatically defer low-priority maintenance before the isolated VM can
+  // time out. Forced commands always remain immediate.
+  adaptivePerformance: true,
+  performanceBudgetMs: 900,
 
   categoryBias: ""
 
@@ -2090,32 +2243,57 @@ var Library = (() => {
     return thread;
   }
 
-  function scanStoryCardsForScenarioThreads(c, cfg) {
-    if (typeof storyCards === "undefined" || !storyCards) return;
-    for (let i = 0; i < storyCards.length; i++) {
-      const card = storyCards[i];
-      if (!card || !card.title) continue;
-      if (isOwnCard(card.title)) continue;
+  function scanStoryCardsForScenarioThreads(c, cfg, preferredTitles) {
+    if (typeof storyCards === "undefined" || !Array.isArray(storyCards) || !storyCards.length) return;
 
+    // Story Card lore can be enormous in mature adventures. Scanning every
+    // card against every twist pattern in a single modifier pass caused the
+    // worst first-turn spikes. Current-scene cards are processed immediately;
+    // background lore is inspected through a small rotating slice.
+    const processCard = card => {
+      if (!card || !card.title || isOwnCard(card.title)) return false;
       const descriptionWithoutPrivateThoughts = typeof MIND_NOTES_MARKER !== "undefined"
         ? (card.description || "").split(MIND_NOTES_MARKER)[0]
         : (card.description || "");
-      const haystack = (card.entry || "") + " " + descriptionWithoutPrivateThoughts;
+      const haystack = ((card.entry || "") + " " + descriptionWithoutPrivateThoughts).slice(0, 3200);
       const sig = textSignature(haystack);
-      if (c.importedCardSignatures[card.title] === sig) continue;
+      if (c.importedCardSignatures[card.title] === sig) return true;
       c.importedCardSignatures[card.title] = sig;
 
       const entity = ("" + card.title).trim();
-      if (!entity || entity.length < 2) continue;
-      if (isPlayerEntity(c, entity) && !cfg.involvePlayer) continue;
+      if (!entity || entity.length < 2) return true;
+      if (isPlayerEntity(c, entity) && !cfg.involvePlayer) return true;
 
       const category = matchScenarioCategory(haystack, entity, cfg);
-      if (!category) continue;
-      if (alreadyResolvedCombo(c, entity, category)) continue;
-      if (findThread(c, entity, category)) continue;
-
+      if (!category) return true;
+      if (alreadyResolvedCombo(c, entity, category)) return true;
+      if (findThread(c, entity, category)) return true;
       creditPartialThread(c, entity, category, cfg, "scenario", haystack);
+      return true;
+    };
+
+    const preferred = Array.isArray(preferredTitles) ? preferredTitles.slice(0, 8) : [];
+    if (preferred.length) {
+      preferred.forEach(title => {
+        const card = storyCards.find(ca => ca && ca.title === title);
+        if (card) processCard(card);
+      });
     }
+
+    const total = storyCards.length;
+    const batchSize = Math.min(total, 8);
+    const start = Math.max(0, Math.floor(c.storyCardScenarioScanCursor || 0)) % total;
+    let visited = 0;
+    let consumed = 0;
+    for (let offset = 0; offset < total && visited < batchSize; offset++) {
+      consumed = offset + 1;
+      const index = (start + offset) % total;
+      const card = storyCards[index];
+      if (!card || !card.title || isOwnCard(card.title)) continue;
+      visited++;
+      processCard(card);
+    }
+    c.storyCardScenarioScanCursor = (start + Math.max(1, consumed)) % total;
   }
 
   function scanMemoryFieldForThreads(c, cfg, text, sigStateKey, sourceTag, cardTitles) {
@@ -2472,6 +2650,15 @@ var Library = (() => {
     const synergyMatch = section.match(/Link UNSAID psychology with twist threads:\s*(true|false)/i);
     if (synergyMatch) cfg.crossSystemSynergy = synergyMatch[1].toLowerCase() === "true";
 
+    const perfMatch = section.match(/Adaptive performance guard:\s*(true|false)/i);
+    if (perfMatch) cfg.adaptivePerformance = perfMatch[1].toLowerCase() === "true";
+
+    const perfBudgetMatch = section.match(/Context work budget in milliseconds:\s*(\d+)/i);
+    if (perfBudgetMatch) {
+      const n = parseInt(perfBudgetMatch[1], 10);
+      if (!isNaN(n)) cfg.performanceBudgetMs = Math.min(1500, Math.max(400, n));
+    }
+
     const capMatch = section.match(/How many resolved twists Established Facts keeps:\s*(\d+)/i);
     if (capMatch) {
       const n = parseInt(capMatch[1], 10);
@@ -2531,6 +2718,8 @@ var Library = (() => {
       "- Automatic scenario adaptation: reads the current story/lore and keeps generated cards, private-thought prompts, wildcard twists, tone, era, and stakes appropriate to THIS scenario.\n" +
       "- Scenario override: optional free-text guidance such as 'grounded Victorian detective', 'hard sci-fi with no magic', or any custom setting description. Blank = automatic.\n" +
       "- UNSAID ↔ Twists link: private psychology can reinforce compatible active threads, while confirmed twists feed emotional pressure back into characters. Suspicions never become factual twists just because a character thinks them.\n" +
+      "- Adaptive performance guard: watches Context-hook runtime and defers only low-priority automatic maintenance before AI Dungeon's isolated VM can time out. Forced /peek, /card and /twist commands are never intentionally deferred.\n" +
+      "- Context work budget: soft execution budget used by that guard. 900 ms is a conservative default; raise only if your model/runtime is known to allow more.\n" +
       "- Established Facts cap: how many recent confirmed twists stay visible to the AI at once.\n" +
       "- Theme bias: lean toward certain themes without overriding what the story has established. Themes: " + CP_CLUSTER_NAMES.join(", ") + "\n\n" +
       "Commands: /twist, /twist <name>, /plant <name> [category], /twistlog, /threads, /twisttypes, /mature <on|off>, /scenario, /scenario auto|off|<custom guidance>, /synergy <on|off>, /intensity <low|medium|high>, /rescan, /twists";
@@ -2645,6 +2834,17 @@ var UNSAID_DEFAULTS = {
   codexRefreshInterval: 20,
   codexRefreshMinEvidence: 3,
   codexProtectManualEdits: true,
+  // Hybrid fixed + adaptive mind model. The fixed fields preserve reliable
+  // core/feeling/relationship behavior while the bounded private thought bank
+  // learns goals, plans, fears, beliefs, secrets and recurring concerns.
+  adaptiveMindEnabled: true,
+  adaptiveMindSlots: 12,
+  adaptiveReflectionInterval: 4,
+  // Even on turns where no private thought is generated, active NPCs can
+  // quietly act on established goals/plans/relationships. This is injected
+  // as narrator-only continuity, never as knowledge other characters gain.
+  behavioralContinuity: true,
+  behavioralContinuityCharacters: 2,
   playerName: ""
 };
 
@@ -2661,13 +2861,20 @@ var MAX_CAST_SIZE = 60;
 var FEELING_HISTORY_LIMIT = 3;
 var RELATION_HISTORY_LIMIT = 2;
 var MAX_RELATIONS_PER_CHARACTER = 6;
+var ADAPTIVE_MIND_TEXT_LIMIT = 220;
+var ADAPTIVE_MIND_MIN_SLOTS = 4;
+var ADAPTIVE_MIND_MAX_SLOTS = 24;
+var THOUGHT_HISTORY_LIMIT = 4;
+var UNSAID_ALIAS_LIMIT_PER_CHARACTER = 12;
+var UNSAID_CONTINUITY_MAX_CHARS = 760;
 var MENTION_TRACKING_CAP = 150;
 // Hard performance guardrails for AI Dungeon's isolated VM. Semantic entity
 // typing is intentionally evidence-rich, but it must never rescan an entire
 // long context hundreds of times in one Context Modifier pass.
 var CODEX_SEMANTIC_SCAN_CHAR_LIMIT = 7000;
-var CODEX_CONTEXT_MIGRATION_BATCH = 8;
+var CODEX_CONTEXT_MIGRATION_BATCH = 4;
 var CODEX_CONTEXT_PRUNE_BATCH = 12;
+var CODEX_IO_PRUNE_BATCH = 18;
 var MENTION_TRACKING_HARD_CAP = 180;
 
 var TENSION_THRESHOLD = 3;
@@ -2939,7 +3146,7 @@ function hasStrongCodexBusinessOrNamedContext(name, text) {
   const cleanName = String(name || "").trim();
   if (!source || !cleanName) return false;
   const n = escapeForRegex(cleanName);
-  const businessKinds = "restaurant|diner|bistro|caf[eé]|coffee\\s+shop|bakery|pizzeria|steakhouse|deli|bar|pub|store|shop|market|company|corporation|brand|hotel|inn|tavern";
+  const businessKinds = "restaurant|diner|bistro|caf[eé]|coffee\\s+shop|bakery|pizzeria|steakhouse|deli|bar|pub|bookstore|bookshop|book\\s+shop|store|shop|market|supermarket|grocery|pharmacy|salon|boutique|company|corporation|brand|hotel|inn|tavern";
   const patterns = [
     new RegExp(`\\b(?:${businessKinds})\\s+(?:called|named|known\\s+as)\\s+["“”'‘’]?${n}\\b`, "i"),
     new RegExp(`\\b${n}\\b\\s+(?:${businessKinds})\\b`, "i"),
@@ -2988,7 +3195,7 @@ function isGenericCodexCommonNounCandidate(name, source) {
   return false;
 }
 
-var CODEX_LOCATION_HINTS = /\b(city|state|street|road|lane|avenue|boulevard|canyon|terminal|park|garden|grove|orchard|meadow|plaza|square|site|venue|location|place|building|tower|island|country|nation|kingdom|realm|district|region|planet|world|base|facility|academy|university|school|campus|bridge|river|mountain|forest|desert|battleground|warzone|hall|tavern|inn|hotel|motel|castle|fortress|temple|church|mosque|shrine|level|sector|wing|chamber|vault|bay|deck|outpost|colony|settlement|village|town|hamlet|station|harbor|harbour|wharf|apartment|house|home|office|warehouse|factory|farm|ranch|arena|stadium|courtroom|courthouse|prison|jail|laboratory|lab|theater|theatre|cinema|museum|library|mall|market|beach|cave|mine|ruins?|cemetery|graveyard|neighborhood|neighbourhood|suburb|block)\b/i;
+var CODEX_LOCATION_HINTS = /\b(city|state|street|road|lane|avenue|boulevard|canyon|terminal|park|garden|grove|orchard|meadow|plaza|square|site|venue|location|place|building|tower|island|country|nation|kingdom|realm|district|region|planet|world|base|facility|academy|university|school|campus|bridge|river|mountain|forest|desert|battleground|warzone|hall|tavern|inn|hotel|motel|castle|fortress|temple|church|mosque|shrine|level|sector|wing|chamber|vault|bay|deck|outpost|colony|settlement|village|town|hamlet|station|harbor|harbour|wharf|apartment|house|home|office|warehouse|factory|farm|ranch|arena|stadium|courtroom|courthouse|prison|jail|laboratory|lab|theater|theatre|cinema|museum|library|mall|market|bookstore|bookshop|supermarket|grocery|pharmacy|gym|beach|cave|mine|ruins?|cemetery|graveyard|neighborhood|neighbourhood|suburb|block)\b/i;
 var CODEX_LOCATION_SUFFIX_HINTS = /(tower|keep|hold|spire|haven|hollow|reach|scraper)/i;
 
 // "Faction" doubles as the best fit for any organization — guild-and-empire
@@ -3446,6 +3653,12 @@ function initUnsaid() {
       forcedPeekCore: null,
       forcedCodex: null,
       consecutiveRevealMisses: 0,
+      // Manual aliases supplement Story Card triggers. They are deliberately
+      // stored outside the cards so creators can add nicknames without
+      // rewriting lore entries, and are bounded per character.
+      aliases: {},
+      scenePresence: {},
+      lastActiveCast: [],
       lastActionCount: -1,
       lastStorySignature: null,
       pendingCoreShiftAllowed: false,
@@ -3490,6 +3703,9 @@ function initUnsaid() {
   if (typeof state.unsaid.forcedPeekCore === "undefined") state.unsaid.forcedPeekCore = null;
   if (typeof state.unsaid.forcedCodex === "undefined") state.unsaid.forcedCodex = null;
   if (typeof state.unsaid.consecutiveRevealMisses !== "number") state.unsaid.consecutiveRevealMisses = 0;
+  if (!state.unsaid.aliases || typeof state.unsaid.aliases !== "object" || Array.isArray(state.unsaid.aliases)) state.unsaid.aliases = {};
+  if (!state.unsaid.scenePresence || typeof state.unsaid.scenePresence !== "object" || Array.isArray(state.unsaid.scenePresence)) state.unsaid.scenePresence = {};
+  if (!Array.isArray(state.unsaid.lastActiveCast)) state.unsaid.lastActiveCast = [];
   if (typeof state.unsaid.lastStorySignature !== "string") state.unsaid.lastStorySignature = null;
   if (typeof state.unsaid.pendingCoreShiftAllowed !== "boolean") state.unsaid.pendingCoreShiftAllowed = false;
   if (typeof state.unsaid.pendingCoreCheck !== "boolean") state.unsaid.pendingCoreCheck = false;
@@ -3610,10 +3826,223 @@ function nameAppears(name, text) {
   return new RegExp(`(?:^|[^A-Za-z0-9])${pattern}(?=$|[^A-Za-z0-9])`, "i").test(String(text));
 }
 
+
+// ---- Alias-aware character identity -------------------------------------------------
+// Story Card triggers are excellent alias data, but older scripts only looked at the
+// card title. Build one lightweight index per modifier execution (Library globals are
+// recreated for each isolated hook) so "Dr. Voss", "Harlan", "Voss", callsigns and
+// creator-authored nicknames can all wake the SAME mind without O(cast × cards) scans.
+var UNSAID_ALIAS_INDEX = null;
+
+function normalizeUnsaidIdentity(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[“”"'‘’.,:;!?()[\]{}\-‐‑–—]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function storyCardAliasValues(card) {
+  if (!card) return [];
+  const out = [];
+  const push = value => {
+    const clean = String(value || "").replace(/^[@#]+/, "").replace(/\s+/g, " ").trim();
+    if (!clean || clean.length < 2 || clean.length > 80) return;
+    if (!out.some(v => normalizeUnsaidIdentity(v) === normalizeUnsaidIdentity(clean))) out.push(clean);
+  };
+  push(card.title);
+  String(card.keys || "").split(/[,;|\n]+/).forEach(push);
+  return out.slice(0, UNSAID_ALIAS_LIMIT_PER_CHARACTER + 1);
+}
+
+function buildUnsaidAliasIndex() {
+  if (UNSAID_ALIAS_INDEX) return UNSAID_ALIAS_INDEX;
+  const byTitle = {};
+  const aliasToTitles = {};
+  const aliasToCards = {};
+  const addAlias = (title, alias, card) => {
+    const titleKey = normalizeUnsaidIdentity(title);
+    const aliasKey = normalizeUnsaidIdentity(alias);
+    if (!titleKey || !aliasKey) return;
+    if (!byTitle[titleKey]) byTitle[titleKey] = { title, aliases: [], card: card || null };
+    if (!byTitle[titleKey].card && card) byTitle[titleKey].card = card;
+    if (!byTitle[titleKey].aliases.some(v => normalizeUnsaidIdentity(v) === aliasKey)) {
+      byTitle[titleKey].aliases.push(alias);
+    }
+    if (!aliasToTitles[aliasKey]) aliasToTitles[aliasKey] = [];
+    if (!aliasToTitles[aliasKey].includes(title)) aliasToTitles[aliasKey].push(title);
+    if (card) {
+      if (!aliasToCards[aliasKey]) aliasToCards[aliasKey] = [];
+      if (!aliasToCards[aliasKey].includes(card)) aliasToCards[aliasKey].push(card);
+    }
+  };
+
+  try {
+    if (typeof storyCards !== "undefined" && Array.isArray(storyCards)) {
+      storyCards.forEach(card => {
+        if (!card || !card.title || isOwnCard(card.title)) return;
+        storyCardAliasValues(card).forEach(alias => addAlias(card.title, alias, card));
+      });
+    }
+  } catch (e) {}
+
+  try {
+    const manual = state && state.unsaid && state.unsaid.aliases;
+    if (manual && typeof manual === "object") {
+      Object.keys(manual).forEach(title => {
+        const aliases = Array.isArray(manual[title]) ? manual[title] : [];
+        addAlias(title, title, null);
+        aliases.slice(-UNSAID_ALIAS_LIMIT_PER_CHARACTER).forEach(alias => addAlias(title, alias, null));
+      });
+    }
+  } catch (e) {}
+
+  UNSAID_ALIAS_INDEX = { byTitle, aliasToTitles, aliasToCards };
+  return UNSAID_ALIAS_INDEX;
+}
+
+function invalidateUnsaidAliasIndex() {
+  UNSAID_ALIAS_INDEX = null;
+}
+
+function aliasesForUnsaidCharacter(name) {
+  const raw = String(name || "").trim();
+  if (!raw) return [];
+  const index = buildUnsaidAliasIndex();
+  const key = normalizeUnsaidIdentity(raw);
+  let title = raw;
+  let record = index.byTitle[key] || null;
+  if (!record) {
+    const owners = index.aliasToTitles[key] || [];
+    if (owners.length === 1) {
+      title = owners[0];
+      record = index.byTitle[normalizeUnsaidIdentity(title)] || null;
+    }
+  }
+  let values = record ? record.aliases.slice() : [raw];
+  // Shared triggers such as a family surname must not wake two minds at once.
+  // Keep the canonical title itself, but ignore any alias claimed by multiple
+  // distinct Story Card titles until the creator disambiguates it.
+  values = values.filter(v => {
+    const aliasKey = normalizeUnsaidIdentity(v);
+    if (aliasKey === key) return true;
+    const owners = index.aliasToTitles[aliasKey] || [];
+    return owners.length <= 1;
+  });
+  if (!values.some(v => normalizeUnsaidIdentity(v) === key)) values.unshift(raw);
+  return values.slice(0, UNSAID_ALIAS_LIMIT_PER_CHARACTER + 1);
+}
+
+function nameOrAliasAppears(name, text) {
+  if (!name || !text) return false;
+  const aliases = aliasesForUnsaidCharacter(name);
+  for (let i = 0; i < aliases.length; i++) {
+    if (nameAppears(aliases[i], text)) return true;
+  }
+  return false;
+}
+
+function resolveUnsaidCanonicalName(rawName) {
+  const raw = String(rawName || "").replace(/^[@#]+/, "").replace(/\s+/g, " ").trim();
+  if (!raw) return null;
+  const index = buildUnsaidAliasIndex();
+  const key = normalizeUnsaidIdentity(raw);
+  const owners = index.aliasToTitles[key] || [];
+  if (owners.length === 1) return owners[0];
+
+  // Fall back to title matching for courtesy titles / first-name-to-full-name
+  // cases, but only accept one unambiguous match.
+  const fuzzy = [];
+  try {
+    if (typeof storyCards !== "undefined" && Array.isArray(storyCards)) {
+      for (let i = 0; i < storyCards.length; i++) {
+        const card = storyCards[i];
+        if (!card || !card.title || isOwnCard(card.title)) continue;
+        if (isSameCardEntity(card.title, raw)) fuzzy.push(card.title);
+        if (fuzzy.length > 1) break;
+      }
+    }
+  } catch (e) {}
+  return fuzzy.length === 1 ? fuzzy[0] : raw;
+}
+
+function registerUnsaidAlias(canonicalName, alias) {
+  initUnsaid();
+  const canonical = resolveUnsaidCanonicalName(canonicalName) || String(canonicalName || "").trim();
+  const cleanAlias = String(alias || "").replace(/^[@#]+/, "").replace(/\s+/g, " ").trim().slice(0, 80);
+  if (!canonical || !cleanAlias) return null;
+  if (normalizeUnsaidIdentity(canonical) === normalizeUnsaidIdentity(cleanAlias)) return canonical;
+  const aliasKey = normalizeUnsaidIdentity(cleanAlias);
+  const existingOwners = (buildUnsaidAliasIndex().aliasToTitles[aliasKey] || []);
+  if (existingOwners.some(owner => !isSameCardEntity(owner, canonical))) return null;
+  if (!Array.isArray(state.unsaid.aliases[canonical])) state.unsaid.aliases[canonical] = [];
+  const list = state.unsaid.aliases[canonical];
+  if (!list.some(v => normalizeUnsaidIdentity(v) === normalizeUnsaidIdentity(cleanAlias))) list.push(cleanAlias);
+  if (list.length > UNSAID_ALIAS_LIMIT_PER_CHARACTER) state.unsaid.aliases[canonical] = list.slice(-UNSAID_ALIAS_LIMIT_PER_CHARACTER);
+  invalidateUnsaidAliasIndex();
+  return canonical;
+}
+
+function removeUnsaidAlias(canonicalName, alias) {
+  initUnsaid();
+  const canonical = resolveUnsaidCanonicalName(canonicalName) || String(canonicalName || "").trim();
+  const cleanAlias = normalizeUnsaidIdentity(alias);
+  const list = state.unsaid.aliases && state.unsaid.aliases[canonical];
+  if (!canonical || !cleanAlias || !Array.isArray(list)) return false;
+  const next = list.filter(v => normalizeUnsaidIdentity(v) !== cleanAlias);
+  const changed = next.length !== list.length;
+  if (next.length) state.unsaid.aliases[canonical] = next;
+  else delete state.unsaid.aliases[canonical];
+  if (changed) invalidateUnsaidAliasIndex();
+  return changed;
+}
+
+function explicitUnsaidExitCue(name, latestText) {
+  if (!name || !latestText) return false;
+  const source = String(latestText);
+  const aliases = aliasesForUnsaidCharacter(name);
+  let lastExit = -1;
+  let lastEntry = -1;
+  for (let i = 0; i < aliases.length; i++) {
+    const a = escapeForRegex(aliases[i]);
+    const eventRx = new RegExp(`\\b${a}\\b[^\\n.!?]{0,55}\\b(leaves?|left|exits?|exited|departs?|departed|walks? away|walked away|drives? away|drove away|hangs? up|hung up|disappears?|disappeared|heads? home|went home|returns?|returned|re-?enters?|re-?entered|enters?|entered|arrives?|arrived|comes? back|came back)\\b`, "ig");
+    let match;
+    while ((match = eventRx.exec(source)) !== null) {
+      const verb = String(match[1] || "").toLowerCase();
+      if (/^(?:returns?|returned|re-?enters?|re-?entered|enters?|entered|arrives?|arrived|comes? back|came back)$/i.test(verb)) {
+        lastEntry = Math.max(lastEntry, match.index);
+      } else {
+        lastExit = Math.max(lastExit, match.index);
+      }
+      if (eventRx.lastIndex === match.index) eventRx.lastIndex += 1;
+    }
+  }
+  return lastExit >= 0 && lastExit > lastEntry;
+}
+
+function activeUnsaidCharacters(cast, recentText, latestText) {
+  const names = Array.isArray(cast) ? cast : [];
+  const active = [];
+  names.forEach(name => {
+    if (!nameOrAliasAppears(name, recentText)) return;
+    if (explicitUnsaidExitCue(name, latestText)) return;
+    active.push(name);
+    const p = state.unsaid.scenePresence[name] || {};
+    p.lastSeenTurn = state.unsaid.turn;
+    p.lastSeenAction = (typeof info !== "undefined" && info && Number.isInteger(info.actionCount)) ? info.actionCount : state.unsaid.turn;
+    state.unsaid.scenePresence[name] = p;
+  });
+  state.unsaid.lastActiveCast = active.slice(0, MAX_CAST_SIZE);
+  return active;
+}
+
 function createOrFindCard(keys, initialEntry, type) {
   try {
     const idx = addStoryCard(keys, initialEntry, type);
-    if (typeof idx === "number" && storyCards[idx]) return storyCards[idx];
+    if (typeof idx === "number" && storyCards[idx]) {
+      if (typeof invalidateUnsaidAliasIndex === "function") invalidateUnsaidAliasIndex();
+      return storyCards[idx];
+    }
     return storyCards.find(c => c.keys === keys) || null;
   } catch (e) {
     return storyCards.find(c => c.keys === keys) || null;
@@ -3715,6 +4144,8 @@ function renderTwistSection(cfg) {
     `> Automatically adapt twists/cards to the current scenario: ${cfg.scenarioAdaptation}\n` +
     `> Scenario override, blank for automatic detection: ${cfg.scenarioOverride || ""}\n` +
     `> Link UNSAID psychology with twist threads: ${cfg.crossSystemSynergy}\n` +
+    `> Adaptive performance guard: ${cfg.adaptivePerformance}\n` +
+    `> Context work budget in milliseconds: ${cfg.performanceBudgetMs}\n` +
     `> How many resolved twists Established Facts keeps: ${cfg.establishedFactsCap}\n` +
     `> Theme bias, comma-separated, blank for none: ${cfg.categoryBias || ""}\n`;
 }
@@ -3732,6 +4163,11 @@ function renderUnsaidSection(cfg) {
     `> Show private thoughts in the story text: ${cfg.showThoughtsInStory}\n` +
     `> Let hidden feelings subtly color actions: ${cfg.subtleHints}\n` +
     `> Store card notes as JSON: ${cfg.jsonNotes}\n` +
+    `> Enable adaptive private memory: ${cfg.adaptiveMindEnabled}\n` +
+    `> Adaptive private memory slots per character: ${cfg.adaptiveMindSlots}\n` +
+    `> Deep reflection every N private moments: ${cfg.adaptiveReflectionInterval}\n` +
+    `> Let active NPC goals/plans shape behavior between thought reveals: ${cfg.behavioralContinuity}\n` +
+    `> Maximum active NPC minds used for behavioral continuity: ${cfg.behavioralContinuityCharacters}\n` +
     "-- Core Truth --\n" +
     `> Allow major events to rewrite a core truth: ${cfg.allowCoreShift}\n` +
     "-- Codex --\n" +
@@ -3753,11 +4189,14 @@ var CONFIG_DEFAULT_UNSAID_NOTES_SECTION =
   CONFIG_SECTION_UNSAID + "\n" +
   "Commands (type as an action):\n" +
   "- /unsaid status — writes a live status report to a separate \"UNSAID — Status\" card. Not sent to the AI.\n" +
+  "- /unsaid health — writes modifier timing, deferred-maintenance and caught-error diagnostics to a private runtime card.\n" +
   "- /unsaid help — shows the command list and refreshes access to this config card.\n" +
   "- /unsaid resetcodex — clears Codex detection/retry timing without deleting any Story Cards.\n" +
   "- /peek <character name> — force a private thought from that character right now. Quoted names are accepted.\n" +
   "- /peek <character name> core — force a check for whether this moment has changed that character's core truth.\n" +
-  "- /card <character name> — force Codex to write or refresh that character's Story Card right now, skipping automatic observation/cooldown gates. Quoted names are accepted.\n\n" +
+  "- /card <character name> — force Codex to write or refresh that character's Story Card right now, skipping automatic observation/cooldown gates. Quoted names are accepted.\n" +
+  "- /alias <character> = <alias> — teach UNSAID a nickname/callsign/disguise name without creating a second mind. Story Card triggers are also read automatically as aliases.\n" +
+  "- /unalias <character> = <alias> — remove a manually-added alias.\n\n" +
   "Pre-authoring a character's inner life: write \"💭 Inner Life — private, not visible to other characters\" followed by \"Core truth:\" and their established truth into a character's own Notes before their first reveal, and UNSAID will start from that instead of inventing one. Matches the same format this script writes when it syncs a reveal, so copying an existing character's Notes as a template works too.\n\n" +
   "- Enable UNSAID: master switch for private thoughts + Codex together. False turns both off.\n" +
   "- Enable Codex: auto-Story-Card generation on its own — turn off to keep private thoughts working on your existing hand-made cards without new ones appearing.\n" +
@@ -3768,6 +4207,13 @@ var CONFIG_DEFAULT_UNSAID_NOTES_SECTION =
   "- Show private thoughts in the story text: off by default — reveals go to the character's own card, not your story.\n" +
   "- Let hidden feelings subtly color actions: lets a feeling show through tone/body language without stating it outright.\n" +
   "- Store card notes as JSON: off = plain prose, on = the same data as structured JSON.\n" +
+  "- Adaptive private memory: gives each character a bounded self-organizing thought bank. New private moments can overwrite an older goal/plan/fear/belief/secret slot instead of endlessly appending noise.\n" +
+  "- Adaptive private memory slots: maximum durable private thoughts kept per character. Old low-priority reflections are evicted first; identity/relationship anchors are protected when possible.\n" +
+  "- Deep reflection every N private moments: periodically nudges a character away from only reacting to the present so they can think about a longer-term goal, plan, fear, belief, unresolved contradiction, secret, or meaningful memory.\n" +
+  "- Let active NPC goals/plans shape behavior between thought reveals: keeps established private goals, plans, fears and relationships influencing visible choices even on turns where no new thought is generated. The AI is told this is narrator-only knowledge.\n" +
+  "- Maximum active NPC minds used for behavioral continuity: caps how many active characters can receive that narrator-only continuity hint each turn. Lower values save context; 2 is a strong default.\n" +
+  "- Alias handling: Story Card Triggers are automatically treated as identity aliases. Use /alias for extra nicknames, callsigns, titles or disguise names that are not already triggers; all aliases resolve to one canonical mind/card.\n" +
+  "- Anti-repetition guard: UNSAID keeps a tiny recent-thought history per character and rejects/discounts near-duplicate private thoughts instead of letting a mind loop forever. This is automatic and has no setting.\n" +
   "- Allow major events to rewrite a core truth: on by default — old truths are kept on file, never erased.\n" +
   "- Mentions needed before Codex creates a card: how many mentions before a new name gets carded.\n" +
   "- Minimum turns between Codex cards: cooldown between one Codex card and the next.\n" +
@@ -3887,16 +4333,36 @@ function readUnsaidConfig() {
     unsaidNotes = CONFIG_SECTION_UNSAID + "\n" +
       "Commands (type as an action):\n" +
       "- /unsaid status — writes a live status report to a separate \"UNSAID — Status\" card. Not sent to the AI.\n" +
+      "- /unsaid health — writes runtime timing, deferred maintenance and caught-error diagnostics to a private card.\n" +
       "- /peek <character name> — force a private thought from that character right now.\n" +
       "- /peek <character name> core — force a check for whether this moment has changed that character's core truth.\n" +
       "- /card <character name> — force Codex to write or refresh that character's Story Card right now, skipping the mention count and cooldown.\n\n" +
       preAuthoringNote + "\n\n" +
       unsaidNotes.replace(CONFIG_SECTION_UNSAID + "\n", "");
+  } else if (!unsaidNotes.includes("/unsaid health")) {
+    const statusLine = '- /unsaid status — writes a live status report to a separate "UNSAID — Status" card. Not sent to the AI.';
+    unsaidNotes = unsaidNotes.includes(statusLine)
+      ? unsaidNotes.replace(statusLine, statusLine + '\n- /unsaid health — writes runtime timing, deferred maintenance and caught-error diagnostics to a private card.')
+      : unsaidNotes.replace("Commands (type as an action):", "Commands (type as an action):\n- /unsaid health — writes runtime timing, deferred maintenance and caught-error diagnostics to a private card.");
   } else if (!unsaidNotes.includes("Pre-authoring a character's inner life:")) {
     const cardLine = "- /card <character name> — force Codex to write or refresh that character's Story Card right now, skipping the mention count and cooldown.";
     unsaidNotes = unsaidNotes.includes(cardLine)
       ? unsaidNotes.replace(cardLine, cardLine + "\n\n" + preAuthoringNote)
       : unsaidNotes.replace(CONFIG_SECTION_UNSAID + "\n", CONFIG_SECTION_UNSAID + "\n" + preAuthoringNote + "\n\n");
+  }
+
+  // Older config cards may already have the command section and runtime-health
+  // line, which means the legacy else-if migration above will not naturally
+  // revisit it. Add alias commands independently so upgrades never hide a new
+  // capability from an existing adventure.
+  if (!unsaidNotes.includes("/alias <character> = <alias>")) {
+    const cardCommandLine = "- /card <character name> — force Codex to write or refresh that character's Story Card right now, skipping the mention count and cooldown.";
+    const aliasCommandHelp =
+      "- /alias <character> = <alias> — add a nickname, callsign, title or disguise name to the same character mind. Story Card triggers are automatic aliases too.\n" +
+      "- /unalias <character> = <alias> — remove a manually-added alias.\n";
+    unsaidNotes = unsaidNotes.includes(cardCommandLine)
+      ? unsaidNotes.replace(cardCommandLine, cardCommandLine + "\n" + aliasCommandHelp.replace(/\n$/, ""))
+      : unsaidNotes.replace("Commands (type as an action):", "Commands (type as an action):\n" + aliasCommandHelp.replace(/\n$/, ""));
   }
 
   // Migrate the refresh help text into older combined config cards without
@@ -3911,6 +4377,31 @@ function readUnsaidConfig() {
     unsaidNotes = unsaidNotes.includes(castHeading)
       ? unsaidNotes.replace(castHeading, refreshHelp + "\n" + castHeading)
       : unsaidNotes.replace(CAST_LIST_MARKER, refreshHelp + "\n" + CAST_LIST_MARKER);
+  }
+  if (!unsaidNotes.includes("- Adaptive private memory:")) {
+    const adaptiveHelp =
+      "- Adaptive private memory: bounded self-organizing private thought bank for goals, plans, fears, beliefs, secrets, relationships and meaningful memories.\n" +
+      "- Adaptive private memory slots: maximum durable thought-bank slots per character.\n" +
+      "- Deep reflection every N private moments: periodically broadens private thoughts beyond the immediate scene.\n" +
+      "- Let active NPC goals/plans shape behavior between thought reveals: keeps established private goals/plans/relationships affecting choices between reveal turns.\n" +
+      "- Maximum active NPC minds used for behavioral continuity: context-safe cap for those narrator-only continuity hints.\n" +
+      "- Alias handling: Story Card Triggers are automatically treated as aliases; /alias can add more without creating a second mind.\n" +
+      "- Anti-repetition guard: recent private-thought angles are remembered so near-duplicate loops are suppressed automatically.\n";
+    const castHeading = "Characters who can have private thoughts, one per line — Codex adds newly discovered ones automatically:";
+    unsaidNotes = unsaidNotes.includes(castHeading)
+      ? unsaidNotes.replace(castHeading, adaptiveHelp + "\n" + castHeading)
+      : unsaidNotes.replace(CAST_LIST_MARKER, adaptiveHelp + "\n" + CAST_LIST_MARKER);
+  }
+  if (!unsaidNotes.includes("- Let active NPC goals/plans shape behavior between thought reveals:")) {
+    const continuityHelp =
+      "- Let active NPC goals/plans shape behavior between thought reveals: keeps established private goals/plans/relationships affecting visible choices between reveal turns while remaining narrator-only.\n" +
+      "- Maximum active NPC minds used for behavioral continuity: caps those hints to protect context and runtime.\n" +
+      "- Alias handling: Story Card Triggers are automatically treated as aliases; /alias can add nicknames/callsigns/disguise names without creating duplicate minds.\n" +
+      "- Anti-repetition guard: recent private-thought angles are compared semantically enough to suppress near-duplicate loops automatically.\n";
+    const castHeading2 = "Characters who can have private thoughts, one per line — Codex adds newly discovered ones automatically:";
+    unsaidNotes = unsaidNotes.includes(castHeading2)
+      ? unsaidNotes.replace(castHeading2, continuityHelp + "\n" + castHeading2)
+      : unsaidNotes.replace(CAST_LIST_MARKER, continuityHelp + "\n" + CAST_LIST_MARKER);
   }
   card.description = spliceConfigSection(card.description, CONFIG_SECTION_UNSAID, unsaidNotes);
 
@@ -3931,6 +4422,30 @@ function readUnsaidConfig() {
 
   const jsonNotesMatch = entrySection.match(/Store card notes as JSON:\s*(true|false)/i);
   if (jsonNotesMatch) cfg.jsonNotes = jsonNotesMatch[1].toLowerCase() === "true";
+
+  const adaptiveMindMatch = entrySection.match(/Enable adaptive private memory:\s*(true|false)/i);
+  if (adaptiveMindMatch) cfg.adaptiveMindEnabled = adaptiveMindMatch[1].toLowerCase() === "true";
+
+  const adaptiveSlotsMatch = entrySection.match(/Adaptive private memory slots per character:\s*(\d+)/i);
+  if (adaptiveSlotsMatch) {
+    const parsed = parseInt(adaptiveSlotsMatch[1], 10);
+    if (!isNaN(parsed)) cfg.adaptiveMindSlots = Math.min(ADAPTIVE_MIND_MAX_SLOTS, Math.max(ADAPTIVE_MIND_MIN_SLOTS, parsed));
+  }
+
+  const reflectionIntervalMatch = entrySection.match(/Deep reflection every N private moments:\s*(\d+)/i);
+  if (reflectionIntervalMatch) {
+    const parsed = parseInt(reflectionIntervalMatch[1], 10);
+    if (!isNaN(parsed)) cfg.adaptiveReflectionInterval = Math.min(20, Math.max(2, parsed));
+  }
+
+  const behavioralContinuityMatch = entrySection.match(/Let active NPC goals\/plans shape behavior between thought reveals:\s*(true|false)/i);
+  if (behavioralContinuityMatch) cfg.behavioralContinuity = behavioralContinuityMatch[1].toLowerCase() === "true";
+
+  const behavioralCharactersMatch = entrySection.match(/Maximum active NPC minds used for behavioral continuity:\s*(\d+)/i);
+  if (behavioralCharactersMatch) {
+    const parsed = parseInt(behavioralCharactersMatch[1], 10);
+    if (!isNaN(parsed)) cfg.behavioralContinuityCharacters = Math.min(4, Math.max(1, parsed));
+  }
 
   const coreShiftMatch = entrySection.match(/rewrite a core truth:\s*(true|false)/i);
   if (coreShiftMatch) cfg.allowCoreShift = coreShiftMatch[1].toLowerCase() === "true";
@@ -4075,24 +4590,64 @@ function readUnsaidConfig() {
   const knownLower = cfg.cast.map(n => n.toLowerCase());
   let adopted = false;
   let adoptedThisPass = 0;
-  storyCards.forEach(c => {
-    if (adoptedThisPass >= 20) return;
-    if (!c.title) return;
-
-    // Adopt only cards that are character-like by both type/field shape
-    // and semantic content. This keeps scenario-specific types such as
-    // "Detective" or "Crewmate" working while rejecting a Character card
-    // whose own fields clearly describe a village, vehicle, restaurant, etc.
-    if (isOwnCard(c.title)) return;
-    if (!isCharacterLikeCard(c.title, c)) return;
-    if (codexKindFromExistingCard(c, c.title) !== "character") return;
-    if (excludedCastNames.some(ex => isSameCardEntity(c.title, ex))) return;
-    if (cfg.cast.some(existing => isSameCardEntity(c.title, existing))) return;
+  // Character-card adoption is relevance-first and bounded: inspect cards
+  // mentioned in recent history immediately, then a few newest cards, then
+  // continue a rotating background sweep. This avoids both full-library
+  // rescans and the opposite problem where a currently active hand-made NPC
+  // buried deep in a huge card library waits dozens of turns to join UNSAID.
+  const adoptionCards = (typeof storyCards !== "undefined" && Array.isArray(storyCards)) ? storyCards : [];
+  const tryAdoptCard = c => {
+    if (!c || !c.title || adoptedThisPass >= 20) return false;
+    if (isOwnCard(c.title)) return false;
+    if (excludedCastNames.some(ex => isSameCardEntity(c.title, ex))) return false;
+    if (cfg.cast.some(existing => isSameCardEntity(c.title, existing))) return false;
+    if (!isCharacterLikeCard(c.title, c)) return false;
+    if (codexKindFromExistingCard(c, c.title) !== "character") return false;
     cfg.cast.push(c.title);
     knownLower.push(c.title.toLowerCase());
     adopted = true;
     adoptedThisPass++;
-  });
+    return true;
+  };
+
+  let adoptionHotText = "";
+  try {
+    if (typeof history !== "undefined" && Array.isArray(history)) {
+      adoptionHotText = history.slice(-6)
+        .map(h => h && typeof h.text === "string" ? h.text : "")
+        .join(" ")
+        .toLowerCase()
+        .slice(-7000);
+    }
+  } catch (e) {}
+  if (adoptionHotText) {
+    let hotInspected = 0;
+    for (let i = 0; i < adoptionCards.length && hotInspected < 8 && adoptedThisPass < 20; i++) {
+      const c = adoptionCards[i];
+      if (!c || !c.title) continue;
+      if (adoptionHotText.indexOf(String(c.title).toLowerCase()) === -1) continue;
+      hotInspected++;
+      tryAdoptCard(c);
+    }
+  }
+
+  // Newly created/manual cards are commonly near the end of the collection.
+  for (let i = adoptionCards.length - 1, checked = 0; i >= 0 && checked < 4 && adoptedThisPass < 20; i--, checked++) {
+    tryAdoptCard(adoptionCards[i]);
+  }
+
+  const adoptionScanLimit = Math.min(adoptionCards.length, 8);
+  const adoptionStart = adoptionCards.length > 0
+    ? Math.max(0, Math.floor(state.unsaid.cardAdoptionCursor || 0)) % adoptionCards.length
+    : 0;
+  for (let scanIndex = 0; scanIndex < adoptionScanLimit && adoptedThisPass < 20; scanIndex++) {
+    tryAdoptCard(adoptionCards[(adoptionStart + scanIndex) % adoptionCards.length]);
+  }
+  if (adoptionCards.length > 0) {
+    state.unsaid.cardAdoptionCursor = (adoptionStart + adoptionScanLimit) % adoptionCards.length;
+  } else {
+    state.unsaid.cardAdoptionCursor = 0;
+  }
   if (adopted) {
     const alreadyListed = castSection.split("\n").map(l => l.trim());
     const newlyAdopted = cfg.cast.filter(n => !alreadyListed.includes(n));
@@ -4324,9 +4879,20 @@ function strongCodexNonCharacterEvidence(name, text) {
     "shrine|academy|school|college|university|campus|facility|base|office|" +
     "apartment|house|home|warehouse|factory|farm|ranch|arena|stadium|" +
     "courtroom|courthouse|prison|jail|theater|theatre|museum|library|mall|" +
-    "market|beach|cave|mine|ruins?|cemetery|graveyard|neighbou?rhood|suburb|" +
+    "market|bookstore|bookshop|book\\s+shop|supermarket|grocery|pharmacy|gym|" +
+    "beach|cave|mine|ruins?|cemetery|graveyard|neighbou?rhood|suburb|" +
     "street|road|lane|avenue|boulevard|bridge|river|lake|sea|ocean|desert|" +
     "swamp|marsh|moor|barrow|barrow-mounds?|building|tower|hall|room|chamber)";
+
+  // Businesses can be either organizations or physical places. Treat them
+  // as locations only when the prose uses them like a venue (entering,
+  // visiting, an address, etc.). This keeps a shop/cafe from becoming a
+  // Character without forcing every corporation or chain into Location.
+  const venueKinds =
+    "(?:bookstore|bookshop|book\\s+shop|restaurant|diner|bistro|caf[eé]|" +
+    "coffee\\s+shop|bakery|pizzeria|steakhouse|deli|bar|pub|tavern|store|" +
+    "shop|market|supermarket|grocery|pharmacy|salon|boutique|hotel|inn|motel|" +
+    "cinema|theater|theatre|museum|library|mall|clinic|hospital|gym|studio)";
 
   const itemKinds =
     "(?:item|object|artifact|relic|device|weapon|tool|sword|blade|gun|rifle|" +
@@ -4341,7 +4907,8 @@ function strongCodexNonCharacterEvidence(name, text) {
     "gang|cult|society|restaurant|store|shop|brand|network|team|club|league|" +
     "union|association|foundation|charity|department|bureau|committee|party|" +
     "campaign|band|orchestra|label|school|college|university|crew|fleet|" +
-    "police|government|family|house|business|firm|studio|hospital|clinic)";
+    "police|government|family|house|business|firm|studio|hospital|clinic|" +
+    "chain|franchise|conglomerate|enterprise|enterprises|industries)";
 
   const scores = { location: 0, item: 0, faction: 0 };
 
@@ -4357,7 +4924,17 @@ function strongCodexNonCharacterEvidence(name, text) {
     new RegExp(`\\b${n}(?:'s|’s)\\s+(?:a|an|the)\\s+(?:[a-z-]+\\s+){0,3}${locationKinds}\\b`, "i")
   ];
   if (locationExplicit.some(re => re.test(source))) scores.location += 6;
-  if (new RegExp(`\\b(?:in|inside|outside|into|through|near|around|toward|towards|from|within|across|beneath|above)\\s+(?:the\\s+)?${n}\\b`, "i").test(source)) {
+
+  const venueExplicit = [
+    // “Starlight Books, the independent bookstore on Main Street.”
+    new RegExp(`\\b${n}\\b\\s*(?:,|—|-)\\s*(?:(?:the|a|an)\\s+)?(?:[a-z-]+\\s+){0,3}${venueKinds}\\b`, "i"),
+    new RegExp(`\\b${n}\\b\\s+(?:is|was|are|were)\\s+(?:a|an|the)\\s+(?:[a-z-]+\\s+){0,3}${venueKinds}\\b`, "i")
+  ];
+  if (venueExplicit.some(re => re.test(source))) scores.location += 5;
+  if (new RegExp(`\\b(?:enters?|entered|visits?|visited|walks?\\s+into|walked\\s+into|steps?\\s+into|stepped\\s+into|arrives?\\s+at|arrived\\s+at|goes?\\s+to|went\\s+to|heads?\\s+to|headed\\s+to|leaves?|left)\\s+(?:the\\s+)?${n}\\b`, "i").test(source)) {
+    scores.location += 5;
+  }
+  if (new RegExp(`\\b(?:in|inside|outside|into|through|near|around|toward|towards|from|within|across|beneath|above|at)\\s+(?:the\\s+)?${n}\\b`, "i").test(source)) {
     scores.location += 1;
   }
   if (new RegExp(`\\b${n}\\b\\s+(?:lies?|sits?|stands?|is\\s+located|is\\s+situated|can\\s+be\\s+found)\\s+(?:in|near|on|beside|within|outside|north|south|east|west)\\b`, "i").test(source)) {
@@ -4372,6 +4949,28 @@ function strongCodexNonCharacterEvidence(name, text) {
   if (new RegExp(`\\b(?:wields?|holds?|wears?|uses?|draws?|grips?|picks?\\s+up|carries?|opens?|reads?|drives?|pilots?|boards?)\\s+(?:the\\s+|a\\s+|an\\s+|his\\s+|her\\s+|their\\s+)?${n}\\b`, "i").test(source)) {
     scores.item += 1;
   }
+  // Named food/drink was one of the nastiest false-character cases. Use
+  // consumption semantics, not capitalization, so “orders X from the
+  // restaurant” becomes Item while “orders from X” remains a venue/org.
+  const nameHasFoodWord = codexGenericWords(name).some(w => CODEX_GENERIC_FOOD_WORDS.has(w));
+  const directConsumption = new RegExp(
+    `\\b(?:eats?|ate|drinks?|drank|sips?|sipped|tastes?|tasted|devours?|devoured|` +
+    `samples?|sampled|tries?|tried)\\s+(?:the\\s+|a\\s+|an\\s+|some\\s+)?${n}\\b`,
+    "i"
+  );
+  const orderedConsumable = new RegExp(
+    `\\b(?:orders?|ordered)\\s+(?:the\\s+|a\\s+|an\\s+|some\\s+)?${n}\\b` +
+    `(?=\\s+(?:from\\s+(?:the\\s+)?(?:restaurant|diner|bistro|caf[eé]|coffee\\s+shop|bakery|bar|pub|kitchen|menu)|with\\b|for\\s+(?:breakfast|lunch|dinner|dessert)|to\\s+(?:eat|drink)|[,.;!?]|$))`,
+    "i"
+  );
+  const menuConsumable = new RegExp(
+    `\\b${n}\\b[^\\n.!?]{0,48}\\b(?:dish|meal|curry|stew|soup|sandwich|pizza|burger|` +
+    `dessert|cocktail|mocktail|beverage|drink|plate|bowl|serving|recipe|menu\\s+item|special)\\b`,
+    "i"
+  );
+  if (directConsumption.test(source) || orderedConsumable.test(source)) scores.item += 5;
+  if (nameHasFoodWord && menuConsumable.test(source)) scores.item += 4;
+
   // Vehicle/mech names are often proper nouns with no vehicle word inside
   // the name itself (Mustang, Rocinante, Normandy). Mechanical possessives
   // and unmistakable vehicle-operation verbs outrank a weak "into X"
@@ -4389,6 +4988,9 @@ function strongCodexNonCharacterEvidence(name, text) {
     new RegExp(`\\b${n}\\s+${factionKinds}\\b`, "i")
   ];
   if (factionExplicit.some(re => re.test(source))) scores.faction += 6;
+  if (new RegExp(`\\b${n}\\b[^\\n.!?]{0,48}\\b(?:chain|franchise|corporation|company|business|brand|conglomerate|organization|organisation|network|enterprise|enterprises|industries)\\b`, "i").test(source)) {
+    scores.faction += 4;
+  }
   if (new RegExp(`\\b(?:works?|worked|employed|member|members|joined|joins|leads?|founded|owns?)\\s+(?:at|for|by|of)?\\s*(?:the\\s+)?${n}\\b`, "i").test(source)) {
     scores.faction += 1;
   }
@@ -4716,7 +5318,7 @@ function trackMentions(text, observeIntroductions) {
     trackCodexCardUpdateEvidence(source, actionEpoch);
   }
 
-  pruneMentionCounts();
+  pruneMentionCounts(CODEX_IO_PRUNE_BATCH);
 }
 
 
@@ -4746,10 +5348,10 @@ function pruneMentionCounts(maxChecks) {
     keys = Object.keys(counts);
   }
 
-  // Context uses a small rotating maintenance batch; Input/Output call this
-  // without a limit and still get the full cleanup pass. This prevents the
-  // Context Modifier from re-checking ~150 fuzzy names against every Story
-  // Card on every generation while still self-healing old state over time.
+  // Every hook uses a small rotating maintenance batch. Full-state cleanup in
+  // one pass becomes O(candidates × Story Cards) and can exceed the platform
+  // timeout on large scenarios; rotation self-heals the same state over a few
+  // turns without sacrificing the current generation.
   let inspect = keys;
   const limit = (typeof maxChecks === "number" && isFinite(maxChecks) && maxChecks > 0)
     ? Math.max(1, Math.floor(maxChecks))
@@ -4931,10 +5533,21 @@ function storyCardMatchesForEntity(name) {
     .replace(/\s+/g, " ")
     .trim();
 
-  const exact = storyCards.filter(card =>
-    card && card.title && !isOwnCard(card.title) && clean(card.title) === clean(name)
-  );
-  if (exact.length > 0) return exact;
+  // Exact titles and exact creator-authored trigger aliases use the same
+  // per-hook identity index. This turns the common lookup path from repeated
+  // O(all Story Cards) scans into one O(cards) index build followed by O(1)
+  // lookups — critical in 500–1000 card scenarios and during Output cleanup.
+  const aliasKey = clean(name);
+  if (typeof buildUnsaidAliasIndex === "function") {
+    const index = buildUnsaidAliasIndex();
+    const direct = index && index.aliasToCards && index.aliasToCards[aliasKey];
+    if (direct && direct.length) return direct.slice();
+  } else {
+    const exact = storyCards.filter(card =>
+      card && card.title && !isOwnCard(card.title) && clean(card.title) === aliasKey
+    );
+    if (exact.length > 0) return exact;
+  }
 
   const wantedWordCount = clean(name).split(" ").filter(Boolean).length;
   return storyCards.filter(card => {
@@ -5424,6 +6037,48 @@ function findCodexCandidates(threshold, excludeNames, maxAttempts, maxCount) {
   const cap = typeof maxAttempts === "number" ? maxAttempts : CODEX_MAX_ATTEMPTS;
   const limit = typeof maxCount === "number" ? maxCount : CODEX_MAX_CANDIDATES_PER_TURN;
   const counts = state.unsaid.codex.mentionCounts;
+
+  // Build Story Card aliases once per scheduling pass. The old path called
+  // storyCardMatchesForEntity() (and then findStoryCardForEntity(), which
+  // repeated the same scan) for every tracked candidate. With hundreds of
+  // candidates and hundreds of cards that became O(candidates × cards) and
+  // could consume most of the Context hook by itself.
+  const existingCardAliases = new Set();
+  try {
+    if (typeof storyCards !== "undefined" && Array.isArray(storyCards)) {
+      storyCards.forEach(card => {
+        if (!card || !card.title || isOwnCard(card.title)) return;
+        const simple = String(card.title)
+          .toLowerCase()
+          .replace(/[“”"'‘’.,:;!?()[\]{}\-‐‑–—]/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+        if (!simple) return;
+        existingCardAliases.add(simple);
+        let words = simple.split(" ").filter(Boolean);
+        if (typeof stripCourtesyTitle === "function") words = stripCourtesyTitle(words);
+        for (let len = 1; len <= words.length; len++) {
+          for (let start = 0; start + len <= words.length; start++) {
+            const alias = words.slice(start, start + len).join(" ");
+            if (len > 1 || alias.length >= 3) existingCardAliases.add(alias);
+          }
+        }
+      });
+    }
+  } catch (e) {}
+
+  const existingCardForCandidate = name => {
+    const simple = String(name || "")
+      .toLowerCase()
+      .replace(/[“”"'‘’.,:;!?()[\]{}\-‐‑–—]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!simple) return false;
+    if (existingCardAliases.has(simple)) return true;
+    let words = simple.split(" ").filter(Boolean);
+    if (typeof stripCourtesyTitle === "function") words = stripCourtesyTitle(words);
+    return existingCardAliases.has(words.join(" "));
+  };
   const likelyCharacters = state.unsaid.codex.likelyCharacters || {};
   const introducedTurn = state.unsaid.codex.introducedTurn || {};
   const observedTypes = state.unsaid.codex.observedTypes || {};
@@ -5453,8 +6108,7 @@ function findCodexCandidates(threshold, excludeNames, maxAttempts, maxCount) {
     }
 
     if (exclude.some(ex => isSameCardEntity(ex, name))) continue;
-    if (typeof storyCardMatchesForEntity === "function" && storyCardMatchesForEntity(name).length > 0) continue;
-    if (!!findStoryCardForEntity(name)) continue;
+    if (existingCardForCandidate(name)) continue;
 
     // Character-shaped names are NOT auto-carded from hearsay/backstory
     // mentions alone. They join automatic Codex only after Output has seen
@@ -5616,6 +6270,12 @@ function codexLogTitle(type) {
 function buildStatusReport(cfg) {
   const lines = [];
   lines.push(`UNSAID: ${cfg.enabled ? "enabled" : "DISABLED"}  |  Codex: ${cfg.codexEnabled ? "enabled" : "disabled"}  |  Turn: ${state.unsaid.turn}`);
+  lines.push(`Behavioral continuity: ${cfg.behavioralContinuity ? "enabled" : "off"}  |  active-mind cap: ${cfg.behavioralContinuityCharacters}`);
+  const aliasCount = Object.keys(state.unsaid.aliases || {}).reduce((sum, name) => sum + (Array.isArray(state.unsaid.aliases[name]) ? state.unsaid.aliases[name].length : 0), 0);
+  lines.push(`Aliases: ${aliasCount} manual alias${aliasCount === 1 ? "" : "es"}; Story Card triggers are also identity aliases`);
+  if (state.unsaid.lastActiveCast && state.unsaid.lastActiveCast.length) {
+    lines.push(`Last active cast: ${state.unsaid.lastActiveCast.join(", ")}`);
+  }
 
   try {
     const twistCfg = state.contingencyConfig || Library.CP_DEFAULTS;
@@ -5637,8 +6297,9 @@ function buildStatusReport(cfg) {
     mindNames.forEach(name => {
       const m = state.unsaid.minds[name] || {};
       const coreNote = m.core ? "has a core truth" : "no standalone thought yet";
-      const lastActiveNote = m.lastTurn ? `last active turn ${m.lastTurn}` : "not yet revealed under tracking";
-      lines.push(`  ${name} — ${coreNote}, feeling: ${m.feeling || "none yet"}, ${m.revealCount || 0} reveal(s), ${lastActiveNote}`);
+      const lastActiveNote = typeof m.lastTurn === "number" ? `last active turn ${m.lastTurn}` : "not yet revealed under tracking";
+      const adaptiveSlots = m.thoughtOrder && Array.isArray(m.thoughtOrder) ? m.thoughtOrder.length : 0;
+      lines.push(`  ${name} — ${coreNote}, feeling: ${m.feeling || "none yet"}, ${m.revealCount || 0} reveal(s), adaptive memory: ${adaptiveSlots} slot(s), ${lastActiveNote}`);
     });
   }
 
@@ -5852,6 +6513,27 @@ function resolveUnsaidRelationTarget(owner, rawTarget, cfg) {
   const blocked = excludedNames(cfg || { playerName: "" });
   if (blocked.some(name => isSameCardEntity(name, raw))) return null;
 
+  // Fast path: title/trigger/manual aliases resolve through the per-hook card
+  // index. Older builds scanned *every* Story Card and semantically retyped it
+  // whenever a relationship reveal said "about X"; a 1000-card scenario could
+  // spend several seconds here alone. We only inspect the card(s) that can
+  // actually match the target now.
+  const directMatches = typeof storyCardMatchesForEntity === "function"
+    ? storyCardMatchesForEntity(raw)
+    : [];
+  if (directMatches.length === 1) {
+    const card = directMatches[0];
+    const canonical = card && card.title ? card.title : raw;
+    if ((!owner || !isSameCardEntity(owner, canonical)) &&
+        !blocked.some(name => isSameCardEntity(name, canonical)) &&
+        isCharacterLikeCard(canonical, card) &&
+        codexKindFromExistingCard(card, canonical) === "character") {
+      return canonical;
+    }
+    return null;
+  }
+  if (directMatches.length > 1) return null;
+
   const candidates = [];
   const add = value => {
     const clean = String(value || "").trim();
@@ -5866,18 +6548,10 @@ function resolveUnsaidRelationTarget(owner, rawTarget, cfg) {
     Object.keys((state.unsaid && state.unsaid.minds) || {}).forEach(add);
     const codex = state.unsaid && state.unsaid.codex;
     if (codex && codex.likelyCharacters) {
-      Object.keys(codex.likelyCharacters).filter(name => codex.likelyCharacters[name]).forEach(add);
-    }
-  } catch (e) {}
-
-  try {
-    if (typeof storyCards !== "undefined" && Array.isArray(storyCards)) {
-      storyCards.forEach(card => {
-        if (!card || !card.title || isOwnCard(card.title)) return;
-        if (isCharacterLikeCard(card.title, card) && codexKindFromExistingCard(card, card.title) === "character") {
-          add(card.title);
-        }
-      });
+      Object.keys(codex.likelyCharacters)
+        .filter(name => codex.likelyCharacters[name])
+        .slice(-MENTION_TRACKING_CAP)
+        .forEach(add);
     }
   } catch (e) {}
 
@@ -5891,7 +6565,7 @@ function resolveUnsaidRelationTarget(owner, rawTarget, cfg) {
 
   const resolved = fuzzy[0];
   const card = findStoryCardForEntity(resolved);
-  if (card && (!isCharacterLikeCard(resolved) || codexKindFromExistingCard(card, resolved) !== "character")) {
+  if (card && (!isCharacterLikeCard(resolved, card) || codexKindFromExistingCard(card, resolved) !== "character")) {
     return null;
   }
   if (blocked.some(name => isSameCardEntity(name, resolved))) return null;
@@ -5964,13 +6638,29 @@ function syncMindToCard(name, allowCoreShift, useJson) {
       feeling: mind.feeling || null,
       feelingHistory: mind.feelingHistory || [],
       lastThought: mind.lastThoughtText || null,
+      thoughtHistory: Array.isArray(mind.thoughtHistory) ? mind.thoughtHistory.slice(-THOUGHT_HISTORY_LIMIT) : [],
       want: mind.want || null,
       relations,
       revealCount: mind.revealCount || 0,
       lastRevealAgo: typeof mind.lastTurn === "number"
         ? Math.max(0, state.unsaid.turn - mind.lastTurn)
         : null,
-      recentTwistImpacts: Array.isArray(mind.recentTwistImpacts) ? mind.recentTwistImpacts.slice(-4) : []
+      recentTwistImpacts: Array.isArray(mind.recentTwistImpacts) ? mind.recentTwistImpacts.slice(-4) : [],
+      thoughtBank: (() => {
+        ensureAdaptiveMindShape(mind);
+        const out = {};
+        mind.thoughtOrder.slice(-ADAPTIVE_MIND_MAX_SLOTS).forEach(key => {
+          if (mind.thoughtBank[key]) out[key] = String(mind.thoughtBank[key]).slice(0, ADAPTIVE_MIND_TEXT_LIMIT);
+        });
+        return out;
+      })(),
+      thoughtOrder: (() => {
+        ensureAdaptiveMindShape(mind);
+        return mind.thoughtOrder.slice(-ADAPTIVE_MIND_MAX_SLOTS);
+      })(),
+      lastReflectionAgo: typeof mind.lastReflectionTurn === "number"
+        ? Math.max(0, state.unsaid.turn - mind.lastReflectionTurn)
+        : null
     };
     const base = (card.description || "").split(MIND_NOTES_MARKER)[0].replace(/\s+$/, "");
     card.description = `${base}\n\n${MIND_NOTES_MARKER}\n${JSON.stringify(jsonBody, null, 2)}`.trim();
@@ -5988,6 +6678,10 @@ function syncMindToCard(name, allowCoreShift, useJson) {
     sections.push(`Recent feelings: ${mind.feelingHistory.join(" → ")}`);
   }
   if (mind.lastThoughtText) sections.push(`Last private thought:\n${mind.lastThoughtText}`);
+  if (Array.isArray(mind.thoughtHistory) && mind.thoughtHistory.length > 1) {
+    const recentAngles = mind.thoughtHistory.slice(-3).map(v => `  • ${String(v).replace(/\s+/g, " ").trim()}`);
+    if (recentAngles.length) sections.push(`Recent private thought angles:\n${recentAngles.join("\n")}`);
+  }
   if (mind.want) sections.push(`Wants: ${mind.want}`);
   if (Array.isArray(mind.recentTwistImpacts) && mind.recentTwistImpacts.length > 0) {
     const impact = mind.recentTwistImpacts[mind.recentTwistImpacts.length - 1];
@@ -6002,6 +6696,14 @@ function syncMindToCard(name, allowCoreShift, useJson) {
       return `  • ${other} — ${trail}`;
     });
     sections.push(`Feelings toward others:\n${relLines.join("\n")}`);
+  }
+  ensureAdaptiveMindShape(mind);
+  if (mind.thoughtOrder.length > 0) {
+    const adaptiveLines = mind.thoughtOrder.slice(-12).map(key => {
+      const value = String(mind.thoughtBank[key] || "").slice(0, ADAPTIVE_MIND_TEXT_LIMIT);
+      return value ? `  • ${key}: ${value}` : null;
+    }).filter(Boolean);
+    if (adaptiveLines.length) sections.push(`Adaptive private memory:\n${adaptiveLines.join("\n")}`);
   }
   if (mind.revealCount) {
     sections.push(`${mind.revealCount} private moment${mind.revealCount === 1 ? "" : "s"} recorded so far.`);
@@ -6050,12 +6752,148 @@ function createMind() {
     feelingHistory: [],
     want: null,
     lastThoughtText: null,
+    // Recent distinct private thought angles are kept separately from the
+    // durable thought bank. This is a tiny anti-loop cache: it lets the
+    // prompt reject semantic rephrasings of the last few reveals without
+    // growing state forever.
+    thoughtHistory: [],
     relations: {},
     relationOrder: [],
     relationHistory: {},
+    // A bounded adaptive "thought bank" complements the stable core truth.
+    // The core prevents personality drift; the bank lets goals, plans, fears,
+    // guarded secrets, beliefs and meaningful memories evolve organically.
+    thoughtBank: {},
+    thoughtOrder: [],
+    lastReflectionTurn: null,
     recentTwistImpacts: [],
     lastTurn: state.unsaid.turn
   };
+}
+
+function adaptiveMindSlug(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 28) || "unknown";
+}
+
+function ensureAdaptiveMindShape(mind) {
+  if (!mind || typeof mind !== "object") return;
+  if (!mind.thoughtBank || typeof mind.thoughtBank !== "object" || Array.isArray(mind.thoughtBank)) {
+    mind.thoughtBank = {};
+  }
+  if (!Array.isArray(mind.thoughtOrder)) mind.thoughtOrder = [];
+  mind.thoughtOrder = mind.thoughtOrder.filter(key =>
+    typeof key === "string" && Object.prototype.hasOwnProperty.call(mind.thoughtBank, key)
+  );
+}
+
+function adaptiveMindKeyFor(thought, about, isCoreShift, feeling, revealCount) {
+  const text = String(thought || "").toLowerCase();
+  if (isCoreShift) return "identity_anchor";
+  if (about) return "relationship_" + adaptiveMindSlug(about);
+  if (/\b(?:secret|hide|hidden|conceal|never tell|can't tell|cannot tell|mustn't know|must not know|keep this from)\b/i.test(text)) return "guarded_secret";
+  if (/\b(?:afraid|fear|fearful|terrified|dread|worried|worry|anxious|panic|uneasy about)\b/i.test(text)) return "active_fear";
+  if (/\b(?:plan|intend|intends|going to|next I|next we|must now|need to|should do|will try|have to find|have to get|have to stop)\b/i.test(text)) return "current_plan";
+  if (/\b(?:want|wants|hope|hopes|wish|wishes|need|needs|long for|yearn|goal|aim)\b/i.test(text)) return "current_goal";
+  if (/\b(?:guilt|guilty|regret|ashamed|shame|remorse|shouldn't have|should not have)\b/i.test(text)) return "unresolved_guilt";
+  if (/\b(?:believe|believes|trust|trusts|doubt|doubts|suspect|suspects|think that|convinced)\b/i.test(text)) return "working_belief";
+  if (/\b(?:remember|remembers|memory|reminds me|reminded me|can't forget|cannot forget)\b/i.test(text)) return "meaningful_memory";
+  if (/\b(?:promise|vow|swear|swore|commit|committed)\b/i.test(text)) return "private_commitment";
+  const emotionKey = adaptiveMindSlug(feeling || "reflection").slice(0, 14);
+  return "reflection_" + emotionKey + "_" + (((Number(revealCount) || 0) % 3) + 1);
+}
+
+function adaptiveMindProtectedKey(key) {
+  return key === "identity_anchor" ||
+    /^relationship_/.test(key) ||
+    key === "guarded_secret" ||
+    key === "private_commitment";
+}
+
+function rememberAdaptiveThought(mind, thought, about, isCoreShift, feeling, cfg) {
+  if (!mind || !thought || !cfg || cfg.adaptiveMindEnabled === false) return false;
+  ensureAdaptiveMindShape(mind);
+
+  const clean = String(thought).replace(/\s+/g, " ").trim().slice(0, ADAPTIVE_MIND_TEXT_LIMIT);
+  if (!clean) return false;
+
+  const key = adaptiveMindKeyFor(clean, about, isCoreShift, feeling, mind.revealCount);
+  const writeKey = memoryKey => {
+    if (!memoryKey) return;
+    mind.thoughtBank[memoryKey] = clean;
+    const oldIndex = mind.thoughtOrder.indexOf(memoryKey);
+    if (oldIndex !== -1) mind.thoughtOrder.splice(oldIndex, 1);
+    mind.thoughtOrder.push(memoryKey);
+  };
+  writeKey(key);
+
+  // A relationship thought can also carry a durable plan/fear/secret/goal.
+  // Preserve both dimensions when they are genuinely present instead of
+  // forcing all social thoughts into a single relationship bucket.
+  if (about && !isCoreShift) {
+    const semanticKey = adaptiveMindKeyFor(clean, null, false, feeling, mind.revealCount);
+    if (semanticKey !== key && !/^reflection_/.test(semanticKey)) writeKey(semanticKey);
+  }
+
+  const slotLimit = Math.min(
+    ADAPTIVE_MIND_MAX_SLOTS,
+    Math.max(ADAPTIVE_MIND_MIN_SLOTS, Number(cfg.adaptiveMindSlots) || UNSAID_DEFAULTS.adaptiveMindSlots)
+  );
+
+  while (mind.thoughtOrder.length > slotLimit) {
+    let victimIndex = mind.thoughtOrder.findIndex(k => !adaptiveMindProtectedKey(k));
+    if (victimIndex < 0) victimIndex = 0;
+    const victim = mind.thoughtOrder.splice(victimIndex, 1)[0];
+    if (victim) delete mind.thoughtBank[victim];
+  }
+  return true;
+}
+
+function adaptiveMindDigest(mind, target, maxItems) {
+  if (!mind) return "";
+  ensureAdaptiveMindShape(mind);
+  const limit = Math.max(1, Math.min(6, Number(maxItems) || 4));
+  const wanted = [];
+  const pushKey = key => {
+    if (!key || wanted.includes(key) || !mind.thoughtBank[key]) return;
+    wanted.push(key);
+  };
+
+  if (target) pushKey("relationship_" + adaptiveMindSlug(target));
+  [
+    "identity_anchor",
+    "current_plan",
+    "current_goal",
+    "active_fear",
+    "guarded_secret",
+    "private_commitment",
+    "working_belief",
+    "unresolved_guilt",
+    "meaningful_memory"
+  ].forEach(pushKey);
+
+  for (let i = mind.thoughtOrder.length - 1; i >= 0 && wanted.length < limit; i--) {
+    pushKey(mind.thoughtOrder[i]);
+  }
+
+  // One private thought can legitimately populate two semantic slots (for
+  // example relationship_carver + current_plan). Do not pay context tokens
+  // twice for identical text; keep the first/highest-priority label only.
+  const seenValues = new Set();
+  const digestItems = [];
+  for (let i = 0; i < wanted.length && digestItems.length < limit; i++) {
+    const key = wanted[i];
+    const value = String(mind.thoughtBank[key] || "").replace(/\s+/g, " ").trim().slice(0, 150);
+    if (!value) continue;
+    const normalized = value.toLowerCase();
+    if (seenValues.has(normalized)) continue;
+    seenValues.add(normalized);
+    digestItems.push(`${key.replace(/_/g, " ")}="${value}"`);
+  }
+  return digestItems.join("; ");
 }
 
 function loadMindFromCard(card) {
@@ -6077,6 +6915,14 @@ function loadMindFromCard(card) {
           .slice(-FEELING_HISTORY_LIMIT);
       }
       if (typeof parsed.lastThought === "string") mind.lastThoughtText = parsed.lastThought;
+      if (Array.isArray(parsed.thoughtHistory)) {
+        mind.thoughtHistory = parsed.thoughtHistory
+          .filter(v => typeof v === "string" && v.trim())
+          .map(v => v.replace(/\s+/g, " ").trim().slice(0, ADAPTIVE_MIND_TEXT_LIMIT))
+          .slice(-THOUGHT_HISTORY_LIMIT);
+      } else if (mind.lastThoughtText) {
+        mind.thoughtHistory = [mind.lastThoughtText];
+      }
       if (typeof parsed.want === "string") mind.want = parsed.want;
       if (typeof parsed.revealCount === "number" && parsed.revealCount >= 0) mind.revealCount = Math.floor(parsed.revealCount);
       if (typeof parsed.lastRevealAgo === "number" && isFinite(parsed.lastRevealAgo) && parsed.lastRevealAgo >= 0) {
@@ -6089,6 +6935,19 @@ function loadMindFromCard(card) {
         mind.recentTwistImpacts = parsed.recentTwistImpacts
           .filter(x => x && typeof x === "object")
           .slice(-4);
+      }
+      if (parsed.thoughtBank && typeof parsed.thoughtBank === "object" && !Array.isArray(parsed.thoughtBank)) {
+        const keys = Array.isArray(parsed.thoughtOrder) ? parsed.thoughtOrder : Object.keys(parsed.thoughtBank);
+        keys.slice(-ADAPTIVE_MIND_MAX_SLOTS).forEach(key => {
+          if (typeof key !== "string" || !/^[a-z][a-z0-9_]{0,40}$/.test(key)) return;
+          const value = parsed.thoughtBank[key];
+          if (typeof value !== "string" || !value.trim()) return;
+          mind.thoughtBank[key] = value.replace(/\s+/g, " ").trim().slice(0, ADAPTIVE_MIND_TEXT_LIMIT);
+          mind.thoughtOrder.push(key);
+        });
+      }
+      if (typeof parsed.lastReflectionAgo === "number" && isFinite(parsed.lastReflectionAgo) && parsed.lastReflectionAgo >= 0) {
+        mind.lastReflectionTurn = state.unsaid.turn - parsed.lastReflectionAgo;
       }
 
       // New notes use the correctly named coreStableForTurns field. Older
@@ -6132,6 +6991,7 @@ function loadMindFromCard(card) {
         (mind.revealCount || 0) > 0 ||
         (mind.coreHistory && mind.coreHistory.length > 0) ||
         mind.relationOrder.length > 0 ||
+        (mind.thoughtOrder && mind.thoughtOrder.length > 0) ||
         (mind.recentTwistImpacts && mind.recentTwistImpacts.length > 0);
       return hasMeaningfulState ? mind : null;
     }
@@ -6188,7 +7048,26 @@ function loadMindFromCard(card) {
     found = true;
   }
   const lastThoughtMatch = body.match(/Last private thought:\n([\s\S]*?)(?:\n\n|$)/);
-  if (lastThoughtMatch && lastThoughtMatch[1].trim()) { mind.lastThoughtText = lastThoughtMatch[1].trim(); found = true; }
+  if (lastThoughtMatch && lastThoughtMatch[1].trim()) {
+    mind.lastThoughtText = lastThoughtMatch[1].trim();
+    mind.thoughtHistory = [mind.lastThoughtText];
+    found = true;
+  }
+  const thoughtHistoryMatch = body.match(/Recent private thought angles:\n([\s\S]*?)(?:\n\n|$)/);
+  if (thoughtHistoryMatch) {
+    const loadedAngles = thoughtHistoryMatch[1].split("\n")
+      .map(line => line.replace(/^\s*[•\-*]\s*/, "").replace(/\s+/g, " ").trim())
+      .filter(Boolean)
+      .slice(-THOUGHT_HISTORY_LIMIT);
+    if (loadedAngles.length) {
+      mind.thoughtHistory = loadedAngles;
+      if (mind.lastThoughtText && !mind.thoughtHistory.includes(mind.lastThoughtText)) {
+        mind.thoughtHistory.push(mind.lastThoughtText);
+        mind.thoughtHistory = mind.thoughtHistory.slice(-THOUGHT_HISTORY_LIMIT);
+      }
+      found = true;
+    }
+  }
   const countMatch = body.match(/(\d+) private moments? recorded/);
   if (countMatch) { mind.revealCount = parseInt(countMatch[1], 10); found = true; }
   const relBlockMatch = body.match(/Feelings toward others:\n([\s\S]*?)(?:\n\n|$)/);
@@ -6203,6 +7082,19 @@ function loadMindFromCard(card) {
       mind.relations[other] = current;
       mind.relationOrder.push(other);
       mind.relationHistory[other] = [current];
+      found = true;
+    });
+  }
+  const adaptiveBlockMatch = body.match(/Adaptive private memory:\n([\s\S]*?)(?:\n\n|$)/);
+  if (adaptiveBlockMatch) {
+    adaptiveBlockMatch[1].split("\n").slice(-ADAPTIVE_MIND_MAX_SLOTS).forEach(line => {
+      const m = line.match(/^\s*[•\-*]\s*([a-z][a-z0-9_]{0,40})\s*:\s*(.+)$/i);
+      if (!m) return;
+      const key = m[1].toLowerCase();
+      const value = m[2].replace(/\s+/g, " ").trim().slice(0, ADAPTIVE_MIND_TEXT_LIMIT);
+      if (!value) return;
+      mind.thoughtBank[key] = value;
+      mind.thoughtOrder.push(key);
       found = true;
     });
   }
@@ -6242,11 +7134,91 @@ function pushCapped(arr, value, limit) {
   }
 }
 
+// Lightweight semantic-ish anti-looping. This deliberately avoids expensive
+// NLP: private thoughts are short, so normalized content-word overlap catches
+// most model paraphrases ("I can't trust him" -> "He still isn't someone I
+// can trust") for a tiny, predictable runtime cost.
+var UNSAID_THOUGHT_STOPWORDS = new Set([
+  "a","an","and","are","as","at","be","been","being","but","by","can","could",
+  "did","do","does","for","from","had","has","have","he","her","hers","him","his",
+  "i","if","in","into","is","it","its","me","my","of","on","or","our","ours",
+  "she","so","than","that","the","their","theirs","them","they","this","to","too",
+  "was","we","were","what","when","where","which","who","why","will","with","would",
+  "you","your","yours","still","really","right","now","just","even","only","very",
+  "until","while","though","although","yet","already","again"
+]);
+
+function thoughtSimilarityTokens(value) {
+  const raw = String(value || "").toLowerCase()
+    .replace(/[’']/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+  if (!raw) return [];
+  const out = [];
+  const seen = new Set();
+  raw.split(/\s+/).forEach(token => {
+    if (!token || token.length < 2 || UNSAID_THOUGHT_STOPWORDS.has(token)) return;
+    // Small suffix folding helps detect cheap rephrases without a stemmer.
+    let t = token;
+    if (t.length > 5 && /(?:ing|ers|ies)$/.test(t)) t = t.replace(/(?:ing|ers|ies)$/, "");
+    else if (t.length > 4 && /(?:ed|es)$/.test(t)) t = t.replace(/(?:ed|es)$/, "");
+    else if (t.length > 4 && /s$/.test(t) && !/ss$/.test(t)) t = t.slice(0, -1);
+    if (t.length < 2 || seen.has(t)) return;
+    seen.add(t);
+    out.push(t);
+  });
+  return out.slice(0, 36);
+}
+
+function thoughtSimilarity(a, b) {
+  const aa = thoughtSimilarityTokens(a);
+  const bb = thoughtSimilarityTokens(b);
+  if (!aa.length || !bb.length) {
+    return String(a || "").replace(/\s+/g, " ").trim().toLowerCase() ===
+      String(b || "").replace(/\s+/g, " ").trim().toLowerCase() ? 1 : 0;
+  }
+  const sa = new Set(aa);
+  const sb = new Set(bb);
+  let shared = 0;
+  sa.forEach(token => { if (sb.has(token)) shared += 1; });
+  const union = sa.size + sb.size - shared;
+  const jaccard = union ? shared / union : 0;
+  const containment = shared / Math.max(1, Math.min(sa.size, sb.size));
+  // Containment catches a short paraphrase embedded in a slightly longer
+  // thought; Jaccard protects against a couple of generic shared words.
+  return Math.max(jaccard, containment * 0.9);
+}
+
+function isNearRepeatThought(mind, thought) {
+  if (!mind || !thought) return false;
+  const history = Array.isArray(mind.thoughtHistory) && mind.thoughtHistory.length
+    ? mind.thoughtHistory.slice(-THOUGHT_HISTORY_LIMIT)
+    : (mind.lastThoughtText ? [mind.lastThoughtText] : []);
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (thoughtSimilarity(history[i], thought) >= 0.72) return true;
+  }
+  return false;
+}
+
+function recordThoughtHistory(mind, thought) {
+  if (!mind || !thought) return;
+  if (!Array.isArray(mind.thoughtHistory)) mind.thoughtHistory = [];
+  const clean = String(thought).replace(/\s+/g, " ").trim().slice(0, ADAPTIVE_MIND_TEXT_LIMIT);
+  if (!clean) return;
+  // Avoid wasting the tiny ring buffer on near-identical formatting variants.
+  const duplicateIndex = mind.thoughtHistory.findIndex(v => thoughtSimilarity(v, clean) >= 0.92);
+  if (duplicateIndex !== -1) mind.thoughtHistory.splice(duplicateIndex, 1);
+  mind.thoughtHistory.push(clean);
+  if (mind.thoughtHistory.length > THOUGHT_HISTORY_LIMIT) {
+    mind.thoughtHistory = mind.thoughtHistory.slice(-THOUGHT_HISTORY_LIMIT);
+  }
+}
+
 function pickBySilence(names, currentTurn) {
   if (!Array.isArray(names) || names.length === 0) return null;
   const weights = names.map(name => {
     const mind = state.unsaid.minds[name];
-    if (!mind || !mind.lastTurn) return 24;
+    if (!mind || typeof mind.lastTurn !== "number") return 24;
     return Math.max(1, Math.min(20, currentTurn - mind.lastTurn));
   });
   const total = weights.reduce((a, b) => a + b, 0);
@@ -6256,6 +7228,123 @@ function pickBySilence(names, currentTurn) {
     if (roll <= 0) return names[i];
   }
   return names[names.length - 1];
+}
+
+function unsaidLastAliasIndex(name, text) {
+  const source = String(text || "").toLowerCase();
+  if (!source) return -1;
+  const aliases = aliasesForUnsaidCharacter(name);
+  let best = -1;
+  aliases.forEach(alias => {
+    const clean = String(alias || "").trim().toLowerCase();
+    if (!clean) return;
+    const at = source.lastIndexOf(clean);
+    if (at > best) best = at;
+  });
+  return best;
+}
+
+// Reveal selection is no longer just a lottery based on who has been silent
+// longest. It still protects quiet characters from starvation, but adds scene
+// recency and unresolved psychological pressure so the thought usually belongs
+// to the NPC the current moment is actually about.
+function pickUnsaidThinker(names, currentTurn, recentText) {
+  if (!Array.isArray(names) || names.length === 0) return null;
+  const sourceLength = Math.max(1, String(recentText || "").length);
+  const weights = names.map(name => {
+    const mind = state.unsaid.minds[name];
+    const silence = (!mind || typeof mind.lastTurn !== "number")
+      ? 18
+      : Math.max(1, Math.min(16, currentTurn - mind.lastTurn));
+    const at = unsaidLastAliasIndex(name, recentText);
+    const recency = at < 0 ? 0 : Math.max(1, Math.round(12 * (at / sourceLength)));
+    let pressure = 0;
+    if (mind) {
+      ensureAdaptiveMindShape(mind);
+      if (mind.thoughtBank.current_plan || mind.thoughtBank.current_goal || mind.thoughtBank.private_commitment) pressure += 2;
+      const impacts = Array.isArray(mind.recentTwistImpacts) ? mind.recentTwistImpacts : [];
+      const latestImpact = impacts.length ? impacts[impacts.length - 1] : null;
+      if (latestImpact && typeof latestImpact.turn === "number" && currentTurn - latestImpact.turn <= 5) pressure += 3;
+      if (typeof mind.tensionLevel === "number" && mind.tensionLevel >= TENSION_THRESHOLD) pressure += 2;
+    }
+    return Math.max(1, silence + recency + pressure);
+  });
+  const total = weights.reduce((a, b) => a + b, 0);
+  let roll = Math.random() * total;
+  for (let i = 0; i < names.length; i++) {
+    roll -= weights[i];
+    if (roll <= 0) return names[i];
+  }
+  return names[names.length - 1];
+}
+
+function compactContinuityValue(value, maxLen) {
+  const clean = String(value || "").replace(/\s+/g, " ").trim();
+  const limit = Math.max(30, Number(maxLen) || 140);
+  return clean.length <= limit ? clean : clean.slice(0, limit - 1).trimEnd() + "…";
+}
+
+function unsaidContinuityScore(name, mind, baseText) {
+  let score = 0;
+  const idx = unsaidLastAliasIndex(name, String(baseText || "").slice(-6000));
+  if (idx >= 0) score += 5 + Math.round((idx / Math.max(1, String(baseText || "").slice(-6000).length)) * 5);
+  if (!mind) return score;
+  ensureAdaptiveMindShape(mind);
+  if (mind.thoughtBank.current_plan) score += 6;
+  if (mind.thoughtBank.current_goal) score += 5;
+  if (mind.thoughtBank.private_commitment) score += 4;
+  if (mind.want) score += 3;
+  if (mind.core) score += 2;
+  if (mind.relationOrder && mind.relationOrder.length) score += 2;
+  return score;
+}
+
+// On turns where no hidden thought is requested, established psychology still
+// matters. This instruction is deliberately narrator-only and compact: it
+// turns plans/goals/relationships into visible behavioral continuity without
+// forcing another thought marker or letting NPCs telepathically know each
+// other's private state.
+function buildBehaviorContinuityInstruction(activeNames, baseText, cfgOverride) {
+  const cfg = cfgOverride || UNSAID_DEFAULTS;
+  if (cfg.behavioralContinuity === false || !Array.isArray(activeNames) || !activeNames.length) return "";
+  const cap = Math.max(1, Math.min(4, Number(cfg.behavioralContinuityCharacters) || UNSAID_DEFAULTS.behavioralContinuityCharacters));
+  const candidates = activeNames.map(name => ({ name, mind: state.unsaid.minds[name] }))
+    .filter(x => x.mind && (x.mind.core || x.mind.want || (x.mind.thoughtOrder && x.mind.thoughtOrder.length) || (x.mind.relationOrder && x.mind.relationOrder.length)))
+    .sort((a, b) => unsaidContinuityScore(b.name, b.mind, baseText) - unsaidContinuityScore(a.name, a.mind, baseText))
+    .slice(0, cap);
+  if (!candidates.length) return "";
+
+  const lines = [];
+  candidates.forEach(({ name, mind }) => {
+    ensureAdaptiveMindShape(mind);
+    const parts = [];
+    if (mind.thoughtBank.current_plan) parts.push(`plan: ${compactContinuityValue(mind.thoughtBank.current_plan, 120)}`);
+    if (mind.thoughtBank.current_goal) parts.push(`goal: ${compactContinuityValue(mind.thoughtBank.current_goal, 110)}`);
+    if (mind.thoughtBank.private_commitment) parts.push(`commitment: ${compactContinuityValue(mind.thoughtBank.private_commitment, 100)}`);
+    if (!parts.length && mind.want) parts.push(`want: ${compactContinuityValue(mind.want, 110)}`);
+    if (parts.length < 2 && mind.core) parts.push(`core: ${compactContinuityValue(mind.core, 105)}`);
+
+    // Add only one relation, preferring another character who is in this scene.
+    let relationTarget = null;
+    if (mind.relationOrder && mind.relationOrder.length) {
+      for (let i = mind.relationOrder.length - 1; i >= 0; i--) {
+        if (activeNames.includes(mind.relationOrder[i])) { relationTarget = mind.relationOrder[i]; break; }
+      }
+      if (!relationTarget) relationTarget = mind.relationOrder[mind.relationOrder.length - 1];
+    }
+    if (relationTarget && mind.relations && mind.relations[relationTarget]) {
+      parts.push(`toward ${relationTarget}: ${compactContinuityValue(mind.relations[relationTarget], 70)}`);
+    }
+    if (parts.length) lines.push(`${name} — ${parts.slice(0, 3).join("; ")}`);
+  });
+  if (!lines.length) return "";
+
+  const prefix = `\n[UNSAID behavioral continuity — narrator-only. Let these established private motives subtly affect what active NPCs choose, avoid, notice, hesitate over, or pursue:\n`;
+  const suffix = `\nPRIVATE-SAFETY RULE: Do not quote/expose these notes as narration, dialogue, or mind-reading. Other characters do not know them unless the visible story revealed them. Use only what matters naturally now. Never append an UNSAID thought marker because of this note alone.]\n`;
+  const roomForLines = Math.max(80, UNSAID_CONTINUITY_MAX_CHARS - prefix.length - suffix.length);
+  let body = lines.join("\n");
+  if (body.length > roomForLines) body = body.slice(0, Math.max(20, roomForLines - 1)).replace(/\s+$/, "") + "…";
+  return prefix + body + suffix;
 }
 
 function naturalCoreShiftEligible(mind, allowCoreShift) {
@@ -6290,15 +7379,30 @@ function buildCoreCheckInstruction(chosen, mind) {
   return `\n[Continue the visible story normally FIRST. Only after the visible prose, consider whether recent events have genuinely, permanently changed how ${chosen} sees themselves — not just a passing mood.${coreNote}${tensionNote}${scenarioNote}${twistBridgeNote} If yes, append at the very end (keep the 《 》 characters exactly as shown, they're required, not decorative — no asterisks or other markdown, the 《 》 pair is the only formatting needed) "《${chosen}, [one-word-emotion], core-shift: new lasting truth.》" (replace [one-word-emotion] with an actual word, not the literal placeholder) with 1–2 concise sentences inside the required 《 》 marker. If nothing that significant has happened, do not force a marker. Never return only the hidden marker; the visible story continuation comes first.]\n`;
 }
 
-function buildAndFitThoughtInstruction(chosen, active, baseText, allowCoreShift) {
+function buildAndFitThoughtInstruction(chosen, active, baseText, allowCoreShift, cfgOverride) {
   const mind = state.unsaid.minds[chosen];
+  const cfg = cfgOverride || UNSAID_DEFAULTS;
   const scenarioNote = compactMindScenarioGuard();
   const twistBridgeNote = Library.twistPressureForMind ? Library.twistPressureForMind(chosen) : "";
 
   const others = (active || []).filter(n => n !== chosen);
   const withHistory = others.filter(n => mind && mind.relations && mind.relations[n]);
   let target = null;
-  if (withHistory.length > 0 && mind && mind.relationOrder) {
+  // Prefer whoever is actually most recent in the live scene. Older builds
+  // could make a character privately react to an off-screen relationship
+  // simply because it was the last relation stored, even while another NPC
+  // had just spoken to them. Scene salience wins; relationship history then
+  // supplies continuity for that target if it exists.
+  const sceneTailLower = String(baseText || "").slice(-5000).toLowerCase();
+  let bestSceneIndex = -1;
+  others.forEach(other => {
+    const at = sceneTailLower.lastIndexOf(String(other || "").toLowerCase());
+    if (at > bestSceneIndex) {
+      bestSceneIndex = at;
+      target = at >= 0 ? other : target;
+    }
+  });
+  if (!target && withHistory.length > 0 && mind && mind.relationOrder) {
     for (let i = mind.relationOrder.length - 1; i >= 0; i--) {
       if (withHistory.includes(mind.relationOrder[i])) {
         target = mind.relationOrder[i];
@@ -6317,8 +7421,26 @@ function buildAndFitThoughtInstruction(chosen, active, baseText, allowCoreShift)
     : "";
   const wantNote = mind && mind.want ? ` Last known want: "${mind.want}" (can change if the scene moves them).` : "";
 
-  const varietyNote = mind && mind.lastThoughtText
-    ? ` Word this differently than last time — don't reuse: "${mind.lastThoughtText}"`
+  const recentThoughtAngles = mind
+    ? ((Array.isArray(mind.thoughtHistory) && mind.thoughtHistory.length)
+      ? mind.thoughtHistory.slice(-3)
+      : (mind.lastThoughtText ? [mind.lastThoughtText] : []))
+    : [];
+  const varietyNote = recentThoughtAngles.length
+    ? ` Do not merely repeat or paraphrase these recent private-thought angles: ${recentThoughtAngles.map(v => `"${String(v).replace(/\s+/g, " ").trim().slice(0, 180)}"`).join(" | ")}. Advance, complicate, contradict, reprioritize, or react to something genuinely new in the visible scene instead.`
+    : "";
+
+  const adaptiveDigest = (mind && cfg.adaptiveMindEnabled !== false)
+    ? adaptiveMindDigest(mind, target, 4)
+    : "";
+  const adaptiveNote = adaptiveDigest
+    ? ` Durable private memory already established: ${adaptiveDigest}. Preserve continuity unless the visible story gives a real reason to update it; do not treat private memory as something other characters know.`
+    : "";
+  const reflectionInterval = Math.max(2, Math.min(20, Number(cfg.adaptiveReflectionInterval) || UNSAID_DEFAULTS.adaptiveReflectionInterval));
+  const reflectionDue = !!mind && cfg.adaptiveMindEnabled !== false &&
+    ((Number(mind.revealCount) || 0) + 1) % reflectionInterval === 0;
+  const reflectionNote = reflectionDue
+    ? ` This is a deeper-reflection turn: in addition to the immediate reaction, let the thought naturally expose or update ONE durable inner thread such as a goal, plan, fear, guarded secret, belief, commitment, unresolved guilt, relationship expectation, or meaningful memory. It must be supported by the story or existing private memory — never invent unsupported biography or world facts just to fill a slot.`
     : "";
 
   let instruction;
@@ -6330,7 +7452,7 @@ function buildAndFitThoughtInstruction(chosen, active, baseText, allowCoreShift)
       : (mind && mind.relations && mind.relations[target]
         ? ` Feels ${mind.relations[target]} toward ${target} unless this scene shifts it.`
         : "");
-    instruction = `\n[Continue the visible story normally FIRST. Then, at the very end, append ${chosen}'s unspoken reaction to ${target} — 1–2 concise sentences inside the required 《 》 marker: how they really feel about ${target} right now, and what they secretly want from this moment. ${target} can't perceive it.${coreNote}${relationNote}${historyNote}${wantNote}${varietyNote} Replace [one-word-emotion] with an actual single word (e.g. wary, hopeful) — do not write the words "feeling" or "emotion" literally.${scenarioNote}${twistBridgeNote} Format (keep the 《 》 characters exactly as shown, they're required, not decorative — no asterisks or other markdown, the 《 》 pair is the only formatting needed): "《${chosen}, [one-word-emotion], about ${target}: thought.》" Never return only the hidden marker; visible story prose must come first.]\n`;
+    instruction = `\n[Continue the visible story normally FIRST. Then, at the very end, append ${chosen}'s unspoken reaction to ${target} — 1–2 concise sentences inside the required 《 》 marker: how they really feel about ${target} right now, and what they secretly want from this moment. ${target} can't perceive it.${coreNote}${relationNote}${historyNote}${wantNote}${varietyNote}${adaptiveNote}${reflectionNote} Replace [one-word-emotion] with an actual single word (e.g. wary, hopeful) — do not write the words "feeling" or "emotion" literally.${scenarioNote}${twistBridgeNote} Format (keep the 《 》 characters exactly as shown, they're required, not decorative — no asterisks or other markdown, the 《 》 pair is the only formatting needed): "《${chosen}, [one-word-emotion], about ${target}: thought.》" Never return only the hidden marker; visible story prose must come first.]\n`;
   } else if (mind && mind.core) {
     const atThreshold = allowCoreShift && typeof mind.tensionLevel === "number" &&
       mind.tensionLevel >= TENSION_THRESHOLD;
@@ -6343,7 +7465,7 @@ function buildAndFitThoughtInstruction(chosen, active, baseText, allowCoreShift)
         ? ` Their feelings have been unraveling for a long time now, unresolved — something this significant would happen regardless. If it's truly earned, you may format this instead as "《${chosen}, [one-word-emotion], core-shift: new lasting truth.》" to replace their old anchor.`
         : ` Their feelings have been genuinely shifting for a while now, not settling back — if this moment plays into that and something has truly changed how they see themselves, you may format this instead as "《${chosen}, [one-word-emotion], core-shift: new lasting truth.》" to replace their old anchor. Only do this if it's really earned.`)
       : "";
-    instruction = `\n[Continue the visible story normally FIRST. Then, at the very end, append ${chosen}'s private thought — 1–2 concise sentences inside the required 《 》 marker: how they really feel right now, and what they secretly want. Consistent with "${mind.core}" and their feeling of ${mind.feeling} unless this scene shifts it.${historyNote}${wantNote}${varietyNote}${shiftNote} Replace [one-word-emotion] with an actual single word (e.g. wary, hopeful) — do not write the words "feeling" or "emotion" literally.${scenarioNote}${twistBridgeNote} Format (keep the 《 》 characters exactly as shown, they're required, not decorative — no asterisks or other markdown, the 《 》 pair is the only formatting needed): "《${chosen}, [one-word-emotion]: thought.》" No one else perceives it. Never return only the hidden marker; visible story prose must come first.]\n`;
+    instruction = `\n[Continue the visible story normally FIRST. Then, at the very end, append ${chosen}'s private thought — 1–2 concise sentences inside the required 《 》 marker: how they really feel right now, and what they secretly want. Consistent with "${mind.core}" and their feeling of ${mind.feeling} unless this scene shifts it.${historyNote}${wantNote}${varietyNote}${shiftNote}${adaptiveNote}${reflectionNote} Replace [one-word-emotion] with an actual single word (e.g. wary, hopeful) — do not write the words "feeling" or "emotion" literally.${scenarioNote}${twistBridgeNote} Format (keep the 《 》 characters exactly as shown, they're required, not decorative — no asterisks or other markdown, the 《 》 pair is the only formatting needed): "《${chosen}, [one-word-emotion]: thought.》" No one else perceives it. Never return only the hidden marker; visible story prose must come first.]\n`;
   } else {
     instruction = `\n[Continue the visible story normally FIRST. Then, at the very end, append ${chosen}'s very first private thought — once revealed, it becomes a lasting psychological anchor about who they fundamentally are, not a fleeting reaction and not an excuse to invent unsupported biography. Base it on what the story has actually shown about them so far. Use 1–2 concise sentences inside the required 《 》 marker: what this deep truth is, and what they secretly want because of it. Replace [one-word-emotion] with an actual single word (e.g. wary, hopeful) — do not write the words "feeling" or "emotion" literally.${scenarioNote}${twistBridgeNote} Format (keep the 《 》 characters exactly as shown, they're required, not decorative — no asterisks or other markdown, the 《 》 pair is the only formatting needed): "《${chosen}, [one-word-emotion]: thought.》" No one else perceives it. Never return only the hidden marker; visible story prose must come first.]\n`;
   }
