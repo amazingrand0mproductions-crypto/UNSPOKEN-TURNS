@@ -2869,6 +2869,13 @@ var CODEX_GENERIC_SCENE_NOUNS = new Set([
   "sound","sounds","noise","noises","music","song","songs","silence","air","smell","scent","taste","feeling","feelings",
   "time","times","moment","moments","minute","minutes","hour","hours","day","days","week","weeks","month","months",
   "year","years","morning","afternoon","evening","night","today","tomorrow","yesterday",
+  "dawn","sunrise","noon","midday","dusk","sunset","midnight","weekend","weekday",
+  "monday","tuesday","wednesday","thursday","friday","saturday","sunday",
+  "january","february","march","april","may","june","july","august","september","october","november","december",
+  "spring","summer","autumn","fall","winter","season","seasons",
+  "north","south","east","west","northeast","northwest","southeast","southwest",
+  "upstairs","downstairs","indoors","outdoors","inside","outside","left","right","center","centre","front","back","side",
+  "beginning","start","ending","end","finish",
   "work","job","jobs","money","cash","home","family","friend","friends","people","person","someone","somebody",
   "problem","problems","question","questions","answer","answers","idea","ideas","plan","plans","choice","choices",
   "conversation","conversations","message","messages","text","texts","call","calls","story","stories","memory","memories",
@@ -2920,7 +2927,7 @@ function isGenericCodexCommonNounCandidate(name, source) {
   // Explicit identity language always wins. This keeps intentionally unusual
   // names valid: "I'm Coffee", "the dish called Moonfire Stew", "the
   // restaurant named The Golden Spoon", etc.
-  if (hasExplicitCodexNamingCue(cleanName, source) ||
+  if (hasStrongExplicitCodexNamingCue(cleanName, source) ||
       hasStrongCodexBusinessOrNamedContext(cleanName, source)) {
     return false;
   }
@@ -3045,7 +3052,7 @@ function codexStopKey(value) {
     .trim();
 }
 
-function hasExplicitCodexNamingCue(name, text) {
+function hasStrongExplicitCodexNamingCue(name, text) {
   const source = typeof text === "string" ? text : "";
   const cleanName = String(name || "").trim();
   if (!source || !cleanName) return false;
@@ -3085,15 +3092,35 @@ function hasExplicitCodexNamingCue(name, text) {
     "gun", "device", "artifact", "relic", "book", "document", "app", "network"
   ].join("|");
 
+  // These cues carry actual identity semantics. They are allowed to override
+  // the aggressive common-noun filter so unusual real names such as Coffee,
+  // Summer, Six, or a dish called "Dinner" can still exist deliberately.
   const cues = [
-    new RegExp(`\\b(?:I\\s*(?:am|'m|’m)|my\\s+name\\s+(?:is|'s|’s)|call\\s+me|people\\s+call\\s+me|they\\s+call\\s+me|I\\s+go\\s+by|this\\s+is|meet)\\s+${quote}${n}\\b`, "i"),
+    new RegExp(`\\b(?:I\\s*(?:am|'m|’m)|my\\s+name\\s+(?:is|'s|’s)|call\\s+me|people\\s+call\\s+me|they\\s+call\\s+me|I\\s+go\\s+by|meet)\\s+${quote}${n}\\b`, "i"),
     new RegExp(`\\b(?:introduces?|introduced)\\s+(?:himself|herself|themself|themselves|itself)\\s+as\\s+${quote}${n}\\b`, "i"),
     new RegExp(`\\b(?:${entityKind})\\s+(?:named|called|known\\s+as|dubbed|codenamed|designated)\\s+${quote}${n}\\b`, "i"),
     new RegExp(`\\b(?:named|called|known\\s+as|dubbed|codenamed|designated)\\s+${quote}${n}\\b`, "i"),
     new RegExp(`\\b(?:codename|code\\s+name|callsign|call\\s+sign|designation|nickname|alias)\\s*(?::|=|is\\s+)?\\s*${quote}${n}\\b`, "i"),
-    new RegExp(`\\b${n}\\b\\s+(?:is|was)\\s+(?:my|his|her|their|its|the)\\s+(?:name|nickname|codename|callsign|designation)\\b`, "i")
+    new RegExp(`\\b${n}\\b\\s+(?:is|was)\\s+(?:my|his|her|their|its|the)\\s+(?:name|nickname|codename|callsign|designation)\\b`, "i"),
+    // "This is Rose, my sister" is a genuine introduction; bare "This is
+    // Dinner" is only a weak deictic construction and must not override the
+    // common-noun filter.
+    new RegExp(`\\bthis\\s+is\\s+${quote}${n}\\s*[,—-]\\s*(?:my|our|his|her|their|the)\\s+(?:${personKind})\\b`, "i")
   ];
   return cues.some(re => re.test(source));
+}
+
+function hasExplicitCodexNamingCue(name, text) {
+  if (hasStrongExplicitCodexNamingCue(name, text)) return true;
+  const source = typeof text === "string" ? text : "";
+  const cleanName = String(name || "").trim();
+  if (!source || !cleanName) return false;
+
+  // Bare "this is X" remains useful weak evidence for normal proper names,
+  // but it is intentionally NOT strong enough to rescue generic nouns such
+  // as Dinner, Food, Water, Table, etc.
+  const n = escapeForRegex(cleanName);
+  return new RegExp(`\\bthis\\s+is\\s+["“”'‘’]?${n}\\b`, "i").test(source);
 }
 
 function codexLooksLikeSentenceStarterMorphology(name, source) {
@@ -3139,6 +3166,7 @@ function normalizeCodexCandidate(raw, source) {
   if (!name || name.length > 80 || !/[A-Za-z]/.test(name)) return null;
 
   const originalExplicit = hasExplicitCodexNamingCue(name, source);
+  const originalStrongExplicit = hasStrongExplicitCodexNamingCue(name, source);
   let words = name.split(/\s+/).filter(Boolean);
 
   // Sentence-openers and titles can be captured together with the real
@@ -3159,6 +3187,7 @@ function normalizeCodexCandidate(raw, source) {
 
   if (!name || !words.length) return null;
   const explicit = originalExplicit || hasExplicitCodexNamingCue(name, source);
+  const strongExplicit = originalStrongExplicit || hasStrongExplicitCodexNamingCue(name, source);
   const keys = words.map(codexStopKey).filter(Boolean);
 
   if (!keys.length) return null;
@@ -3166,11 +3195,11 @@ function normalizeCodexCandidate(raw, source) {
   // Reject ordinary common nouns before movement/dialogue heuristics get a
   // chance to reinterpret them as people. This is the main protection
   // against cards for Food, Dinner, Coffee, Table, etc.
-  if (!explicit && isGenericCodexCommonNounCandidate(name, source)) {
+  if (!strongExplicit && isGenericCodexCommonNounCandidate(name, source)) {
     return null;
   }
 
-  if (!explicit) {
+  if (!strongExplicit) {
     // If a single capitalized token is also used as an ordinary lowercase
     // noun in the same context, treat the lowercase usage as strong evidence
     // that the sentence-start capitalization is grammatical rather than a
@@ -3199,14 +3228,14 @@ function normalizeCodexCandidate(raw, source) {
   }
 
   if (keys.length === 1) {
-    if (name.length <= 1 && !explicit) return null;
-    if (/^(?:[ivxlcdm]+)$/i.test(name) && name.length <= 8 && !explicit) return null;
-    if (/^\d+(?:st|nd|rd|th)?$/i.test(name) && !explicit) return null;
+    if (name.length <= 1 && !strongExplicit) return null;
+    if (/^(?:[ivxlcdm]+)$/i.test(name) && name.length <= 8 && !strongExplicit) return null;
+    if (/^\d+(?:st|nd|rd|th)?$/i.test(name) && !strongExplicit) return null;
 
     // Short all-caps words are usually acronyms/headings. Explicit naming is
     // required, which still permits characters such as ARIA, VEX, Q, etc.
     if (name.length <= 5 && name === name.toUpperCase() &&
-        /[A-Z]{2,}/.test(name) && !explicit) {
+        /[A-Z]{2,}/.test(name) && !strongExplicit) {
       return null;
     }
   }
@@ -3248,7 +3277,7 @@ function isClearlyJunkCodexName(name) {
         state.unsaid.codex.trustedEntities[raw]) return false;
   } catch (e) {}
   const evidenceText = codexEvidenceTextFor(raw);
-  if (hasExplicitCodexNamingCue(raw, evidenceText)) return false;
+  if (hasStrongExplicitCodexNamingCue(raw, evidenceText)) return false;
 
   if (isGenericCodexCommonNounCandidate(raw, evidenceText)) return true;
 
@@ -3535,8 +3564,22 @@ function pushMessage(msg) {
 
 function nameAppears(name, text) {
   if (!name || !text) return false;
-  const n = escapeForRegex(String(name).trim());
-  return new RegExp(`(?:^|[^A-Za-z0-9])${n}(?=$|[^A-Za-z0-9])`, "i").test(String(text));
+  const raw = String(name).trim();
+  let pattern = "";
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (ch === "'" || ch === "\u2019" || ch === "\u2018") {
+      pattern += "['\\u2019\\u2018]";
+    } else if (ch === "-" || ch === "\u2010" || ch === "\u2011" || ch === "\u2013" || ch === "\u2014") {
+      pattern += "[-\\u2010\\u2011\\u2013\\u2014]";
+    } else if (/\s/.test(ch)) {
+      pattern += "\\s+";
+      while (i + 1 < raw.length && /\s/.test(raw[i + 1])) i++;
+    } else {
+      pattern += escapeForRegex(ch);
+    }
+  }
+  return new RegExp(`(?:^|[^A-Za-z0-9])${pattern}(?=$|[^A-Za-z0-9])`, "i").test(String(text));
 }
 
 function createOrFindCard(keys, initialEntry, type) {
@@ -3791,6 +3834,11 @@ function resetCodexTrackingState() {
   codex.appearanceTurns = {};
   codex.evidence = {};
   codex.lastMentionTurn = {};
+  codex.candidateScores = {};
+  codex.typeVotes = {};
+  codex.trustedEntities = {};
+  codex.lastConfidenceTurn = {};
+  codex.lastTypeVoteTurn = {};
   codex.cardUpdateEvidence = {};
   codex.cardUpdateLastSeenTurn = {};
   codex.pendingNames = [];
@@ -3972,7 +4020,13 @@ function readUnsaidConfig() {
       arr.findIndex(other => isSameCardEntity(other, name)) === index
     );
 
+  const excludedCastNames = excludedNames(cfg);
   cfg.cast = listedCast.filter(name => {
+    // Player-controlled characters belong to the player, not UNSAID's
+    // private-NPC scheduler. This includes multiplayer characterNames from
+    // the platform as well as the configured player name.
+    if (excludedCastNames.some(ex => isSameCardEntity(ex, name))) return false;
+
     const cardForName = findStoryCardForEntity(name);
     if (!cardForName) return true;
     // Repair stale cast entries when an older Codex build accidentally
@@ -4002,9 +4056,9 @@ function readUnsaidConfig() {
     // "Detective" or "Crewmate" working while rejecting a Character card
     // whose own fields clearly describe a village, vehicle, restaurant, etc.
     if (isOwnCard(c.title)) return;
-    if (!isCharacterLikeCard(c.title)) return;
+    if (!isCharacterLikeCard(c.title, c)) return;
     if (codexKindFromExistingCard(c, c.title) !== "character") return;
-    if (cfg.playerName && isSameCardEntity(c.title, cfg.playerName)) return;
+    if (excludedCastNames.some(ex => isSameCardEntity(c.title, ex))) return;
     if (cfg.cast.some(existing => isSameCardEntity(c.title, existing))) return;
     cfg.cast.push(c.title);
     knownLower.push(c.title.toLowerCase());
@@ -4251,13 +4305,16 @@ function strongCodexNonCharacterEvidence(name, text) {
 
   const locationExplicit = [
     new RegExp(`\\b${locationKinds}\\s+(?:of\\s+|called\\s+|named\\s+|known\\s+as\\s+)?["“”'‘’]?${n}\\b`, "i"),
-    new RegExp(`\\b${n}\\b\\s+(?:is|was)\\s+(?:a|an|the)\\s+(?:[a-z-]+\\s+){0,3}${locationKinds}\\b`, "i"),
+    new RegExp(`\\b${n}\\b\\s+(?:is|was|are|were)\\s+(?:a|an|the)\\s+(?:[a-z-]+\\s+){0,3}${locationKinds}\\b`, "i"),
     // Handles contractions such as "Thornhaven's a quiet place."
     new RegExp(`\\b${n}(?:'s|’s)\\s+(?:a|an|the)\\s+(?:[a-z-]+\\s+){0,3}${locationKinds}\\b`, "i")
   ];
   if (locationExplicit.some(re => re.test(source))) scores.location += 6;
   if (new RegExp(`\\b(?:in|inside|outside|into|through|near|around|toward|towards|from|within|across|beneath|above)\\s+(?:the\\s+)?${n}\\b`, "i").test(source)) {
     scores.location += 1;
+  }
+  if (new RegExp(`\\b${n}\\b\\s+(?:lies?|sits?|stands?|is\\s+located|is\\s+situated|can\\s+be\\s+found)\\s+(?:in|near|on|beside|within|outside|north|south|east|west)\\b`, "i").test(source)) {
+    scores.location += 3;
   }
 
   const itemExplicit = [
@@ -4271,12 +4328,15 @@ function strongCodexNonCharacterEvidence(name, text) {
 
   const factionExplicit = [
     new RegExp(`\\b${factionKinds}\\s+(?:called|named|known\\s+as)\\s+["“”'‘’]?${n}\\b`, "i"),
-    new RegExp(`\\b${n}\\b\\s+(?:is|was)\\s+(?:a|an|the)\\s+(?:[a-z-]+\\s+){0,2}${factionKinds}\\b`, "i"),
+    new RegExp(`\\b${n}\\b\\s+(?:is|was|are|were)\\s+(?:a|an|the)\\s+(?:[a-z-]+\\s+){0,2}${factionKinds}\\b`, "i"),
     new RegExp(`\\b${n}\\s+${factionKinds}\\b`, "i")
   ];
   if (factionExplicit.some(re => re.test(source))) scores.faction += 6;
   if (new RegExp(`\\b(?:works?|worked|employed|member|members|joined|joins|leads?|founded|owns?)\\s+(?:at|for|by|of)?\\s*(?:the\\s+)?${n}\\b`, "i").test(source)) {
     scores.faction += 1;
+  }
+  if (new RegExp(`\\b(?:members?|agents?|employees?|officers?|soldiers?|students?|staff)\\s+of\\s+(?:the\\s+)?${n}\\b|\\b${n}\\s+(?:members?|agents?|employees?|officers?|staff)\\b`, "i").test(source)) {
+    scores.faction += 2;
   }
 
   const order = ["location", "faction", "item"];
@@ -4585,7 +4645,10 @@ function trackMentions(text, observeIntroductions) {
 function pruneMentionCounts() {
   const counts = state.unsaid.codex.mentionCounts;
   Object.keys(counts).forEach(name => {
-    if (!!findStoryCardForEntity(name)) {
+    const existingMatches = typeof storyCardMatchesForEntity === "function"
+      ? storyCardMatchesForEntity(name)
+      : [];
+    if (existingMatches.length > 0 || !!findStoryCardForEntity(name)) {
       forgetMentionTracking(name);
       return;
     }
@@ -4706,7 +4769,7 @@ function isSameCardEntity(cardTitle, candidateName) {
   const normalizeWords = (value) => {
     const cleaned = String(value)
       .toLowerCase()
-      .replace(/[“”"'‘’.,:;!?()[\]{}]/g, " ")
+      .replace(/[“”"'‘’.,:;!?()[\]{}\-‐‑–—]/g, " ")
       .replace(/\s+/g, " ")
       .trim();
     return stripCourtesyTitle(cleaned.split(" ").filter(Boolean));
@@ -4734,23 +4797,22 @@ function isSameCardEntity(cardTitle, candidateName) {
 }
 
 var CARD_TYPE_DISPLAY = { character: "Character", location: "Location", item: "Item", faction: "Faction" };
-function findStoryCardForEntity(name) {
-  if (!name || typeof storyCards === "undefined" || !Array.isArray(storyCards)) return null;
+function storyCardMatchesForEntity(name) {
+  if (!name || typeof storyCards === "undefined" || !Array.isArray(storyCards)) return [];
 
   const clean = (value) => String(value || "")
     .toLowerCase()
-    .replace(/[“”"'‘’.,:;!?()[\]{}]/g, " ")
+    .replace(/[“”"'‘’.,:;!?()[\]{}\-‐‑–—]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 
   const exact = storyCards.filter(card =>
     card && card.title && !isOwnCard(card.title) && clean(card.title) === clean(name)
   );
-  if (exact.length === 1) return exact[0];
-  if (exact.length > 1) return exact[0];
+  if (exact.length > 0) return exact;
 
   const wantedWordCount = clean(name).split(" ").filter(Boolean).length;
-  const fuzzy = storyCards.filter(card => {
+  return storyCards.filter(card => {
     if (!card || !card.title || !isSameCardEntity(card.title, name)) return false;
     // Direction matters for lookup. "Harlan" may intentionally refer to an
     // existing "Harlan Voss" card, but a longer new entity such as "Rose
@@ -4758,7 +4820,19 @@ function findStoryCardForEntity(name) {
     const cardWordCount = clean(card.title).split(" ").filter(Boolean).length;
     return cardWordCount >= wantedWordCount;
   });
-  return fuzzy.length === 1 ? fuzzy[0] : null;
+}
+
+function findStoryCardForEntity(name) {
+  const matches = storyCardMatchesForEntity(name);
+  if (matches.length === 1) return matches[0];
+  if (matches.length > 1) {
+    try {
+      if (typeof Library !== "undefined" && Library.safeLog) {
+        Library.safeLog(`[UNSPOKEN TURNS] Ambiguous Story Card match for "${name}" (${matches.length} cards) — automatic writes skipped until the ambiguity is resolved.`);
+      }
+    } catch (e) {}
+  }
+  return null;
 }
 
 function platformType(kind) {
@@ -4854,22 +4928,61 @@ function codexKindFromExistingCard(card, name) {
   return inferred || "faction";
 }
 
+
+function codexManagedCardKey(name, card) {
+  if (!state.unsaid || !state.unsaid.codex) return String((card && card.title) || name || "").trim();
+  const codex = state.unsaid.codex;
+  const preferred = String((card && card.title) || name || "").trim();
+  if (!preferred) return preferred;
+
+  const stores = [
+    codex.cardMeta,
+    codex.cardUpdateEvidence,
+    codex.cardUpdateLastSeenTurn
+  ].filter(store => store && typeof store === "object");
+  const keys = new Set();
+  stores.forEach(store => Object.keys(store).forEach(k => keys.add(k)));
+  const existing = [...keys].find(k => k.toLowerCase() === preferred.toLowerCase());
+  if (!existing || existing === preferred) return preferred;
+
+  // Migrate case-only key drift to the live Story Card title. Older builds
+  // could store metadata under whichever capitalization happened to be seen
+  // first, while later evidence used card.title, splitting one card's state
+  // across two keys.
+  stores.forEach(store => {
+    if (!Object.prototype.hasOwnProperty.call(store, existing)) return;
+    if (!Object.prototype.hasOwnProperty.call(store, preferred)) {
+      store[preferred] = store[existing];
+    } else if (store === codex.cardUpdateEvidence &&
+               Array.isArray(store[preferred]) && Array.isArray(store[existing])) {
+      const merged = store[preferred].concat(store[existing]);
+      const seen = new Set();
+      store[preferred] = merged.filter(item => {
+        const key = item && (item.normalized || item.text);
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      }).slice(-CODEX_CARD_UPDATE_EVIDENCE_LIMIT);
+    }
+    delete store[existing];
+  });
+  return preferred;
+}
+
 function ensureCodexCardMeta(name, card, type) {
   if (!state.unsaid || !state.unsaid.codex || !name || !card) return null;
   const codex = state.unsaid.codex;
   if (!codex.cardMeta || typeof codex.cardMeta !== "object") codex.cardMeta = {};
+  if (!codex.cardUpdateEvidence || typeof codex.cardUpdateEvidence !== "object") codex.cardUpdateEvidence = {};
+  if (!codex.cardUpdateLastSeenTurn || typeof codex.cardUpdateLastSeenTurn !== "object") codex.cardUpdateLastSeenTurn = {};
 
-  let key = name;
-  if (!codex.cardMeta[key]) {
-    const exactExisting = Object.keys(codex.cardMeta).find(k => k.toLowerCase() === String(name).toLowerCase());
-    if (exactExisting) key = exactExisting;
-  }
+  const key = codexManagedCardKey(name, card);
 
   if (!codex.cardMeta[key]) {
     // Only adopt an old card into automatic refresh tracking when the Codex
     // log says this script created it. Hand-authored Story Cards are never
     // silently enrolled into overwrite behavior.
-    if (!codexLogHasEntity(name)) return null;
+    if (!codexLogHasEntity(name) && !codexLogHasEntity(card.title)) return null;
     codex.cardMeta[key] = {
       type: type || codexKindFromExistingCard(card, name),
       lastGeneratedEntry: String(card.entry || ""),
@@ -4877,6 +4990,8 @@ function ensureCodexCardMeta(name, card, type) {
       lastGeneratedTurn: state.unsaid.turn,
       lastRefreshTurn: state.unsaid.turn,
       updateCount: 0,
+      refreshFailures: 0,
+      lastRefreshAttemptTurn: -999999,
       manualEditProtected: false,
       adoptedBaseline: true
     };
@@ -4889,6 +5004,8 @@ function ensureCodexCardMeta(name, card, type) {
   if (typeof meta.lastGeneratedTurn !== "number") meta.lastGeneratedTurn = state.unsaid.turn;
   if (typeof meta.lastRefreshTurn !== "number") meta.lastRefreshTurn = meta.lastGeneratedTurn;
   if (typeof meta.updateCount !== "number") meta.updateCount = 0;
+  if (typeof meta.refreshFailures !== "number" || meta.refreshFailures < 0) meta.refreshFailures = 0;
+  if (typeof meta.lastRefreshAttemptTurn !== "number") meta.lastRefreshAttemptTurn = -999999;
   if (typeof meta.manualEditProtected !== "boolean") meta.manualEditProtected = false;
   return meta;
 }
@@ -4919,22 +5036,34 @@ function codexCardHasManualEdit(name, card, cfg) {
 
 function codexRefreshEvidenceWeight(text, type) {
   const source = String(text || "");
+  const kind = String(type || "").toLowerCase();
   let weight = 1;
 
-  // General state-changing language. This list deliberately favors verbs
-  // that imply new canon rather than ordinary movement/dialogue.
-  if (/\b(?:now|no longer|becomes?|became|changes?|changed|reveals?|revealed|discovers?|discovered|learns?|learned|admits?|admitted|confesses?|confessed|remembers?|remembered|forgets?|forgot|joins?|joined|leaves?|left|returns?|returned|arrives?|arrived|departs?|departed|moves?|moved|renamed|opens?|opened|closes?|closed|destroyed|damaged|rebuilt|restored|lost|loses?|gains?|gained|acquires?|acquired|inherits?|inherited|promoted|demoted|betrays?|betrayed|allies?|allied|breaks?\s+up|married|engaged|pregnant|injured|wounded|scarred|healed|dies?|died|killed|missing|captured|freed|rescued|arrested|released|exiled|crowned|elected|appointed|fired|hired|quits?|retired)\b/i.test(source)) {
+  // Strong changes that alter durable canon for almost any entity. Routine
+  // movement ("arrives", "returns", "opens the door") is intentionally not
+  // here; older weighting treated those as meaningful updates and made busy
+  // characters refresh far too often.
+  if (/\b(?:no longer|turns? out|actually|formerly|becomes?|became|changes?|changed|renamed|destroyed|rebuilt|restored|lost|loses?|gains?|gained|acquires?|acquired|inherits?|inherited|promoted|demoted|betrays?|betrayed|allies?|allied|breaks?\s+up|married|divorced|engaged|pregnant|injured|wounded|scarred|healed|dies?|died|killed|missing|captured|freed|rescued|arrested|released|exiled|crowned|elected|appointed|fired|hired|quits?|retired|disbanded|dissolved|merged|split)\b/i.test(source)) {
     weight += 2;
   }
 
-  if (type === "character" && /\b(?:feels?|wants?|fears?|trusts?|distrusts?|loves?|hates?|resents?|forgives?|relationship|friend|ally|enemy|partner|sibling|parent|child|mentor|rival)\b/i.test(source)) {
+  // Knowledge/revelation changes are durable only when the sentence signals
+  // an actual discovery/admission rather than ordinary dialogue.
+  if (/\b(?:reveals?|revealed|discovers?|discovered|learns?|learned|admits?|admitted|confesses?|confessed|remembers?|remembered|forgets?|forgot|identity|true name|real name|secret is|was actually)\b/i.test(source)) {
     weight += 1;
-  } else if (type === "location" && /\b(?:population|owner|controlled|occupied|abandoned|ruined|rebuilt|district|landmark|opened|closed|burned|flooded|siege|battle|renovated)\b/i.test(source)) {
-    weight += 1;
-  } else if (type === "item" && /\b(?:broken|repaired|upgraded|enchanted|activated|deactivated|stolen|recovered|owner|belongs|property|function|ability|power|damaged)\b/i.test(source)) {
-    weight += 1;
-  } else if (type === "faction" && /\b(?:leader|leadership|member|members|alliance|enemy|war|merger|split|revolt|coup|founded|dissolved|recruits?|expels?|promotes?|policy|goal)\b/i.test(source)) {
-    weight += 1;
+  }
+
+  if (kind === "character") {
+    if (/\b(?:joins?|joined|leaves?|left)\s+(?:the\s+)?(?:team|group|guild|order|crew|company|agency|faction|party|school|unit|family)\b/i.test(source)) weight += 2;
+    if (/\b(?:relationship|friend|ally|enemy|partner|spouse|husband|wife|sibling|parent|child|mentor|rival|boss|employee|leader|member)\b/i.test(source)) weight += 1;
+    if (/\b(?:trusts?|distrusts?|loves?|hates?|resents?|forgives?)\b/i.test(source)) weight += 1;
+  } else if (kind === "location") {
+    if (/\b(?:population|owner|controlled|occupied|abandoned|ruined|rebuilt|district|landmark|burned|flooded|siege|battle|renovated|evacuated|quarantined|annexed|liberated|opened|closed)\b/i.test(source)) weight += 1;
+    if (/\b(?:opens?|opened|closes?|closed)\s+(?:to|for)\s+(?:the\s+)?public\b/i.test(source)) weight += 1;
+  } else if (kind === "item") {
+    if (/\b(?:broken|repaired|upgraded|enchanted|activated|deactivated|stolen|recovered|owner|belongs|property|function|ability|power|damaged|destroyed|transformed|unlocked|decoded)\b/i.test(source)) weight += 1;
+  } else if (kind === "faction") {
+    if (/\b(?:leader|leadership|member|members|alliance|enemy|war|merger|split|revolt|coup|founded|dissolved|recruits?|expels?|promotes?|policy|goal|renamed|reorganized|reorganised|bankrupt|acquired)\b/i.test(source)) weight += 1;
   }
 
   return Math.min(5, weight);
@@ -4945,9 +5074,10 @@ function recordCodexCardUpdateEvidence(name, card, snippet, actionEpoch, forcedW
   const codex = state.unsaid.codex;
   const meta = ensureCodexCardMeta(name, card);
   if (!meta) return false;
+  const key = codexManagedCardKey(name, card);
 
-  if (!codex.cardUpdateEvidence[name]) codex.cardUpdateEvidence[name] = [];
-  const list = codex.cardUpdateEvidence[name];
+  if (!codex.cardUpdateEvidence[key]) codex.cardUpdateEvidence[key] = [];
+  const list = codex.cardUpdateEvidence[key];
   const clean = String(snippet).replace(/\s+/g, " ").trim().slice(0, CODEX_CARD_UPDATE_SNIPPET_LENGTH);
   if (!clean) return false;
 
@@ -4960,7 +5090,7 @@ function recordCodexCardUpdateEvidence(name, card, snippet, actionEpoch, forcedW
   // evidence for its next refresh. Keep story-turn age separate from the
   // platform actionCount used only for duplicate-call protection.
   if (typeof meta.lastRefreshTurn === "number" && storyTurn <= meta.lastRefreshTurn) return false;
-  if (codex.cardUpdateLastSeenTurn[name] === epoch && list.some(item => item && item.epoch === epoch)) return false;
+  if (codex.cardUpdateLastSeenTurn[key] === epoch && list.some(item => item && item.epoch === epoch)) return false;
 
   list.push({
     turn: storyTurn,
@@ -4968,21 +5098,21 @@ function recordCodexCardUpdateEvidence(name, card, snippet, actionEpoch, forcedW
     text: clean,
     normalized: normalized,
     weight: Math.max(
-      codexRefreshEvidenceWeight(clean, meta.type || codexKindFromExistingCard(card, name)),
+      codexRefreshEvidenceWeight(clean, meta.type || codexKindFromExistingCard(card, key)),
       typeof forcedWeight === "number" ? forcedWeight : 0
     )
   });
   if (list.length > CODEX_CARD_UPDATE_EVIDENCE_LIMIT) {
     list.splice(0, list.length - CODEX_CARD_UPDATE_EVIDENCE_LIMIT);
   }
-  codex.cardUpdateLastSeenTurn[name] = epoch;
+  codex.cardUpdateLastSeenTurn[key] = epoch;
   return true;
 }
 
 function codexCardTitleContainedIn(longerTitle, shorterTitle) {
   const normalize = value => String(value || "")
     .toLowerCase()
-    .replace(/[“”"'‘’.,:;!?()[\]{}]/g, " ")
+    .replace(/[“”"'‘’.,:;!?()[\]{}\-‐‑–—]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
   const longer = normalize(longerTitle);
@@ -5034,9 +5164,13 @@ function trackCodexCardUpdateEvidence(source, actionEpoch) {
 }
 
 function codexUpdateEvidenceTextFor(name, compact) {
+  const card = findStoryCardForEntity(name);
+  const key = (typeof codexManagedCardKey === "function")
+    ? codexManagedCardKey(name, card)
+    : name;
   const list = (state.unsaid && state.unsaid.codex &&
     state.unsaid.codex.cardUpdateEvidence &&
-    state.unsaid.codex.cardUpdateEvidence[name]) || [];
+    state.unsaid.codex.cardUpdateEvidence[key]) || [];
   const take = compact ? 2 : 5;
   const clip = compact ? 140 : 220;
   return list.slice(-take)
@@ -5054,23 +5188,37 @@ function pickCodexRefreshCandidate(cfg) {
   const minEvidence = Math.max(1, cfg.codexRefreshMinEvidence || 3);
   const candidates = [];
 
-  Object.keys(codex.cardMeta || {}).forEach(name => {
-    const card = findStoryCardForEntity(name);
+  Object.keys(codex.cardMeta || {}).forEach(storedName => {
+    const card = findStoryCardForEntity(storedName);
     if (!card || isOwnCard(card.title)) {
-      delete codex.cardMeta[name];
-      delete codex.cardUpdateEvidence[name];
-      delete codex.cardUpdateLastSeenTurn[name];
+      delete codex.cardMeta[storedName];
+      delete codex.cardUpdateEvidence[storedName];
+      delete codex.cardUpdateLastSeenTurn[storedName];
       return;
     }
 
-    const meta = ensureCodexCardMeta(name, card);
+    const key = codexManagedCardKey(storedName, card);
+    const meta = ensureCodexCardMeta(key, card);
     if (!meta) return;
-    if (codexCardHasManualEdit(name, card, cfg)) return;
+    if (codexCardHasManualEdit(key, card, cfg)) return;
 
     const since = state.unsaid.turn - (meta.lastRefreshTurn || meta.lastGeneratedTurn || 0);
     if (since < interval) return;
 
-    const evidence = (codex.cardUpdateEvidence && codex.cardUpdateEvidence[name]) || [];
+    // A malformed/ignored refresh should not hammer the model every Codex
+    // cooldown forever. Back off per-card, while still keeping accumulated
+    // evidence so the card can recover automatically later.
+    const failures = Math.max(0, meta.refreshFailures || 0);
+    if (failures > 0) {
+      const retryDelay = Math.min(
+        interval,
+        Math.max(cfg.codexCooldown || 1, Math.pow(2, Math.min(5, failures)))
+      );
+      const sinceAttempt = state.unsaid.turn - (meta.lastRefreshAttemptTurn || -999999);
+      if (sinceAttempt < retryDelay) return;
+    }
+
+    const evidence = (codex.cardUpdateEvidence && codex.cardUpdateEvidence[key]) || [];
     const meaningful = evidence.filter(item => item && (item.weight || 1) >= 2).length;
     const totalWeight = evidence.reduce((sum, item) => sum + ((item && item.weight) || 1), 0);
 
@@ -5081,18 +5229,20 @@ function pickCodexRefreshCandidate(cfg) {
     if (meaningful === 0 && evidence.length < Math.min(CODEX_CARD_UPDATE_EVIDENCE_LIMIT, minEvidence * 2)) return;
 
     candidates.push({
-      name,
+      name: key,
       since,
       meaningful,
       totalWeight,
-      type: meta.type || codexKindFromExistingCard(card, name)
+      failures,
+      type: meta.type || codexKindFromExistingCard(card, key)
     });
   });
 
   candidates.sort((a, b) =>
     (b.meaningful - a.meaningful) ||
     (b.totalWeight - a.totalWeight) ||
-    (b.since - a.since)
+    (b.since - a.since) ||
+    (a.failures - b.failures)
   );
   return candidates.length ? candidates[0] : null;
 }
@@ -5101,8 +5251,13 @@ function markCodexCardGenerated(name, type, entry, refreshed) {
   if (!state.unsaid || !state.unsaid.codex || !name) return;
   const codex = state.unsaid.codex;
   if (!codex.cardMeta || typeof codex.cardMeta !== "object") codex.cardMeta = {};
-  const previous = codex.cardMeta[name] || {};
-  codex.cardMeta[name] = {
+  if (!codex.cardUpdateEvidence || typeof codex.cardUpdateEvidence !== "object") codex.cardUpdateEvidence = {};
+  if (!codex.cardUpdateLastSeenTurn || typeof codex.cardUpdateLastSeenTurn !== "object") codex.cardUpdateLastSeenTurn = {};
+
+  const card = findStoryCardForEntity(name);
+  const key = codexManagedCardKey(name, card);
+  const previous = codex.cardMeta[key] || {};
+  codex.cardMeta[key] = {
     type: type || previous.type || "character",
     lastGeneratedEntry: String(entry || ""),
     lastGeneratedCardType: platformType(type || previous.type || "character"),
@@ -5111,11 +5266,13 @@ function markCodexCardGenerated(name, type, entry, refreshed) {
       : state.unsaid.turn,
     lastRefreshTurn: state.unsaid.turn,
     updateCount: (previous.updateCount || 0) + (refreshed ? 1 : 0),
+    refreshFailures: 0,
+    lastRefreshAttemptTurn: state.unsaid.turn,
     manualEditProtected: false,
     adoptedBaseline: false
   };
-  codex.cardUpdateEvidence[name] = [];
-  codex.cardUpdateLastSeenTurn[name] = state.unsaid.turn;
+  codex.cardUpdateEvidence[key] = [];
+  codex.cardUpdateLastSeenTurn[key] = state.unsaid.turn;
 
   // Keep long-running adventures bounded. Old managed cards can be safely
   // re-adopted later from the Codex log if they become relevant again.
@@ -5171,6 +5328,7 @@ function findCodexCandidates(threshold, excludeNames, maxAttempts, maxCount) {
     }
 
     if (exclude.some(ex => isSameCardEntity(ex, name))) continue;
+    if (typeof storyCardMatchesForEntity === "function" && storyCardMatchesForEntity(name).length > 0) continue;
     if (!!findStoryCardForEntity(name)) continue;
 
     // Character-shaped names are NOT auto-carded from hearsay/backstory
@@ -5366,7 +5524,10 @@ function buildStatusReport(cfg) {
   const likelyCharacters = codex.likelyCharacters || {};
   const introducedTurn = codex.introducedTurn || {};
   const observedTypes = codex.observedTypes || {};
-  const alreadyCarded = tracked.filter(n => !!findStoryCardForEntity(n));
+  const alreadyCarded = tracked.filter(n =>
+    (typeof storyCardMatchesForEntity === "function" && storyCardMatchesForEntity(n).length > 0) ||
+    !!findStoryCardForEntity(n)
+  );
   const minObserve = Math.max(0, cfg.codexCharacterMinTurns || 0);
   const minAppearances = Math.max(1, cfg.codexCharacterMinAppearances || 1);
   const deadline = Math.max(minObserve, cfg.codexCharacterDeadline || 5);
@@ -5448,8 +5609,9 @@ function buildStatusReport(cfg) {
     const meta = card ? ensureCodexCardMeta(name, card) : null;
     if (!meta) return;
     if (card && codexCardHasManualEdit(name, card, cfg)) protectedCards.push(name);
-    const ev = (codex.cardUpdateEvidence && codex.cardUpdateEvidence[name]) || [];
-    if (ev.length > 0) evidenceWaiting.push(`${name} (${ev.length})`);
+    const key = codexManagedCardKey(name, card);
+    const ev = (codex.cardUpdateEvidence && codex.cardUpdateEvidence[key]) || [];
+    if (ev.length > 0) evidenceWaiting.push(`${key} (${ev.length})`);
   });
   lines.push(`  periodic card refresh: ${cfg.codexAutoRefresh ? "enabled" : "off"}; ${managedCards.length} managed card(s); interval ${cfg.codexRefreshInterval} turn(s); evidence gate ${cfg.codexRefreshMinEvidence}`);
   if (evidenceWaiting.length > 0) {
@@ -5479,7 +5641,7 @@ function buildStatusReport(cfg) {
       } else if (matches.length === 1) {
         lines.push(`  ${name} → "${matches[0].title}" (type: "${matches[0].type || ""}")`);
       } else {
-        lines.push(`  ${name} → ${matches.length} matching cards; using "${matches[0].title}" first`);
+        lines.push(`  ${name} → ${matches.length} matching cards; ambiguous, so automatic writes are paused for this name`);
       }
     });
   }
@@ -5525,8 +5687,12 @@ function logCodexCard(name, type, mentionCount, refreshed) {
   const existingIdx = entries.findIndex(l => l.startsWith(`${name} —`));
 
   if (refreshed) {
+    const logCardTarget = findStoryCardForEntity(name);
+    const metaKey = (typeof codexManagedCardKey === "function")
+      ? codexManagedCardKey(name, logCardTarget)
+      : name;
     const meta = state.unsaid && state.unsaid.codex && state.unsaid.codex.cardMeta
-      ? state.unsaid.codex.cardMeta[name]
+      ? state.unsaid.codex.cardMeta[metaKey]
       : null;
     const count = meta && typeof meta.updateCount === "number" ? meta.updateCount : 1;
     const suffix = `; refreshed ${count}x, last turn ${state.unsaid ? state.unsaid.turn : "?"}`;
@@ -5544,6 +5710,67 @@ function logCodexCard(name, type, mentionCount, refreshed) {
 
   if (entries.length > 500) entries.splice(0, entries.length - 500);
   card.description = entries.join("\n");
+}
+
+
+function resolveUnsaidRelationTarget(owner, rawTarget, cfg) {
+  const raw = String(rawTarget || "")
+    .replace(/^["“”'‘’\s]+|["“”'‘’\s.,:;!?]+$/g, "")
+    .replace(/^(?:about|toward|towards)\s+/i, "")
+    .replace(/^(?:the|a|an)\s+/i, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 80);
+  if (!raw || !/[A-Za-z]/.test(raw)) return null;
+  if (owner && isSameCardEntity(owner, raw)) return null;
+
+  const blocked = excludedNames(cfg || { playerName: "" });
+  if (blocked.some(name => isSameCardEntity(name, raw))) return null;
+
+  const candidates = [];
+  const add = value => {
+    const clean = String(value || "").trim();
+    if (!clean || (owner && isSameCardEntity(owner, clean))) return;
+    if (!candidates.some(existing => existing.toLowerCase() === clean.toLowerCase())) {
+      candidates.push(clean);
+    }
+  };
+
+  if (cfg && Array.isArray(cfg.cast)) cfg.cast.forEach(add);
+  try {
+    Object.keys((state.unsaid && state.unsaid.minds) || {}).forEach(add);
+    const codex = state.unsaid && state.unsaid.codex;
+    if (codex && codex.likelyCharacters) {
+      Object.keys(codex.likelyCharacters).filter(name => codex.likelyCharacters[name]).forEach(add);
+    }
+  } catch (e) {}
+
+  try {
+    if (typeof storyCards !== "undefined" && Array.isArray(storyCards)) {
+      storyCards.forEach(card => {
+        if (!card || !card.title || isOwnCard(card.title)) return;
+        if (isCharacterLikeCard(card.title, card) && codexKindFromExistingCard(card, card.title) === "character") {
+          add(card.title);
+        }
+      });
+    }
+  } catch (e) {}
+
+  const exact = candidates.filter(name =>
+    String(name).toLowerCase() === raw.toLowerCase()
+  );
+  if (exact.length === 1) return exact[0];
+
+  const fuzzy = candidates.filter(name => isSameCardEntity(name, raw));
+  if (fuzzy.length !== 1) return null;
+
+  const resolved = fuzzy[0];
+  const card = findStoryCardForEntity(resolved);
+  if (card && (!isCharacterLikeCard(resolved) || codexKindFromExistingCard(card, resolved) !== "character")) {
+    return null;
+  }
+  if (blocked.some(name => isSameCardEntity(name, resolved))) return null;
+  return resolved;
 }
 
 function recordRelation(name, other, feeling) {
@@ -5595,17 +5822,29 @@ function syncMindToCard(name, allowCoreShift, useJson) {
         relations[other] = { current: mind.relations[other], history: hist || [mind.relations[other]] };
       });
     }
+    const stableForTurns = typeof mind.coreSetTurn === "number"
+      ? Math.max(0, state.unsaid.turn - mind.coreSetTurn)
+      : null;
     const jsonBody = {
       core: mind.core || null,
-      coreStableSince: stabilityNote ? state.unsaid.turn - mind.coreSetTurn : null,
+      // coreStableForTurns is the correctly named field. Keep the old
+      // coreStableSince alias for backward compatibility with notes written
+      // by earlier builds.
+      coreStableForTurns: stableForTurns,
+      coreStableSince: stableForTurns,
+      coreHistory: Array.isArray(mind.coreHistory) ? mind.coreHistory.slice(-2) : [],
       formerlyBelieved: mind.coreHistory && mind.coreHistory.length > 0 ? mind.coreHistory[mind.coreHistory.length - 1] : null,
       tension: tensionNote,
+      tensionLevel: typeof mind.tensionLevel === "number" ? mind.tensionLevel : 0,
       feeling: mind.feeling || null,
       feelingHistory: mind.feelingHistory || [],
       lastThought: mind.lastThoughtText || null,
       want: mind.want || null,
       relations,
       revealCount: mind.revealCount || 0,
+      lastRevealAgo: typeof mind.lastTurn === "number"
+        ? Math.max(0, state.unsaid.turn - mind.lastTurn)
+        : null,
       recentTwistImpacts: Array.isArray(mind.recentTwistImpacts) ? mind.recentTwistImpacts.slice(-4) : []
     };
     const base = (card.description || "").split(MIND_NOTES_MARKER)[0].replace(/\s+$/, "");
@@ -5707,38 +5946,69 @@ function loadMindFromCard(card) {
       const mind = createMind();
       if (typeof parsed.core === "string") mind.core = parsed.core;
       if (typeof parsed.feeling === "string") mind.feeling = parsed.feeling;
-      if (Array.isArray(parsed.feelingHistory)) mind.feelingHistory = parsed.feelingHistory.filter(f => typeof f === "string").slice(-FEELING_HISTORY_LIMIT);
+      if (Array.isArray(parsed.feelingHistory)) {
+        mind.feelingHistory = parsed.feelingHistory
+          .filter(f => typeof f === "string" && f.trim())
+          .slice(-FEELING_HISTORY_LIMIT);
+      }
       if (typeof parsed.lastThought === "string") mind.lastThoughtText = parsed.lastThought;
       if (typeof parsed.want === "string") mind.want = parsed.want;
-      if (typeof parsed.revealCount === "number" && parsed.revealCount >= 0) mind.revealCount = parsed.revealCount;
+      if (typeof parsed.revealCount === "number" && parsed.revealCount >= 0) mind.revealCount = Math.floor(parsed.revealCount);
+      if (typeof parsed.lastRevealAgo === "number" && isFinite(parsed.lastRevealAgo) && parsed.lastRevealAgo >= 0) {
+        mind.lastTurn = state.unsaid.turn - parsed.lastRevealAgo;
+      }
+      if (typeof parsed.tensionLevel === "number" && isFinite(parsed.tensionLevel)) {
+        mind.tensionLevel = Math.max(0, Math.min(TENSION_THRESHOLD * DRASTIC_TENSION_MULTIPLIER, parsed.tensionLevel));
+      }
       if (Array.isArray(parsed.recentTwistImpacts)) {
-        mind.recentTwistImpacts = parsed.recentTwistImpacts.filter(x => x && typeof x === "object").slice(-4);
+        mind.recentTwistImpacts = parsed.recentTwistImpacts
+          .filter(x => x && typeof x === "object")
+          .slice(-4);
       }
-      // Both of these are written (coreStableSince, formerlyBelieved) but
-      // were never read back on reload, in either format — coreStableSince
-      // actually stores an *elapsed turn count* (state.unsaid.turn minus
-      // the real coreSetTurn at write time), so state.unsaid.turn minus
-      // that count reconstructs a coreSetTurn that's at least approximately
-      // right, rather than the reload always restarting the stability
-      // clock from zero as if the belief had just now been established.
-      if (typeof parsed.coreStableSince === "number" && parsed.coreStableSince >= 0) {
-        mind.coreSetTurn = state.unsaid.turn - parsed.coreStableSince;
+
+      // New notes use the correctly named coreStableForTurns field. Older
+      // notes wrote the same elapsed-turn value under coreStableSince.
+      const stableFor = (typeof parsed.coreStableForTurns === "number")
+        ? parsed.coreStableForTurns
+        : parsed.coreStableSince;
+      if (typeof stableFor === "number" && stableFor >= 0) {
+        mind.coreSetTurn = state.unsaid.turn - stableFor;
       }
-      if (typeof parsed.formerlyBelieved === "string" && parsed.formerlyBelieved) {
+
+      if (Array.isArray(parsed.coreHistory)) {
+        mind.coreHistory = parsed.coreHistory
+          .filter(v => typeof v === "string" && v.trim())
+          .slice(-2);
+      } else if (typeof parsed.formerlyBelieved === "string" && parsed.formerlyBelieved) {
         mind.coreHistory = [parsed.formerlyBelieved];
       }
+
       if (parsed.relations && typeof parsed.relations === "object") {
-        Object.keys(parsed.relations).forEach(other => {
+        Object.keys(parsed.relations).slice(0, MAX_RELATIONS_PER_CHARACTER * 2).forEach(other => {
           const r = parsed.relations[other];
           const current = r && typeof r === "object" ? r.current : r;
-          if (typeof current === "string") {
-            mind.relations[other] = current;
-            mind.relationOrder.push(other);
-            mind.relationHistory[other] = (r && Array.isArray(r.history) && r.history.length > 0) ? r.history : [current];
-          }
+          if (typeof current !== "string" || !current.trim()) return;
+          if (mind.relationOrder.length >= MAX_RELATIONS_PER_CHARACTER) return;
+
+          mind.relations[other] = current.trim();
+          mind.relationOrder.push(other);
+          const history = (r && Array.isArray(r.history) && r.history.length > 0)
+            ? r.history.filter(v => typeof v === "string" && v.trim()).slice(-RELATION_HISTORY_LIMIT)
+            : [current.trim()];
+          mind.relationHistory[other] = history.length ? history : [current.trim()];
         });
       }
-      return mind.core || mind.feeling || mind.relationOrder.length > 0 ? mind : null;
+
+      const hasMeaningfulState =
+        !!mind.core ||
+        !!mind.feeling ||
+        !!mind.want ||
+        !!mind.lastThoughtText ||
+        (mind.revealCount || 0) > 0 ||
+        (mind.coreHistory && mind.coreHistory.length > 0) ||
+        mind.relationOrder.length > 0 ||
+        (mind.recentTwistImpacts && mind.recentTwistImpacts.length > 0);
+      return hasMeaningfulState ? mind : null;
     }
   } catch (e) {}
 
@@ -6029,9 +6299,9 @@ function syncFrontMemoryHint(subtleHints) {
 // for anything explicitly typed otherwise (Location, Business, Vehicle...),
 // so a resolved twist about a business or a stray "/peek <location>" can't
 // force a private thought onto something that was never a person.
-function isCharacterLikeCard(name) {
+function isCharacterLikeCard(name, knownCard) {
   if (typeof storyCards === "undefined" || !storyCards) return true;
-  const existingCard = findStoryCardForEntity(name);
+  const existingCard = knownCard || findStoryCardForEntity(name);
   if (!existingCard) return true;
 
   const cardType = (existingCard.type || "").trim().toLowerCase();

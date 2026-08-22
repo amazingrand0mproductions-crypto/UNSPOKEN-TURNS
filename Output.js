@@ -500,7 +500,15 @@ var unsaidModifier = (text) => {
         const missingRequired = requiredOrder.filter(f => f !== "Name" && placeholderValue(fields[f]));
         if (missingRequired.length > 0) return false;
 
-        let card = findStoryCardForEntity(name);
+        const existingMatches = typeof storyCardMatchesForEntity === "function"
+          ? storyCardMatchesForEntity(name)
+          : [];
+        if (existingMatches.length > 1) {
+          return false;
+        }
+        let card = existingMatches.length === 1
+          ? existingMatches[0]
+          : findStoryCardForEntity(name);
         const isNewCard = !card;
         if (isNewCard) {
           card = createOrFindCard(name.toLowerCase(), " ", type);
@@ -567,18 +575,26 @@ var unsaidModifier = (text) => {
         forgetMentionTracking(name);
 
         if (type === "character") {
-          const configCard = ensureSharedConfigCard();
+          const excluded = excludedNames(cfg);
+          const shouldJoinUnsaid = !excluded.some(ex => isSameCardEntity(ex, name));
+          const configCard = shouldJoinUnsaid ? ensureSharedConfigCard() : null;
           if (configCard) {
             const unsaidNotes = extractConfigSection(configCard.description, CONFIG_SECTION_UNSAID);
-            if (unsaidNotes && !unsaidNotes.includes(name)) {
+            if (unsaidNotes) {
               const markerIdx = unsaidNotes.indexOf(CAST_LIST_MARKER);
-              const updatedNotes = markerIdx !== -1
-                ? unsaidNotes.replace(/\s+$/, "") + `\n${name}`
-                : unsaidNotes;
-              configCard.description = spliceConfigSection(configCard.description, CONFIG_SECTION_UNSAID, updatedNotes);
+              const castText = markerIdx === -1 ? "" : unsaidNotes.slice(markerIdx + CAST_LIST_MARKER.length);
+              const castNames = castText
+                .split("\n")
+                .map(line => line.trim().replace(/^[-•*]\s*/, ""))
+                .filter(Boolean);
+              const alreadyListed = castNames.some(existing => isSameCardEntity(existing, name));
+              if (!alreadyListed && markerIdx !== -1) {
+                const updatedNotes = unsaidNotes.replace(/\s+$/, "") + `\n${name}`;
+                configCard.description = spliceConfigSection(configCard.description, CONFIG_SECTION_UNSAID, updatedNotes);
+              }
             }
           }
-          syncMindToCard(name, cfg.allowCoreShift, cfg.jsonNotes);
+          if (shouldJoinUnsaid) syncMindToCard(name, cfg.allowCoreShift, cfg.jsonNotes);
         }
         return true;
       } catch (e) {
@@ -701,11 +717,16 @@ var unsaidModifier = (text) => {
 
     pendingRefreshNames.forEach(name => {
       if (succeededNames.has(name)) return;
-      const meta = state.unsaid.codex.cardMeta && state.unsaid.codex.cardMeta[name];
+      const refreshCard = findStoryCardForEntity(name);
+      const key = (typeof codexManagedCardKey === "function")
+        ? codexManagedCardKey(name, refreshCard)
+        : name;
+      const meta = state.unsaid.codex.cardMeta && state.unsaid.codex.cardMeta[key];
       if (meta) {
         meta.refreshFailures = (meta.refreshFailures || 0) + 1;
-        // Do not retry every turn; evidence is kept, but the scheduler will
-        // honor the normal Codex cooldown before asking again.
+        meta.lastRefreshAttemptTurn = state.unsaid.turn;
+        // Keep evidence, but use per-card backoff so a stubborn malformed
+        // response cannot consume the Codex slot every cooldown forever.
       }
     });
 
@@ -799,6 +820,13 @@ var unsaidModifier = (text) => {
         if (isCoreShift && !coreShiftAuthorized) {
           isCoreShift = false;
           about = null;
+        }
+
+        // Relationship history is character-to-character state. Do not let a
+        // malformed reveal create durable feelings toward "the door", a
+        // location, an item, the player, or an ambiguous surname.
+        if (!isCoreShift && about && typeof resolveUnsaidRelationTarget === "function") {
+          about = resolveUnsaidRelationTarget(name, about, cfg);
         }
 
         const { wantSentence } = splitThoughtSentences(thought);

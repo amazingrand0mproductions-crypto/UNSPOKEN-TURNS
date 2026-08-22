@@ -255,15 +255,20 @@ var unsaidModifier = (text) => {
         return { text: "(A quiet moment passes.)" };
       }
 
-      const matchedCard = findStoryCardForEntity(name);
-      if (matchedCard && !isCharacterLikeCard(name)) {
+      const peekMatches = typeof storyCardMatchesForEntity === "function"
+        ? storyCardMatchesForEntity(name)
+        : [];
+      const matchedCard = peekMatches.length === 1 ? peekMatches[0] : findStoryCardForEntity(name);
+      if (peekMatches.length > 1) {
+        pushMessage(`👁️ "${name}" matches ${peekMatches.length} Story Cards — rename/remove the duplicate or use a more specific name before peeking.`);
+      } else if (matchedCard && !isCharacterLikeCard(name)) {
         pushMessage(`👁️ "${matchedCard.title}" is typed "${matchedCard.type}" on its Story Card, not a character — skipping the peek.`);
       } else {
-        state.unsaid.forcedPeek = name;
+        state.unsaid.forcedPeek = matchedCard && matchedCard.title ? matchedCard.title : name;
         state.unsaid.forcedPeekCore = coreRequested;
         pushMessage(coreRequested
-          ? `🌗 Checking whether this moment has changed ${name}...`
-          : `👁️ Peeking into ${name}'s thoughts...`);
+          ? `🌗 Checking whether this moment has changed ${matchedCard && matchedCard.title ? matchedCard.title : name}...`
+          : `👁️ Peeking into ${matchedCard && matchedCard.title ? matchedCard.title : name}'s thoughts...`);
       }
       return { text: "(A quiet moment passes.)" };
     }
@@ -279,7 +284,16 @@ var unsaidModifier = (text) => {
         pushMessage(`📇 UNSAID is currently disabled — turn on "Enable UNSAID" on the config card first, or no card will actually be written for ${name} this turn.`);
         return { text: "(A quiet moment passes.)" };
       }
-      state.unsaid.forcedCodex = name;
+      const cardMatches = typeof storyCardMatchesForEntity === "function"
+        ? storyCardMatchesForEntity(name)
+        : [];
+      if (cardMatches.length > 1) {
+        pushMessage(`📇 "${name}" matches ${cardMatches.length} Story Cards — automatic overwrite is paused until you remove/rename the duplicate or use a more specific name.`);
+        return { text: "(A quiet moment passes.)" };
+      }
+      state.unsaid.forcedCodex = cardMatches.length === 1 && cardMatches[0].title
+        ? cardMatches[0].title
+        : name;
       pushMessage(`📇 Writing a Story Card for ${name}...`);
       return { text: "(A quiet moment passes.)" };
     }

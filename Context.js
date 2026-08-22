@@ -486,6 +486,10 @@ var unsaidModifier = (text) => {
             state.unsaid.codex.pendingRefreshNames = [refresh.name];
             state.unsaid.codex.lastTriggerTurn = state.unsaid.turn;
             state.unsaid.codex.lastRefreshTriggerTurn = state.unsaid.turn;
+            if (card && typeof ensureCodexCardMeta === "function") {
+              const refreshMeta = ensureCodexCardMeta(refresh.name, card, refreshType || refresh.type);
+              if (refreshMeta) refreshMeta.lastRefreshAttemptTurn = state.unsaid.turn;
+            }
             state.unsaid.pending = null;
             state.unsaid.pendingCoreShiftAllowed = false;
             state.unsaid.pendingCoreCheck = false;
