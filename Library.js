@@ -2740,7 +2740,7 @@ var MENTION_TRACKING_CAP = 150;
 // Hard performance guardrails for AI Dungeon's isolated VM. Semantic entity
 // typing is intentionally evidence-rich, but it must never rescan an entire
 // long context hundreds of times in one Context Modifier pass.
-var CODEX_SEMANTIC_SCAN_CHAR_LIMIT = 7000;
+var CODEX_SEMANTIC_SCAN_CHAR_LIMIT = 4200;
 var CODEX_CONTEXT_MIGRATION_BATCH = 4;
 var CODEX_CONTEXT_PRUNE_BATCH = 12;
 var CODEX_IO_PRUNE_BATCH = 18;
@@ -4807,9 +4807,84 @@ function explicitCodexCharacterCue(name, text) {
   return cues.some(re => re.test(source));
 }
 
-function strongCodexNonCharacterEvidence(name, text) {
+function codexLocalEvidenceForName(name, text) {
   const source = boundedCodexSemanticText(text);
-  if (!source || !name) return null;
+  const rawName = String(name || "").trim();
+  if (!source || !rawName) return "";
+
+  // The semantic classifier used to run a large family of dynamic regexes over
+  // the whole 7k evidence buffer for every candidate. On large/old adventures
+  // that accumulated enough work to hit AI Dungeon's hard isolated-VM timeout.
+  // Classification only needs the prose immediately surrounding the entity, so
+  // collect a few small literal windows and run the expensive rules there.
+  const hay = source.toLowerCase().replace(/[’‘]/g, "\'").replace(/[‐‑–—]/g, "-");
+  const needle = rawName.toLowerCase().replace(/[’‘]/g, "\'").replace(/[‐‑–—]/g, "-");
+  const radius = 190;
+  const pieces = [];
+  let from = 0;
+  let seen = 0;
+
+  while (needle && from <= hay.length - needle.length && seen < 5) {
+    const at = hay.indexOf(needle, from);
+    if (at < 0) break;
+    const before = at > 0 ? hay.charAt(at - 1) : "";
+    const afterAt = at + needle.length;
+    const after = afterAt < hay.length ? hay.charAt(afterAt) : "";
+    const beforeOk = !before || !/[a-z0-9]/i.test(before);
+    const afterOk = !after || !/[a-z0-9]/i.test(after);
+    if (beforeOk && afterOk) {
+      pieces.push(source.slice(Math.max(0, at - radius), Math.min(source.length, afterAt + radius)));
+      seen += 1;
+    }
+    from = at + Math.max(1, needle.length);
+  }
+
+  // No literal occurrence means the relationship regexes cannot prove anything
+  // about this name anyway. Returning empty avoids burning time on unrelated prose;
+  // cheap name-shape hints still run in the caller.
+  if (!pieces.length) return "";
+  return pieces.join("\n…\n").slice(0, 2200);
+}
+
+var CODEX_STRONG_NONCHAR_CACHE = Object.create(null);
+var CODEX_STRONG_NONCHAR_CACHE_KEYS = [];
+
+function codexStrongNonCharacterCacheKey(name, source) {
+  const s = String(source || "");
+  // Hook globals are recreated by AI Dungeon, so a small per-hook cache is
+  // enough. A compact signature avoids hashing/scanning the entire evidence.
+  return normalizeUnsaidIdentity(name) + "|" + s.length + "|" + s.slice(0, 56) + "|" + s.slice(-56);
+}
+
+function cacheStrongNonCharacterResult(key, value) {
+  if (!key) return value;
+  if (!Object.prototype.hasOwnProperty.call(CODEX_STRONG_NONCHAR_CACHE, key)) {
+    CODEX_STRONG_NONCHAR_CACHE_KEYS.push(key);
+    if (CODEX_STRONG_NONCHAR_CACHE_KEYS.length > 256) {
+      const old = CODEX_STRONG_NONCHAR_CACHE_KEYS.shift();
+      delete CODEX_STRONG_NONCHAR_CACHE[old];
+    }
+  }
+  CODEX_STRONG_NONCHAR_CACHE[key] = value || false;
+  return value;
+}
+
+function strongCodexNonCharacterEvidence(name, text) {
+  const rawSource = boundedCodexSemanticText(text);
+  if (!rawSource || !name) return null;
+
+  const cacheKey = codexStrongNonCharacterCacheKey(name, rawSource);
+  if (Object.prototype.hasOwnProperty.call(CODEX_STRONG_NONCHAR_CACHE, cacheKey)) {
+    return CODEX_STRONG_NONCHAR_CACHE[cacheKey] || null;
+  }
+
+  // Never let automatic semantic typing be the task that consumes the last
+  // slice of a hook's runtime budget. Name-shape hints below remain available;
+  // the richer prose scan can happen on a later turn.
+  const budgetLow = typeof utHasRuntimeBudget === "function" && !utHasRuntimeBudget(180);
+  const source = budgetLow ? "" : codexLocalEvidenceForName(name, rawSource);
+  if (budgetLow && typeof utSkipRuntimeTask === "function") utSkipRuntimeTask("codex-semantic-typing");
+
   const n = escapeForRegex(name);
 
   const locationKinds =
@@ -4825,10 +4900,6 @@ function strongCodexNonCharacterEvidence(name, text) {
     "street|road|lane|avenue|boulevard|bridge|river|lake|sea|ocean|desert|" +
     "swamp|marsh|moor|barrow|barrow-mounds?|building|tower|hall|room|chamber)";
 
-  // Businesses can be either organizations or physical places. Treat them
-  // as locations only when the prose uses them like a venue (entering,
-  // visiting, an address, etc.). This keeps a shop/cafe from becoming a
-  // Character without forcing every corporation or chain into Location.
   const venueKinds =
     "(?:bookstore|bookshop|book\\s+shop|restaurant|diner|bistro|caf[eé]|" +
     "coffee\\s+shop|bakery|pizzeria|steakhouse|deli|bar|pub|tavern|store|" +
@@ -4853,94 +4924,64 @@ function strongCodexNonCharacterEvidence(name, text) {
 
   const scores = { location: 0, item: 0, faction: 0 };
 
-  // Name-shape hints are useful, but deliberately not decisive by themselves.
+  // These cheap name-shape hints are safe even when the richer scan yielded.
   if (CODEX_LOCATION_HINTS.test(name)) scores.location += 2;
   if (CODEX_LOCATION_SUFFIX_HINTS.test(name)) scores.location += 2;
   if (CODEX_ITEM_HINTS.test(name)) scores.item += 2;
   if (CODEX_FACTION_HINTS.test(name)) scores.faction += 2;
 
-  const locationExplicit = [
-    new RegExp(`\\b${locationKinds}\\s+(?:of\\s+|called\\s+|named\\s+|known\\s+as\\s+)?["“”'‘’]?${n}\\b`, "i"),
-    new RegExp(`\\b${n}\\b\\s+(?:is|was|are|were)\\s+(?:a|an|the)\\s+(?:[a-z-]+\\s+){0,3}${locationKinds}\\b`, "i"),
-    new RegExp(`\\b${n}(?:'s|’s)\\s+(?:a|an|the)\\s+(?:[a-z-]+\\s+){0,3}${locationKinds}\\b`, "i")
-  ];
-  if (locationExplicit.some(re => re.test(source))) scores.location += 6;
+  if (source) {
+    const locationExplicit = [
+      new RegExp(`\\b${locationKinds}\\s+(?:of\\s+|called\\s+|named\\s+|known\\s+as\\s+)?["“”'‘’]?${n}\\b`, "i"),
+      new RegExp(`\\b${n}\\b\\s+(?:is|was|are|were)\\s+(?:a|an|the)\\s+(?:[a-z-]+\\s+){0,3}${locationKinds}\\b`, "i"),
+      new RegExp(`\\b${n}(?:'s|’s)\\s+(?:a|an|the)\\s+(?:[a-z-]+\\s+){0,3}${locationKinds}\\b`, "i")
+    ];
+    if (locationExplicit.some(re => re.test(source))) scores.location += 6;
 
-  const venueExplicit = [
-    // “Starlight Books, the independent bookstore on Main Street.”
-    new RegExp(`\\b${n}\\b\\s*(?:,|—|-)\\s*(?:(?:the|a|an)\\s+)?(?:[a-z-]+\\s+){0,3}${venueKinds}\\b`, "i"),
-    new RegExp(`\\b${n}\\b\\s+(?:is|was|are|were)\\s+(?:a|an|the)\\s+(?:[a-z-]+\\s+){0,3}${venueKinds}\\b`, "i")
-  ];
-  if (venueExplicit.some(re => re.test(source))) scores.location += 5;
-  if (new RegExp(`\\b(?:enters?|entered|visits?|visited|walks?\\s+into|walked\\s+into|steps?\\s+into|stepped\\s+into|arrives?\\s+at|arrived\\s+at|goes?\\s+to|went\\s+to|heads?\\s+to|headed\\s+to|leaves?|left)\\s+(?:the\\s+)?${n}\\b`, "i").test(source)) {
-    scores.location += 5;
-  }
-  if (new RegExp(`\\b(?:in|inside|outside|into|through|near|around|toward|towards|from|within|across|beneath|above|at)\\s+(?:the\\s+)?${n}\\b`, "i").test(source)) {
-    scores.location += 1;
-  }
-  if (new RegExp(`\\b${n}\\b\\s+(?:lies?|sits?|stands?|is\\s+located|is\\s+situated|can\\s+be\\s+found)\\s+(?:in|near|on|beside|within|outside|north|south|east|west)\\b`, "i").test(source)) {
-    scores.location += 3;
-  }
+    const venueExplicit = [
+      new RegExp(`\\b${n}\\b\\s*(?:,|—|-)\\s*(?:(?:the|a|an)\\s+)?(?:[a-z-]+\\s+){0,3}${venueKinds}\\b`, "i"),
+      new RegExp(`\\b${n}\\b\\s+(?:is|was|are|were)\\s+(?:a|an|the)\\s+(?:[a-z-]+\\s+){0,3}${venueKinds}\\b`, "i")
+    ];
+    if (venueExplicit.some(re => re.test(source))) scores.location += 5;
+    if (new RegExp(`\\b(?:enters?|entered|visits?|visited|walks?\\s+into|walked\\s+into|steps?\\s+into|stepped\\s+into|arrives?\\s+at|arrived\\s+at|goes?\\s+to|went\\s+to|heads?\\s+to|headed\\s+to|leaves?|left)\\s+(?:the\\s+)?${n}\\b`, "i").test(source)) scores.location += 5;
+    if (new RegExp(`\\b(?:in|inside|outside|into|through|near|around|toward|towards|from|within|across|beneath|above|at)\\s+(?:the\\s+)?${n}\\b`, "i").test(source)) scores.location += 1;
+    if (new RegExp(`\\b${n}\\b\\s+(?:lies?|sits?|stands?|is\\s+located|is\\s+situated|can\\s+be\\s+found)\\s+(?:in|near|on|beside|within|outside|north|south|east|west)\\b`, "i").test(source)) scores.location += 3;
 
-  const itemExplicit = [
-    new RegExp(`\\b${itemKinds}\\s+(?:called|named|known\\s+as|dubbed)\\s+["“”'‘’]?${n}\\b`, "i"),
-    new RegExp(`\\b${n}\\b\\s+(?:is|was)\\s+(?:a|an|the)\\s+(?:[a-z-]+\\s+){0,2}${itemKinds}\\b`, "i")
-  ];
-  // A direct type declaration such as "the dish called Moonfire Stew" is
-  // stronger than an incidental noun phrase such as "Moonfire Stew is the
-  // tavern special". Give it enough weight to beat that venue-shaped false
-  // positive without making ordinary capitalization decisive.
-  if (itemExplicit.some(re => re.test(source))) scores.item += 8;
-  if (new RegExp(`\\b(?:wields?|holds?|wears?|uses?|draws?|grips?|picks?\\s+up|carries?|opens?|reads?|drives?|pilots?|boards?)\\s+(?:the\\s+|a\\s+|an\\s+|his\\s+|her\\s+|their\\s+)?${n}\\b`, "i").test(source)) {
-    scores.item += 1;
-  }
-  // Named food/drink was one of the nastiest false-character cases. Use
-  // consumption semantics, not capitalization, so “orders X from the
-  // restaurant” becomes Item while “orders from X” remains a venue/org.
-  const nameHasFoodWord = codexGenericWords(name).some(w => CODEX_GENERIC_FOOD_WORDS.has(w));
-  const directConsumption = new RegExp(
-    `\\b(?:eats?|ate|drinks?|drank|sips?|sipped|tastes?|tasted|devours?|devoured|` +
-    `samples?|sampled|tries?|tried)\\s+(?:the\\s+|a\\s+|an\\s+|some\\s+)?${n}\\b`,
-    "i"
-  );
-  const orderedConsumable = new RegExp(
-    `\\b(?:orders?|ordered)\\s+(?:the\\s+|a\\s+|an\\s+|some\\s+)?${n}\\b` +
-    `(?=\\s+(?:from\\s+(?:the\\s+)?(?:restaurant|diner|bistro|caf[eé]|coffee\\s+shop|bakery|bar|pub|kitchen|menu)|with\\b|for\\s+(?:breakfast|lunch|dinner|dessert)|to\\s+(?:eat|drink)|[,.;!?]|$))`,
-    "i"
-  );
-  const menuConsumable = new RegExp(
-    `\\b${n}\\b[^\\n.!?]{0,48}\\b(?:dish|meal|curry|stew|soup|sandwich|pizza|burger|` +
-    `dessert|cocktail|mocktail|beverage|drink|plate|bowl|serving|recipe|menu\\s+item|special)\\b`,
-    "i"
-  );
-  if (directConsumption.test(source) || orderedConsumable.test(source)) scores.item += 5;
-  if (nameHasFoodWord && menuConsumable.test(source)) scores.item += 4;
+    const itemExplicit = [
+      new RegExp(`\\b${itemKinds}\\s+(?:called|named|known\\s+as|dubbed)\\s+["“”'‘’]?${n}\\b`, "i"),
+      new RegExp(`\\b${n}\\b\\s+(?:is|was)\\s+(?:a|an|the)\\s+(?:[a-z-]+\\s+){0,2}${itemKinds}\\b`, "i")
+    ];
+    if (itemExplicit.some(re => re.test(source))) scores.item += 8;
+    if (new RegExp(`\\b(?:wields?|holds?|wears?|uses?|draws?|grips?|picks?\\s+up|carries?|opens?|reads?|drives?|pilots?|boards?)\\s+(?:the\\s+|a\\s+|an\\s+|his\\s+|her\\s+|their\\s+)?${n}\\b`, "i").test(source)) scores.item += 1;
 
-  // Vehicle/mech names are often proper nouns with no vehicle word inside
-  // the name itself (Mustang, Rocinante, Normandy). Mechanical possessives
-  // and unmistakable vehicle-operation verbs outrank a weak "into X"
-  // location cue.
-  if (new RegExp(`\\b${n}(?:'s|’s)\\s+(?:engine|motor|dashboard|dash|steering\\s+wheel|wheel|wheels|tires?|tyres?|windshield|windscreen|headlights?|taillights?|doors?|trunk|boot|hood|bonnet|chassis|transmission|gearbox|exhaust|cockpit|hull|thrusters?|reactor|controls?)\\b`, "i").test(source)) {
-    scores.item += 5;
-  }
-  if (new RegExp(`\\b(?:drives?|drove|driving|parks?|parked|pilots?|piloted|boards?|boarded|rides?|rode|climbs?|climbed|gets?|got|hops?|hopped)\\s+(?:into\\s+|onto\\s+|aboard\\s+)?(?:the\\s+|a\\s+|an\\s+|his\\s+|her\\s+|their\\s+)?${n}\\b`, "i").test(source)) {
-    scores.item += 3;
-  }
+    const nameHasFoodWord = codexGenericWords(name).some(w => CODEX_GENERIC_FOOD_WORDS.has(w));
+    const directConsumption = new RegExp(
+      `\\b(?:eats?|ate|drinks?|drank|sips?|sipped|tastes?|tasted|devours?|devoured|` +
+      `samples?|sampled|tries?|tried)\\s+(?:the\\s+|a\\s+|an\\s+|some\\s+)?${n}\\b`, "i"
+    );
+    const orderedConsumable = new RegExp(
+      `\\b(?:orders?|ordered)\\s+(?:the\\s+|a\\s+|an\\s+|some\\s+)?${n}\\b` +
+      `(?=\\s+(?:from\\s+(?:the\\s+)?(?:restaurant|diner|bistro|caf[eé]|coffee\\s+shop|bakery|bar|pub|kitchen|menu)|with\\b|for\\s+(?:breakfast|lunch|dinner|dessert)|to\\s+(?:eat|drink)|[,.;!?]|$))`, "i"
+    );
+    const menuConsumable = new RegExp(
+      `\\b${n}\\b[^\\n.!?]{0,48}\\b(?:dish|meal|curry|stew|soup|sandwich|pizza|burger|` +
+      `dessert|cocktail|mocktail|beverage|drink|plate|bowl|serving|recipe|menu\\s+item|special)\\b`, "i"
+    );
+    if (directConsumption.test(source) || orderedConsumable.test(source)) scores.item += 5;
+    if (nameHasFoodWord && menuConsumable.test(source)) scores.item += 4;
 
-  const factionExplicit = [
-    new RegExp(`\\b${factionKinds}\\s+(?:called|named|known\\s+as)\\s+["“”'‘’]?${n}\\b`, "i"),
-    new RegExp(`\\b${n}\\b\\s+(?:is|was|are|were)\\s+(?:a|an|the)\\s+(?:[a-z-]+\\s+){0,2}${factionKinds}\\b`, "i"),
-    new RegExp(`\\b${n}\\s+${factionKinds}\\b`, "i")
-  ];
-  if (factionExplicit.some(re => re.test(source))) scores.faction += 6;
-  if (new RegExp(`\\b${n}\\b[^\\n.!?]{0,48}\\b(?:chain|franchise|corporation|company|business|brand|conglomerate|organization|organisation|network|enterprise|enterprises|industries)\\b`, "i").test(source)) {
-    scores.faction += 4;
-  }
-  if (new RegExp(`\\b(?:works?|worked|employed|member|members|joined|joins|leads?|founded|owns?)\\s+(?:at|for|by|of)?\\s*(?:the\\s+)?${n}\\b`, "i").test(source)) {
-    scores.faction += 1;
-  }
-  if (new RegExp(`\\b(?:members?|agents?|employees?|officers?|soldiers?|students?|staff)\\s+of\\s+(?:the\\s+)?${n}\\b|\\b${n}\\s+(?:members?|agents?|employees?|officers?|staff)\\b`, "i").test(source)) {
-    scores.faction += 2;
+    if (new RegExp(`\\b${n}(?:'s|’s)\\s+(?:engine|motor|dashboard|dash|steering\\s+wheel|wheel|wheels|tires?|tyres?|windshield|windscreen|headlights?|taillights?|doors?|trunk|boot|hood|bonnet|chassis|transmission|gearbox|exhaust|cockpit|hull|thrusters?|reactor|controls?)\\b`, "i").test(source)) scores.item += 5;
+    if (new RegExp(`\\b(?:drives?|drove|driving|parks?|parked|pilots?|piloted|boards?|boarded|rides?|rode|climbs?|climbed|gets?|got|hops?|hopped)\\s+(?:into\\s+|onto\\s+|aboard\\s+)?(?:the\\s+|a\\s+|an\\s+|his\\s+|her\\s+|their\\s+)?${n}\\b`, "i").test(source)) scores.item += 3;
+
+    const factionExplicit = [
+      new RegExp(`\\b${factionKinds}\\s+(?:called|named|known\\s+as)\\s+["“”'‘’]?${n}\\b`, "i"),
+      new RegExp(`\\b${n}\\b\\s+(?:is|was|are|were)\\s+(?:a|an|the)\\s+(?:[a-z-]+\\s+){0,2}${factionKinds}\\b`, "i"),
+      new RegExp(`\\b${n}\\s+${factionKinds}\\b`, "i")
+    ];
+    if (factionExplicit.some(re => re.test(source))) scores.faction += 6;
+    if (new RegExp(`\\b${n}\\b[^\\n.!?]{0,48}\\b(?:chain|franchise|corporation|company|business|brand|conglomerate|organization|organisation|network|enterprise|enterprises|industries)\\b`, "i").test(source)) scores.faction += 4;
+    if (new RegExp(`\\b(?:works?|worked|employed|member|members|joined|joins|leads?|founded|owns?)\\s+(?:at|for|by|of)?\\s*(?:the\\s+)?${n}\\b`, "i").test(source)) scores.faction += 1;
+    if (new RegExp(`\\b(?:members?|agents?|employees?|officers?|soldiers?|students?|staff)\\s+of\\s+(?:the\\s+)?${n}\\b|\\b${n}\\s+(?:members?|agents?|employees?|officers?|staff)\\b`, "i").test(source)) scores.faction += 2;
   }
 
   const order = ["location", "faction", "item"];
@@ -4948,8 +4989,8 @@ function strongCodexNonCharacterEvidence(name, text) {
   const bestScore = scores[best];
   const second = order.filter(t => t !== best).reduce((m, t) => Math.max(m, scores[t]), 0);
 
-  if (bestScore < 3) return null;
-  return { type: best, score: bestScore, margin: bestScore - second, scores };
+  if (bestScore < 3) return cacheStrongNonCharacterResult(cacheKey, null);
+  return cacheStrongNonCharacterResult(cacheKey, { type: best, score: bestScore, margin: bestScore - second, scores });
 }
 
 // Direct scene-presence cues only. This intentionally does NOT call the
@@ -5469,6 +5510,7 @@ function isSameCardEntity(cardTitle, candidateName) {
 }
 
 var CARD_TYPE_DISPLAY = { character: "Character", location: "Location", item: "Item", faction: "Faction" };
+var UNSAID_AMBIGUITY_LOGGED = Object.create(null);
 function storyCardMatchesForEntity(name) {
   if (!name || typeof storyCards === "undefined" || !Array.isArray(storyCards)) return [];
 
@@ -5478,20 +5520,23 @@ function storyCardMatchesForEntity(name) {
     .replace(/\s+/g, " ")
     .trim();
 
-  // Exact titles and exact creator-authored trigger aliases use the same
-  // per-hook identity index. This turns the common lookup path from repeated
-  // O(all Story Cards) scans into one O(cards) index build followed by O(1)
-  // lookups — critical in 500–1000 card scenarios and during Output cleanup.
+  // Exact card titles always outrank trigger aliases. A common scenario has
+  // one canonical card titled "Silvermane" plus several other cards that use
+  // Silvermane as a relationship/activation key. Older builds merged all of
+  // those into one 5-card "ambiguity" and then refused to update the real card.
   const aliasKey = clean(name);
+  const exactTitleMatches = [];
+  for (let i = 0; i < storyCards.length; i++) {
+    const card = storyCards[i];
+    if (card && card.title && !isOwnCard(card.title) && clean(card.title) === aliasKey) exactTitleMatches.push(card);
+  }
+  if (exactTitleMatches.length) return exactTitleMatches;
+
+  // Creator-authored trigger aliases use the same per-hook identity index.
   if (typeof buildUnsaidAliasIndex === "function") {
     const index = buildUnsaidAliasIndex();
     const direct = index && index.aliasToCards && index.aliasToCards[aliasKey];
     if (direct && direct.length) return direct.slice();
-  } else {
-    const exact = storyCards.filter(card =>
-      card && card.title && !isOwnCard(card.title) && clean(card.title) === aliasKey
-    );
-    if (exact.length > 0) return exact;
   }
 
   const wantedWordCount = clean(name).split(" ").filter(Boolean).length;
@@ -5510,7 +5555,9 @@ function findStoryCardForEntity(name) {
   if (matches.length === 1) return matches[0];
   if (matches.length > 1) {
     try {
-      if (typeof Library !== "undefined" && Library.safeLog) {
+      const ambiguityKey = normalizeUnsaidIdentity(name) + "|" + matches.length;
+      if (!UNSAID_AMBIGUITY_LOGGED[ambiguityKey] && typeof Library !== "undefined" && Library.safeLog) {
+        UNSAID_AMBIGUITY_LOGGED[ambiguityKey] = true;
         Library.safeLog(`[UNSPOKEN TURNS] Ambiguous Story Card match for "${name}" (${matches.length} cards) — automatic writes skipped until the ambiguity is resolved.`);
       }
     } catch (e) {}
